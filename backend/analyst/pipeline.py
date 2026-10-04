@@ -8,10 +8,12 @@ from .calculations import review_portfolio
 from .financial_data import FinancialProvider, PersonalFinancialProvider, refresh_financial_data
 from .guardrails import apply_guardrails, has_etf_exposure, preview_changes
 from .providers import DataProvider, ModelProvider
+from .scenarios import calculate_comparison
 from .schemas import (
     Alternative,
     AnalysisRequest,
     AnalysisResult,
+    ComparisonJudgments,
     PortfolioReview,
     ProposalReview,
     ProposedChanges,
@@ -40,6 +42,17 @@ positions, never to invent an amount or imply execution. That tool can accept sh
 changes and new cash, but cannot change settings, marks, identities or FX. Check results
 are authoritative. A blocked or unknown preview cannot be recommended as approved.
 Missing or unusable source evidence requires conditional direction.
+When comparison is supplied, call calculate_comparison after review_portfolio and
+before answering. Compare only those selected alternatives with explained conditional
+downside, base and upside exposure, income, annual rate, reinvestment and FX judgments.
+Quantitative future assumptions belong only in that tool's structured driver fields.
+Facts, dated FX, scope and effects are backend bound and cannot be replaced by judgments.
+ETF cases concern portfolio exposure, never a company exit-value method. Missing fund
+income, expenses and tax consequences stay unknown; total returns include income once.
+No action retains the actual scope; cash uses explicit changing annual rate paths.
+Identify pivotal assumptions and uncertainty; do not invent probabilities or a weighted
+expected value, purchasing-power claims, return hurdles or a mandatory exit date.
+Explain comparative tradeoffs in the final qualitative answer using the computed cases.
 """
 
 
@@ -61,6 +74,11 @@ def validate_recommendation(answer: dict[str, Any]) -> Recommendation:
             *(alternative.reason for alternative in recommendation.alternatives),
         ]
     )
+    validate_prose(prose)
+    return recommendation
+
+
+def validate_prose(prose: str) -> None:
     quantitative = (
         r"\d|[%$€£¥]|\b(?:percent|probability|probabilities|guaranteed|half|quarter|"
         r"third|double|triple|hundred|thousand|million|billion)\b|"
@@ -88,7 +106,6 @@ def validate_recommendation(answer: dict[str, Any]) -> Recommendation:
         or re.search(proposed_adjustment, qualified, re.I)
     ):
         raise InvalidReview("Unsupported quantitative claims or execution direction.")
-    return recommendation
 
 
 def enforce_guardrails(
@@ -140,24 +157,25 @@ async def analyze(
     computed = None
     evidence = None
     proposals: list[ProposalReview] = []
+    comparison = None
     seen_calls: set[str] = set()
     try:
         # One required portfolio tool turn, then a final response. Bound any repeated
         # tool requests to prevent unbounded loops and reject unknown dispatch names.
-        for _ in range(6):
+        for _ in range(8):
             turn = await model.respond(messages, require_tool=computed is None)
             if turn.calls:
                 if turn.answer is not None or len(turn.calls) != 1:
                     raise InvalidReview("Invalid mixed or parallel model response.")
                 call = turn.calls[0]
                 if (
-                    call.name not in {"review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes"}
+                    call.name not in {"review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes", "calculate_comparison"}
                     or not call.call_id
                     or call.call_id in seen_calls
                 ):
                     raise InvalidReview("Unknown tool or invalid call identifier.")
                 arguments = json.loads(call.arguments)
-                if call.name != "check_proposed_changes" and arguments != {}:
+                if call.name not in {"check_proposed_changes", "calculate_comparison"} and arguments != {}:
                     raise InvalidReview(
                         "Portfolio tool accepts no model-supplied financial inputs."
                     )
@@ -171,6 +189,15 @@ async def analyze(
                         proposals.append(preview_changes(supplied, evidence, computed, request.settings, request.proposed_changes, "user"))
                     output = computed.model_dump(mode="json")
                     output["proposals"] = [row.model_dump(mode="json") for row in proposals]
+                elif call.name == "calculate_comparison":
+                    if computed is None or request.comparison is None or comparison is not None:
+                        raise InvalidReview("Comparison requires a reviewed portfolio and selected alternatives, and runs once.")
+                    judgments = ComparisonJudgments.model_validate(arguments)
+                    for alternative in judgments.alternatives:
+                        for case in alternative.cases:
+                            validate_prose(" ".join([*case.assumptions, case.downside, *case.uncertainty]))
+                    comparison = calculate_comparison(request.comparison, judgments, computed)
+                    output = comparison.model_dump(mode="json")
                 elif call.name == "check_proposed_changes":
                     if computed is None:
                         raise InvalidReview("Review the dated portfolio before checking proposed changes.")
@@ -205,12 +232,15 @@ async def analyze(
                 continue
             if computed is None or turn.answer is None:
                 raise InvalidReview("A final answer requires completed portfolio calculation.")
+            if request.comparison is not None and comparison is None:
+                raise InvalidReview("Selected alternatives require calculated conditional cases before answering.")
             recommendation = enforce_guardrails(validate_recommendation(turn.answer), computed, proposals)
             result = AnalysisResult(
                 question=request.question,
                 portfolio=computed,
                 recommendation=recommendation,
                 proposals=proposals,
+                comparison=comparison,
             )
             if secret and secret in result.model_dump_json():
                 raise InvalidReview("Response contains backend-only configuration.")

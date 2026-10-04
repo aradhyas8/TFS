@@ -19,6 +19,81 @@ async function loadCSV(page: Page) {
   await expect(page.getByLabel("Account 2 name", { exact: true })).toHaveValue("Brokerage");
 }
 
+test("selected fund, cash and actual no action display conditional Python comparison", async ({ page }) => {
+  await loadCSV(page);
+  const fund = page.getByRole("group", { name: "Position 1", exact: true });
+  await fund.getByRole("combobox", { name: "Kind", exact: true }).selectOption("etf");
+  await fund.getByLabel("ETF classification for active budget").selectOption("diversified");
+  await page.getByLabel("Include conditional comparison").check();
+  await page.getByLabel("Comparison scope p1", { exact: true }).check();
+  await page.getByLabel("Comparison scope c1", { exact: true }).check();
+  await page.getByLabel("Diversified ETF alternative").selectOption("p1");
+  await page.getByLabel("Cash or short-bill currency").selectOption("c1");
+  await page.getByLabel("Portfolio exposure for p1").fill("Diversified global equity");
+  await page.getByLabel("Annual fund cost (fraction) for p1").fill("0");
+  await page.getByLabel("Income yield (fraction) for p1").fill("0.02");
+  await page.getByLabel("Investment question").fill("Compare conditional alternatives");
+  const returned = page.waitForResponse(response => response.url().endsWith("/api/analyze"));
+  await page.getByRole("button", { name: /Review portfolio/ }).click();
+  const response = await returned;
+  expect(response.status()).toBe(200);
+  expect(response.request().postDataJSON().comparison.scope_position_ids).toEqual(["p1", "c1"]);
+  const comparison = page.getByRole("region", { name: "Five-year conditional comparison", exact: true });
+  await expect(comparison).toContainText("Common starting value: 1,950 CAD");
+  await expect(comparison.getByRole("table", { name: "fund conditional cases" })).toContainText("2,152.95756624 CAD");
+  await expect(comparison.getByRole("table", { name: "cash conditional cases" })).toContainText("2,151.922968 CAD");
+  await expect(comparison.getByRole("table", { name: "keep conditional cases" })).toContainText("2,152.61270016 CAD");
+  for (const name of ["fund", "cash", "keep"]) {
+    const table = comparison.getByRole("table", { name: `${name} conditional cases` });
+    await expect(table).toContainText("downside"); await expect(table).toContainText("base"); await expect(table).toContainText("upside");
+    await expect(table).toContainText("Unknown");
+  }
+  const cash = comparison.getByRole("region", { name: "Comparison cash", exact: true });
+  await cash.getByText("base: drivers, assumptions and uncertainty", { exact: true }).click();
+  await expect(cash).toContainText("0.04, 0.03, 0.02, 0.01, 0");
+  await expect(cash).toContainText("Tax consequences are unknown and unquantified");
+  await expect(comparison).toContainText("not a mandatory exit date");
+  await expect(comparison).toContainText("not real purchasing-power outcomes");
+  await comparison.getByText("Dated supplied fund facts and effects", { exact: true }).click();
+  await expect(comparison).toContainText("Diversified global equity");
+  await expect(comparison).toContainText("User supplied fund facts");
+  await page.screenshot({ path: "artifacts/conditional-comparison.png", fullPage: true });
+});
+
+test("removing selected holdings clears obsolete comparison references", async ({ page }) => {
+  await loadCSV(page);
+  await page.getByLabel("Include conditional comparison").check();
+  await page.getByLabel("Comparison scope c1", { exact: true }).check();
+  await page.getByLabel("Cash or short-bill currency").selectOption("c1");
+  await page.getByRole("group", { name: "Position 3", exact: true }).getByRole("button", { name: "Remove position 3" }).click();
+  const inputs = page.getByRole("region", { name: "Comparison inputs", exact: true });
+  await expect(inputs).toContainText("Select at least one current holding or cash balance");
+  await expect(page.getByLabel("Cash or short-bill currency")).toHaveValue("");
+  await page.getByLabel("Comparison scope c2", { exact: true }).check();
+  await page.getByLabel("Cash or short-bill currency").selectOption("c2");
+  await page.getByLabel("Investment question").fill("Compare remaining cash");
+  const returned = page.waitForResponse(response => response.url().endsWith("/api/analyze"));
+  await page.getByRole("button", { name: /Review portfolio/ }).click();
+  const response = await returned;
+  expect(response.status()).toBe(200);
+  expect(response.request().postDataJSON().comparison.scope_position_ids).toEqual(["c2"]);
+  expect(response.request().postDataJSON().comparison.alternatives.some((alt: { position_id: string }) => alt.position_id === "c1")).toBe(false);
+  const fund = page.getByRole("group", { name: "Position 1", exact: true });
+  await fund.getByRole("combobox", { name: "Kind", exact: true }).selectOption("etf");
+  await fund.getByLabel("ETF classification for active budget").selectOption("diversified");
+  await page.getByLabel("Diversified ETF alternative").selectOption("p1");
+  await page.getByLabel("Portfolio exposure for p1").fill("Diversified global equity");
+  await loadCSV(page); // Replacement reclassifies the selected fund as a stock.
+  await expect(page.getByLabel("Diversified ETF alternative")).toHaveValue("");
+  await expect(page.getByLabel("Portfolio exposure for p1")).toHaveCount(0);
+  const replaced = page.waitForResponse(response => response.url().endsWith("/api/analyze"));
+  await page.getByRole("button", { name: /Review portfolio/ }).click();
+  const afterImport = await replaced;
+  expect(afterImport.status()).toBe(200);
+  expect(afterImport.request().postDataJSON().comparison.fund_facts).toEqual([]);
+  expect(afterImport.request().postDataJSON().comparison.alternatives.some((alt: { id: string }) => alt.id === "fund")).toBe(false);
+});
+
 test("CSV portfolio and submitted question travel through FastAPI tools to the displayed review", async ({ page }) => {
   await loadCSV(page);
   const question = "How concentrated am I across accounts?";

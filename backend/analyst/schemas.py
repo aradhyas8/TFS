@@ -182,11 +182,123 @@ class ProposedChanges(Contract):
         return self
 
 
+ScenarioReturn = Annotated[Decimal, Field(ge=-1, le=10, max_digits=13, decimal_places=10)]
+FiveReturns = Annotated[list[ScenarioReturn], Field(min_length=5, max_length=5)]
+FiveFactors = Annotated[list[Quantity], Field(min_length=5, max_length=5)]
+FiveFX = Annotated[list[Rate], Field(min_length=5, max_length=5)]
+CaseName = Literal["downside", "base", "upside"]
+
+
+class FundFacts(Contract):
+    position_id: Identifier
+    as_of: date
+    source: Identifier
+    source_url: str | None = None
+    exposure: Text
+    annual_cost: Fraction | None = None
+    income_yield: Fraction | None = None
+
+
+class ComparisonAlternative(Contract):
+    id: Identifier
+    kind: Literal["etf", "cash", "short_bill", "no_action"]
+    position_id: Identifier | None = None
+
+    @model_validator(mode="after")
+    def check_position(self) -> Self:
+        if (self.kind == "no_action") != (self.position_id is None):
+            raise ValueError("Only no action uses the actual scope without a destination position.")
+        return self
+
+
+class KnownEffects(Contract):
+    alternative_id: Identifier
+    transaction_cost: Quantity | None = None
+    terminal_tax: Quantity | None = None
+    as_of: date
+    source: Identifier
+
+
+class ComparisonInput(Contract):
+    scope_position_ids: list[Identifier] = Field(min_length=1, max_length=20)
+    alternatives: list[ComparisonAlternative] = Field(min_length=1, max_length=3)
+    fund_facts: list[FundFacts] = Field(default_factory=list, max_length=20)
+    effects: list[KnownEffects] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def unique_inputs(self) -> Self:
+        for ids in (self.scope_position_ids, [row.id for row in self.alternatives],
+                    [row.position_id for row in self.fund_facts],
+                    [row.alternative_id for row in self.effects]):
+            if len(ids) != len(set(ids)):
+                raise ValueError("Comparison inputs must have unique references.")
+        if len({(row.kind, row.position_id) for row in self.alternatives}) != len(self.alternatives):
+            raise ValueError("Duplicate comparison alternatives are not allowed.")
+        if any(row.alternative_id not in {alt.id for alt in self.alternatives} for row in self.effects):
+            raise ValueError("Effects must reference selected alternatives.")
+        return self
+
+
+class ScenarioDriver(Contract):
+    position_id: Identifier
+    annual_returns: FiveReturns | None
+    return_basis: Literal["price_only", "total_return"]
+    cost_basis: Literal["gross", "net_of_fund_cost"]
+    annual_rates: FiveReturns | None
+    income_multipliers: FiveFactors | None
+    reinvest: bool
+    fx_multipliers: FiveFX
+
+
+class ScenarioCase(Contract):
+    name: CaseName
+    drivers: list[ScenarioDriver] = Field(min_length=1, max_length=20)
+    assumptions: list[Text] = Field(min_length=1, max_length=8)
+    downside: Text
+    uncertainty: list[Text] = Field(min_length=1, max_length=8)
+
+
+class AlternativeJudgment(Contract):
+    alternative_id: Identifier
+    cases: list[ScenarioCase] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def three_cases(self) -> Self:
+        if {row.name for row in self.cases} != {"downside", "base", "upside"}:
+            raise ValueError("Exactly one downside, base and upside case is required.")
+        return self
+
+
+class ComparisonJudgments(Contract):
+    alternatives: list[AlternativeJudgment] = Field(min_length=1, max_length=3)
+
+
 class AnalysisRequest(Contract):
     question: Text
     portfolio: Snapshot
     settings: PortfolioSettings | None = None
     proposed_changes: ProposedChanges | None = None
+    comparison: ComparisonInput | None = None
+
+    @model_validator(mode="after")
+    def comparison_references(self) -> Self:
+        if self.comparison is None:
+            return self
+        rows = {row.id: row for row in self.portfolio.positions}
+        comparison = self.comparison
+        if any(key not in rows for key in comparison.scope_position_ids):
+            raise ValueError("Comparison scope must reference actual current holdings or cash.")
+        for alternative in comparison.alternatives:
+            if alternative.position_id is None:
+                continue
+            row = rows.get(alternative.position_id)
+            if row is None or (alternative.kind == "etf" and (row.kind != "etf" or row.etf_role != "diversified")) or (alternative.kind in {"cash", "short_bill"} and row.kind != "cash"):
+                raise ValueError("Select a supplied diversified ETF or a cash-currency row for cash/short bills.")
+        relevant = set(comparison.scope_position_ids) | {row.position_id for row in comparison.alternatives}
+        for fact in comparison.fund_facts:
+            if fact.position_id not in relevant or fact.position_id not in rows or rows[fact.position_id].kind != "etf":
+                raise ValueError("Fund facts must reference ETFs used by the comparison.")
+        return self
 
 
 class CSVRequest(Contract):
@@ -315,9 +427,47 @@ class ProposalReview(Contract):
     qualifications: list[str]
 
 
+class ScenarioComponent(Contract):
+    position_id: str
+    local_currency: str
+    starting_local_value: str | None
+    fx_used: FX | None
+    terminal_local_value: str | None
+    known_terminal_value: str | None
+    fully_specified: bool
+    qualifications: list[str]
+
+
+class CalculatedCase(Contract):
+    name: CaseName
+    judgment: ScenarioCase
+    components: list[ScenarioComponent]
+    known_terminal_value: str | None
+    terminal_value: str | None
+    qualifications: list[str]
+
+
+class CalculatedAlternative(Contract):
+    selection: ComparisonAlternative
+    position_ids: list[str]
+    cases: list[CalculatedCase]
+
+
+class ComparisonResult(Contract):
+    as_of: date
+    reporting_currency: Currency
+    horizon_years: Literal[5] = 5
+    starting_value: str | None
+    inputs: ComparisonInput
+    alternatives: list[CalculatedAlternative]
+    qualifications: list[str]
+    calculation_basis: str
+
+
 class AnalysisResult(Contract):
     status: Literal["completed"] = "completed"
     question: str
     portfolio: PortfolioReview
     recommendation: Recommendation
     proposals: list[ProposalReview] = Field(default_factory=list)
+    comparison: ComparisonResult | None = None

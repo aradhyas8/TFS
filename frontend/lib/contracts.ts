@@ -50,7 +50,24 @@ export type Recommendation = {
 export type ProposalReview = { changes: ProposedChanges; source: "user" | "model"; status: string;
   post_total_value: string | null; post_cash_value: string | null; positions: Review["positions"];
   guardrails: GuardrailReview | null; qualifications: string[] };
-export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation; proposals: ProposalReview[] };
+export type FundFacts = { position_id: string; as_of: string; source: string; source_url: string | null;
+  exposure: string; annual_cost: string | null; income_yield: string | null };
+export type ComparisonAlternative = { id: string; kind: "etf" | "cash" | "short_bill" | "no_action"; position_id: string | null };
+export type KnownEffects = { alternative_id: string; transaction_cost: string | null; terminal_tax: string | null; as_of: string; source: string };
+export type ComparisonInput = { scope_position_ids: string[]; alternatives: ComparisonAlternative[];
+  fund_facts: FundFacts[]; effects: KnownEffects[] };
+export type ScenarioDriver = { position_id: string; annual_returns: string[] | null; return_basis: string; cost_basis: string;
+  annual_rates: string[] | null; income_multipliers: string[] | null; reinvest: boolean; fx_multipliers: string[] };
+export type ComparisonResult = { as_of: string; reporting_currency: string; horizon_years: number; starting_value: string | null;
+  inputs: ComparisonInput; qualifications: string[]; calculation_basis: string;
+  alternatives: { selection: ComparisonAlternative; position_ids: string[]; cases: { name: string;
+    known_terminal_value: string | null; terminal_value: string | null; qualifications: string[];
+    judgment: { name: string; drivers: ScenarioDriver[]; assumptions: string[]; downside: string; uncertainty: string[] };
+    components: { position_id: string; local_currency: string; starting_local_value: string | null;
+      fx_used: FX | null; terminal_local_value: string | null; known_terminal_value: string | null; fully_specified: boolean; qualifications: string[] }[];
+  }[] }[] };
+export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation;
+  proposals: ProposalReview[]; comparison: ComparisonResult | null };
 
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {

@@ -1,5 +1,6 @@
 import { actionLabel, valueLabel, weightLabel, type Analysis } from "../lib/contracts";
 import GuardrailResult from "./GuardrailResult";
+import ComparisonResult from "./ComparisonResult";
 
 function Points({ title, items }: { title: string; items: string[] }) {
   return <div className="review-points"><h3>{title}</h3><ul>{items.map((item, index) => <li key={index}>{item}</li>)}</ul></div>;
@@ -58,6 +59,7 @@ export default function ReviewResult({ result }: { result: Analysis }) {
             {company.value === null && <small>Known subtotal: {valueLabel(company.known_value, currency)}</small>}</td><td>{weightLabel(company.weight)}</td>
         </tr>)}</tbody></table></div> : <p className="muted">No resolved direct-company positions supplied.</p>}
       <GuardrailResult review={portfolio.guardrails} currency={currency} label="Current" />
+      <ComparisonResult comparison={result.comparison} />
       {result.proposals.map((proposal, index) => <section className="panel" aria-label={`Proposed change ${index + 1}`} key={index}>
         <h3>Proposed change {index + 1}: {proposal.status.replaceAll("_", " ")}</h3>
         <p className="muted small">Source: {proposal.source}. Hypothetical preview using the snapshot date; no action has occurred.</p>

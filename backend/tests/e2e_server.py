@@ -10,6 +10,7 @@ from analyst.config import Settings
 from analyst.financial_data import FakeFinancialProvider
 from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
 from analyst.schemas import FinancialEvidence, Snapshot
+from tests.test_comparison import case_drivers, driver, judgments
 from tests.test_freshness import evidence_fixture
 
 # No network outside the local test servers, even if a provider is changed accidentally.
@@ -33,12 +34,23 @@ class BrowserTestModel:
             return ModelTurn(calls=[ToolCall("browser_tool", "review_portfolio", "{}")])
         request = json.loads(messages[1]["content"])
         tool = json.loads(messages[-1]["output"])
+        if request.get("comparison") and "total_value" in tool:
+            template = judgments()["alternatives"][0]["cases"]
+            positions = {row["id"]: row for row in request["portfolio"]["positions"]}
+            selected = []
+            for alt in request["comparison"]["alternatives"]:
+                ids = request["comparison"]["scope_position_ids"] if alt["kind"] == "no_action" else [alt["position_id"]]
+                drivers = [driver(key, cash=positions[key]["kind"] == "cash") for key in ids]
+                selected.append({"alternative_id": alt["id"], "cases": [
+                    {**case, "drivers": case_drivers(drivers, case["name"])} for case in template
+                ]})
+            return ModelTurn(calls=[ToolCall("browser_comparison", "calculate_comparison", json.dumps({"alternatives": selected}))])
         if request["question"] == "Check model proposal" and "total_value" in tool:
             return ModelTurn(calls=[ToolCall("browser_proposal", "check_proposed_changes", json.dumps({
                 "new_cash": [], "trades": [{"position_id": "p2", "shares_change": "2", "cash_position_id": "c2"}],
             }))])
         # Actual deterministic tool output has to exist; this provider cannot skip it.
-        assert "total_value" in tool and "direct_companies" in tool or "post_total_value" in tool and "guardrails" in tool
+        assert "total_value" in tool and "direct_companies" in tool or "post_total_value" in tool and "guardrails" in tool or "alternatives" in tool and "calculation_basis" in tool
         answer = {
             "preferred_action": "review_only",
             "amount": None,
@@ -61,6 +73,16 @@ class BrowserTestModel:
         if request["question"] == "Check model proposal":
             answer.update(preferred_action="no_action", reason="Strong conviction permits an exception to configured limits.")
             answer["downside"] = "Strong conviction permits an exception in the downside explanation."
+        if request.get("comparison"):
+            answer.update(
+                preferred_action="no_action",
+                reason="The compared cases do not establish a superior action while fund exposure evidence and personal risk context remain provisional. Retaining the actual holdings and cash is a conditional alternative.",
+                alternatives=[{"action": "clarify_inputs", "reason": "Confirm fund exposure, costs, income and personal risk context before deciding."}],
+                downside="The diversified fund retains equity and currency downside; cash faces falling reinvestment rates. No action retains the existing mix and its risks.",
+                assumptions=["Exposure, income, rate and currency paths are judgments; calculations use the dated common capital basis."],
+                uncertainty=["Unknown transaction costs and personal tax consequences leave terminal values incomplete."],
+                what_could_change=["Supported fund facts, revised rate or currency paths, and supplied risk context could distinguish the alternatives."],
+            )
         return ModelTurn(answer=answer)
 
 
