@@ -152,3 +152,44 @@ test("a valid review taking longer than the default proxy timeout completes", as
   await page.getByRole("button", { name: "Review portfolio →" }).click();
   await expect(page.getByTestId("portfolio-total")).toHaveText("3,600 CAD", { timeout: 40_000 });
 });
+
+test("broker marks show source date, capture time, quote age and dated FX", async ({ page }) => {
+  await loadCSV(page);
+  const row = page.getByRole("group", { name: "Position 1", exact: true });
+  await row.getByLabel("Mark capture time (optional, with timezone)").fill("2026-09-30T20:00:00Z");
+  await page.getByLabel("Investment question").fill("Review broker-display valuation basis");
+  await page.getByRole("button", { name: /Review portfolio/ }).click();
+  const result = page.getByRole("region", { name: "Completed portfolio review" });
+  await expect(page.getByTestId("portfolio-total")).toHaveText("3,600 CAD");
+  await expect(result).toContainText("manual");
+  await expect(result).toContainText("Quote captured: 2026-09-30T20:00:00Z");
+  await expect(result).toContainText("Quote age vs review: 0 days");
+  await expect(result).toContainText("FX: 1.3 CAD/USD");
+  await expect(result).toContainText("Source inputs do not support confident sizing");
+  await result.getByText("Calculation basis", { exact: true }).click();
+  await expect(result).toContainText("No dividends are added");
+});
+
+for (const scenario of ["delayed", "cached", "stale", "ambiguous"] as const) {
+  test(`refreshed ${scenario} source is visible in the existing review`, async ({ page }) => {
+    await loadCSV(page);
+    await page.getByRole("group", { name: "Position 1", exact: true }).getByLabel("Mark source label", { exact: true }).fill(`Fixture ${scenario}`);
+    await page.getByLabel("Investment question").fill("Refresh the dated source basis");
+    await page.getByRole("button", { name: /Review portfolio/ }).click();
+    const result = page.getByRole("region", { name: "Completed portfolio review" });
+    await expect(result).toContainText("Qualified fixture");
+    await expect(result).toContainText("FX: 1.4 CAD/USD");
+    await expect(result).toContainText("2026-09-30T20:00:00Z");
+    if (["stale", "ambiguous"].includes(scenario)) {
+      await expect(page.getByTestId("portfolio-total")).toHaveText("Unknown");
+      await expect(result).toContainText(scenario === "stale" ? "stale" : "Source identity: ambiguous");
+    } else {
+      await expect(page.getByTestId("portfolio-total")).toHaveText("4,030 CAD");
+      await expect(result.getByRole("table", { name: "Direct company exposure", exact: true })).toContainText("2,680 CAD");
+      await expect(result).toContainText("Identity: verified");
+      await expect(result).toContainText(scenario);
+      if (scenario === "delayed") await page.screenshot({ path: "artifacts/source-freshness-review.png", fullPage: true });
+    }
+    await expect(result).toContainText("Allocation amount: not determined");
+  });
+}

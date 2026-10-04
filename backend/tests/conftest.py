@@ -16,3 +16,5 @@ def no_live_services(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", blocked)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-backend-only-never-browser")
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    monkeypatch.setenv("BOC_FX_ENABLED", "false")
+    monkeypatch.delenv("FINANCIAL_REFERENCE_FILE", raising=False)

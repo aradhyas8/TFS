@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
 Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
@@ -24,6 +24,8 @@ class Mark(Contract):
     value: Quantity
     as_of: date
     source: Identifier
+    captured_at: AwareDatetime | None = None
+    basis: Literal["unadjusted", "split_adjusted", "total_return_adjusted", "unknown"] = "unadjusted"
 
 
 class Position(Contract):
@@ -55,6 +57,45 @@ class FX(Contract):
     rate: Rate
     as_of: date
     source: Identifier
+    captured_at: AwareDatetime | None = None
+    status: Literal["indicative", "manual", "cached", "stale"] = "manual"
+
+
+class Identity(Contract):
+    status: Literal["verified", "supplied", "ambiguous", "conflicting", "unresolved"]
+    ticker: Identifier | None = None
+    listing: Identifier | None = None
+    currency: Currency | None = None
+    kind: Literal["stock", "etf"] | None = None
+    company_id: Identifier | None = None
+    company_name: Identifier | None = None
+    source: Identifier
+    source_url: str | None = None
+    as_of: date | None = None
+    captured_at: AwareDatetime | None = None
+
+
+class SourceQualification(Contract):
+    source: Identifier
+    terms_url: str
+    checked_on: date
+    personal_use_permitted: bool
+    covered_listings: list[Identifier]
+
+
+class Quote(Mark):
+    ticker: Identifier
+    listing: Identifier
+    currency: Currency
+    status: Literal["indicative", "delayed", "cached", "stale", "manual"]
+    qualification: SourceQualification | None = None
+
+
+class FinancialEvidence(Contract):
+    identities: dict[str, Identity] = Field(default_factory=dict)
+    quotes: dict[str, Quote | None] = Field(default_factory=dict)
+    fx: list[FX] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
 
 
 class Snapshot(Contract):
@@ -124,7 +165,14 @@ class PositionResult(Contract):
     value: str | None
     local_value: str | None
     weight: str | None
-    identity_status: Literal["supplied", "unresolved", "not_applicable"]
+    identity_status: Literal["verified", "supplied", "unresolved", "not_applicable"]
+    identity: Identity | None = None
+    quote_used: Quote | None = None
+    quote_age_days: int | None = None
+    quote_age_at_capture_days: int | None = None
+    quote_age_at_request_days: int | None = None
+    fx_age_days: int | None = None
+    source_inputs_usable: bool = False
     fx_used: FX | None
     issues: list[str]
 
@@ -147,6 +195,7 @@ class CompanyExposure(Contract):
 
 class PortfolioReview(Contract):
     as_of: date
+    reviewed_at: AwareDatetime
     reporting_currency: str
     positions: list[PositionResult]
     accounts: list[AccountResult]
@@ -156,6 +205,8 @@ class PortfolioReview(Contract):
     holdings_value: str | None
     cash_value: str | None
     complete: bool
+    source_inputs_usable: bool = False
+    sizing_eligible: Literal[False] = False
     baseline: None = None
     guardrails: None = None
     indirect_exposure: Literal["unknown"] = "unknown"

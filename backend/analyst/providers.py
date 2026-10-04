@@ -76,6 +76,19 @@ PORTFOLIO_TOOL: FunctionToolParam = {
     "strict": True,
 }
 
+FINANCIAL_TOOLS: list[FunctionToolParam] = [
+    {
+        **PORTFOLIO_TOOL,
+        "name": name,
+        "description": description,
+    }
+    for name, description in [
+        ("resolve_identities", "Resolve the submitted security/listing identities with backend source provenance. Takes no arguments."),
+        ("get_quotes", "Get qualified dated indicative quotes or labeled broker-display fallback for the submitted positions. Takes no arguments."),
+        ("get_fx", "Get dated indicative FX into the submitted reporting currency. Takes no arguments."),
+    ]
+]
+
 
 class OpenAIModel:
     def __init__(self, settings: Settings) -> None:
@@ -94,8 +107,8 @@ class OpenAIModel:
         response = await self.client.responses.create(
             model=self.settings.model,
             input=cast(ResponseInputParam, messages),
-            tools=[PORTFOLIO_TOOL],
-            tool_choice=choice if require_tool else "none",
+            tools=[PORTFOLIO_TOOL, *FINANCIAL_TOOLS],
+            tool_choice=choice if require_tool else "auto",
             parallel_tool_calls=False,
             text={
                 "format": {
