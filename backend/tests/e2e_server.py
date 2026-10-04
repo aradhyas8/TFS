@@ -33,8 +33,12 @@ class BrowserTestModel:
             return ModelTurn(calls=[ToolCall("browser_tool", "review_portfolio", "{}")])
         request = json.loads(messages[1]["content"])
         tool = json.loads(messages[-1]["output"])
+        if request["question"] == "Check model proposal" and "total_value" in tool:
+            return ModelTurn(calls=[ToolCall("browser_proposal", "check_proposed_changes", json.dumps({
+                "new_cash": [], "trades": [{"position_id": "p2", "shares_change": "2", "cash_position_id": "c2"}],
+            }))])
         # Actual deterministic tool output has to exist; this provider cannot skip it.
-        assert "total_value" in tool and "direct_companies" in tool
+        assert "total_value" in tool and "direct_companies" in tool or "post_total_value" in tool and "guardrails" in tool
         answer = {
             "preferred_action": "review_only",
             "amount": None,
@@ -54,6 +58,9 @@ class BrowserTestModel:
         }
         if request["question"] == "Return invalid output":
             answer["amount"] = "1000"
+        if request["question"] == "Check model proposal":
+            answer.update(preferred_action="no_action", reason="Strong conviction permits an exception to configured limits.")
+            answer["downside"] = "Strong conviction permits an exception in the downside explanation."
         return ModelTurn(answer=answer)
 
 

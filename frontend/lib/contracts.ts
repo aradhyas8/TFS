@@ -9,10 +9,26 @@ export type Position = {
   id: string; account_id: string; kind: "stock" | "etf" | "cash"; currency: string;
   ticker?: string | null; listing?: string | null; company_id?: string | null;
   company_name?: string | null; shares?: string | null; cash?: string | null; mark?: Mark | null;
+  etf_role?: "diversified" | "sector_theme" | null;
 };
 export type FX = { from_currency: string; to_currency: string; rate: string; as_of: string; source: string;
   captured_at?: string | null; status?: string };
 export type Snapshot = { as_of: string; reporting_currency: string; accounts: Account[]; positions: Position[]; fx: FX[] };
+export type Baseline = { stocks?: string | null; diversified_etfs?: string | null; sector_theme_etfs?: string | null; cash?: string | null };
+export type PortfolioSettings = { single_company_cap?: string | null; active_budget?: string | null;
+  baseline?: Baseline | null; indirect_cap_policy?: "direct_only" | "include_known_indirect" | null;
+  cash_is_deliberate_tilt?: boolean | null };
+export type ProposedChanges = { new_cash: { cash_position_id: string; amount: string }[];
+  trades: { position_id: string; shares_change: string; cash_position_id: string }[] };
+export type GuardrailReview = {
+  settings: PortfolioSettings;
+  companies: { company_id: string; company_name: string; current_weight: string | null; cap: string | null;
+    status: string; excess_value: string | null; reduction_to_cash: string | null; explanation: string }[];
+  active: { value: string | null; known_value: string; weight: string | null; budget: string | null; status: string;
+    contributions: Record<string, string | null>; qualifications: string[] };
+  baseline_comparison: { category: string; current_weight: string | null; baseline_weight: string | null; difference: string | null }[];
+  qualifications: string[];
+};
 export type Review = {
   as_of: string; reviewed_at: string; reporting_currency: string; total_value: string | null; known_value: string;
   holdings_value: string | null; cash_value: string | null; complete: boolean;
@@ -23,7 +39,7 @@ export type Review = {
   accounts: { id: string; name: string; total_value: string | null; known_value: string }[];
   direct_companies: { company_id: string; company_name: string; value: string | null; known_value: string;
     weight: string | null; position_ids: string[] }[];
-  baseline: null; guardrails: null; indirect_exposure: "unknown"; qualifications: string[]; calculation_basis: string;
+  baseline: Baseline | null; guardrails: GuardrailReview | null; indirect_exposure: "unknown"; qualifications: string[]; calculation_basis: string;
   source_inputs_usable: boolean; sizing_eligible: false;
 };
 export type Recommendation = {
@@ -31,7 +47,10 @@ export type Recommendation = {
   reason: string; alternatives: { action: "clarify_inputs" | "keep_snapshot" | "no_action"; reason: string }[];
   downside: string; assumptions: string[]; uncertainty: string[]; what_could_change: string[];
 };
-export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation };
+export type ProposalReview = { changes: ProposedChanges; source: "user" | "model"; status: string;
+  post_total_value: string | null; post_cash_value: string | null; positions: Review["positions"];
+  guardrails: GuardrailReview | null; qualifications: string[] };
+export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation; proposals: ProposalReview[] };
 
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {

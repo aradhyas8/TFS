@@ -25,7 +25,7 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
             assert request.headers["Authorization"] == "Bearer sk-test-backend-only-never-browser"
             assert payload["tool_choice"] == ({"type": "function", "name": "review_portfolio"} if len(sent) == 1 else "auto")
             assert {tool["name"] for tool in payload["tools"]} == {
-                "review_portfolio", "resolve_identities", "get_quotes", "get_fx"
+                "review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes"
             }
             name = ["review_portfolio", "get_quotes", "resolve_identities", "get_fx"][len(sent) - 1]
             output = [

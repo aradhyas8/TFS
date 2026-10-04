@@ -1,4 +1,5 @@
 import { actionLabel, valueLabel, weightLabel, type Analysis } from "../lib/contracts";
+import GuardrailResult from "./GuardrailResult";
 
 function Points({ title, items }: { title: string; items: string[] }) {
   return <div className="review-points"><h3>{title}</h3><ul>{items.map((item, index) => <li key={index}>{item}</li>)}</ul></div>;
@@ -56,7 +57,24 @@ export default function ReviewResult({ result }: { result: Analysis }) {
           <td>{company.company_name}<small>{company.company_id}</small></td><td>{valueLabel(company.value, currency)}
             {company.value === null && <small>Known subtotal: {valueLabel(company.known_value, currency)}</small>}</td><td>{weightLabel(company.weight)}</td>
         </tr>)}</tbody></table></div> : <p className="muted">No resolved direct-company positions supplied.</p>}
-      <div className="qualification"><strong>Allocation amount: not determined</strong><p>Baseline and personal guardrails are unknown.</p></div>
+      <GuardrailResult review={portfolio.guardrails} currency={currency} label="Current" />
+      {result.proposals.map((proposal, index) => <section className="panel" aria-label={`Proposed change ${index + 1}`} key={index}>
+        <h3>Proposed change {index + 1}: {proposal.status.replaceAll("_", " ")}</h3>
+        <p className="muted small">Source: {proposal.source}. Hypothetical preview using the snapshot date; no action has occurred.</p>
+        <p>Post-change portfolio total: {valueLabel(proposal.post_total_value, currency)}. Post-change cash: {valueLabel(proposal.post_cash_value, currency)}.</p>
+        <details><summary>Submitted preview inputs</summary><ul>
+          {proposal.changes.new_cash.map(row => <li key={row.cash_position_id}>New cash in {row.cash_position_id}: {valueLabel(row.amount, portfolio.positions.find(position => position.supplied.id === row.cash_position_id)?.supplied.currency || currency)}</li>)}
+          {proposal.changes.trades.map(row => <li key={row.position_id}>{row.position_id}: {row.shares_change} shares; funding/proceeds balance: {row.cash_position_id}</li>)}
+        </ul></details>
+        {proposal.positions.length > 0 && <div className="table-scroll"><table aria-label={`Proposed change ${index + 1} positions`}>
+          <thead><tr><th>Position</th><th>Post-change value ({currency})</th><th>Post-change weight</th></tr></thead>
+          <tbody>{proposal.positions.map(row => <tr key={row.supplied.id}><td>{row.supplied.ticker || "Cash"}<small>{row.supplied.id}</small></td>
+            <td>{valueLabel(row.value, currency)}</td><td>{weightLabel(row.weight)}</td></tr>)}</tbody>
+        </table></div>}
+        <GuardrailResult review={proposal.guardrails} currency={currency} label={`Proposed change ${index + 1}`} />
+        <Points title="Preview qualifications" items={proposal.qualifications} />
+      </section>)}
+      <div className="qualification"><strong>Allocation amount: not determined</strong><p>Exposure checks use only supplied settings. A hypothetical preview does not establish justified sizing.</p></div>
       <Points title="Qualifications" items={portfolio.qualifications} />
       <Points title="Alternatives" items={answer.alternatives.map(option => `${actionLabel(option.action)}: ${option.reason}`)} />
       <Points title="Downside" items={[answer.downside]} />

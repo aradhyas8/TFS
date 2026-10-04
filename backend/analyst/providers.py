@@ -7,7 +7,7 @@ from openai import AsyncOpenAI
 from openai.types.responses import FunctionToolParam, ResponseInputParam, ToolChoiceFunctionParam
 
 from .config import Settings
-from .schemas import Recommendation, Snapshot
+from .schemas import ProposedChanges, Recommendation, Snapshot
 
 
 @dataclass(frozen=True)
@@ -89,6 +89,12 @@ FINANCIAL_TOOLS: list[FunctionToolParam] = [
     ]
 ]
 
+PROPOSAL_TOOL: FunctionToolParam = {
+    "type": "function", "name": "check_proposed_changes",
+    "description": "Check hypothetical share changes for submitted positions against backend-bound dated marks, FX and personal limits. new_cash must exactly match the explicitly supplied request preview (or be empty when absent); never invent cash. No execution or invented sizing. Cash funding must use the same account and currency as the security.",
+    "parameters": ProposedChanges.model_json_schema(), "strict": True,
+}
+
 
 class OpenAIModel:
     def __init__(self, settings: Settings) -> None:
@@ -107,7 +113,7 @@ class OpenAIModel:
         response = await self.client.responses.create(
             model=self.settings.model,
             input=cast(ResponseInputParam, messages),
-            tools=[PORTFOLIO_TOOL, *FINANCIAL_TOOLS],
+            tools=[PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL],
             tool_choice=choice if require_tool else "auto",
             parallel_tool_calls=False,
             text={
