@@ -1,21 +1,30 @@
 export type Account = { id: string; name: string };
-export type Mark = { value: string; as_of: string; source: string };
+export type Mark = { value: string; as_of: string; source: string; captured_at?: string | null;
+  basis?: "unadjusted" | "split_adjusted" | "total_return_adjusted" | "unknown" };
+export type Identity = { status: string; ticker: string | null; listing: string | null; currency: string | null;
+  company_id: string | null; company_name: string | null; source: string; source_url: string | null;
+  as_of: string | null; captured_at: string | null };
+export type Quote = Mark & { ticker: string; listing: string; currency: string; status: string };
 export type Position = {
   id: string; account_id: string; kind: "stock" | "etf" | "cash"; currency: string;
   ticker?: string | null; listing?: string | null; company_id?: string | null;
   company_name?: string | null; shares?: string | null; cash?: string | null; mark?: Mark | null;
 };
-export type FX = { from_currency: string; to_currency: string; rate: string; as_of: string; source: string };
+export type FX = { from_currency: string; to_currency: string; rate: string; as_of: string; source: string;
+  captured_at?: string | null; status?: string };
 export type Snapshot = { as_of: string; reporting_currency: string; accounts: Account[]; positions: Position[]; fx: FX[] };
 export type Review = {
-  as_of: string; reporting_currency: string; total_value: string | null; known_value: string;
+  as_of: string; reviewed_at: string; reporting_currency: string; total_value: string | null; known_value: string;
   holdings_value: string | null; cash_value: string | null; complete: boolean;
   positions: { supplied: Position; value: string | null; local_value: string | null; weight: string | null;
-    identity_status: string; fx_used: FX | null; issues: string[] }[];
+    identity_status: string; identity: Identity | null; quote_used: Quote | null;
+    quote_age_days: number | null; quote_age_at_capture_days: number | null; quote_age_at_request_days: number | null; fx_age_days: number | null;
+    source_inputs_usable: boolean; fx_used: FX | null; issues: string[] }[];
   accounts: { id: string; name: string; total_value: string | null; known_value: string }[];
   direct_companies: { company_id: string; company_name: string; value: string | null; known_value: string;
     weight: string | null; position_ids: string[] }[];
   baseline: null; guardrails: null; indirect_exposure: "unknown"; qualifications: string[]; calculation_basis: string;
+  source_inputs_usable: boolean; sizing_eligible: false;
 };
 export type Recommendation = {
   preferred_action: "review_only" | "wait_for_inputs" | "no_action"; amount: null;

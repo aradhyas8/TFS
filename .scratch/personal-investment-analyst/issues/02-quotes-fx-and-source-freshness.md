@@ -4,7 +4,7 @@
 
 **Blocked by:** 01: Full-stack bootstrap + dated portfolio review.
 
-**Status:** ready-for-agent
+**Status:** implemented
 
 **Authority:** [Personal Investment Analyst specification](../../../specs/personal-investment-analyst.md).
 
@@ -32,10 +32,12 @@ Implement within the single shared FastAPI decision pipeline and the authoritati
 
 ## Acceptance criteria
 
-- [ ] The same portfolio review displays refreshed values alongside verified identity, currencies, price/FX provenance, dates, and age.
-- [ ] A user can use a clearly labeled broker mark when provider coverage or terms are insufficient.
-- [ ] Stale, cached, manual, missing, and unresolved data remain visible and never appear as confirmed live data.
-- [ ] Guardrail and later sizing stages can consume the usable dated values and their limitations.
+- [x] The same portfolio review displays refreshed values alongside verified identity, currencies, price/FX provenance, dates, and age.
+- [x] A user can use a clearly labeled broker mark when provider coverage or terms are insufficient.
+- [x] Stale, cached, manual, missing, and unresolved data remain visible and never appear as confirmed live data.
+- [x] Guardrail and later sizing stages can consume the usable dated values and their limitations.
+
+Verification and review: [Ticket 02 implementation review](../../../docs/ticket-02-review.md). Source qualification and configuration: [Dated financial sources](../../../docs/financial-sources.md). yfinance remains disabled; broker marks and independently reviewed backend references are supported, with optional on-demand Bank of Canada CAD FX. No live model or market-data calls were made in automated verification.
 
 ## Non-goals
 

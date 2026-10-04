@@ -36,7 +36,7 @@ export default function PortfolioEditor({ snapshot, setSnapshot, busy, onError, 
         type="file" accept=".csv,text/csv" disabled={busy} onChange={event => {
           const file = event.target.files?.[0]; if (file) void importCSV(file); event.target.value = "";
         }} /></label></div>
-    <p className="muted">Include every account, holding and cash balance. Marks and FX are supplied values for the date you choose.</p>
+    <p className="muted">Include every account, holding and cash balance. Enter a broker-display mark when provider coverage is unavailable. Marks are manual and indicative. Shares must reflect splits on your snapshot date.</p>
     <p className="small"><a href="/api/portfolio/template" download>Download CSV template</a></p>
     <fieldset disabled={busy} className="editor-fields">
       <div className="grid two"><Field label="As-of date" type="date" required value={snapshot.as_of}
@@ -83,12 +83,19 @@ export default function PortfolioEditor({ snapshot, setSnapshot, busy, onError, 
               onChange={company_id => positionChange(index, { company_id: company_id || null })} />
               <Field label="Company name" value={position.company_name || ""} onChange={company_name => positionChange(index, { company_name: company_name || null })} /></>}
             <Field label="Supplied mark" value={position.mark?.value || ""} onChange={value => positionChange(index, {
-              mark: value ? { value, as_of: position.mark?.as_of || snapshot.as_of, source: position.mark?.source || "User-entered mark" } : null,
+              mark: value ? { ...position.mark, value, as_of: position.mark?.as_of || snapshot.as_of, source: position.mark?.source || "User-entered broker-display mark" } : null,
             })} />
             {position.mark && <><Field label="Mark date" type="date" required value={position.mark.as_of}
               onChange={as_of => positionChange(index, { mark: { ...position.mark!, as_of } })} />
               <Field label="Mark source label" required value={position.mark.source}
-                onChange={source => positionChange(index, { mark: { ...position.mark!, source } })} /></>}
+                onChange={source => positionChange(index, { mark: { ...position.mark!, source } })} />
+              <Field label="Mark capture time (optional, with timezone)" placeholder="2026-09-30T20:00:00Z" value={position.mark.captured_at || ""}
+                onChange={captured_at => positionChange(index, { mark: { ...position.mark!, captured_at: captured_at || null } })} />
+              <label className="field"><span>Price basis</span><select value={position.mark.basis || "unadjusted"}
+                onChange={event => positionChange(index, { mark: { ...position.mark!, basis: event.target.value as NonNullable<Position["mark"]>["basis"] } })}>
+                <option value="unadjusted">Unadjusted broker mark</option><option value="split_adjusted">Split-adjusted history (unusable)</option>
+                <option value="total_return_adjusted">Dividend-adjusted history (unusable)</option><option value="unknown">Unknown basis (unusable)</option>
+              </select></label></>}
           </>}
         </div>
         <button type="button" className="text-button remove" onClick={() => setSnapshot(current => ({
@@ -99,13 +106,15 @@ export default function PortfolioEditor({ snapshot, setSnapshot, busy, onError, 
         ...current, fx: [...current.fx, { from_currency: "USD", to_currency: current.reporting_currency,
           rate: "", as_of: current.as_of, source: "User-supplied FX" }],
       }))}>+ Add FX rate</button></div>
-      <p className="muted small">Enter reporting-currency units per one local-currency unit. Cross rates are never inferred.</p>
+      <p className="muted small">Enter reporting-currency units per one local-currency unit. FX is indicative, not an execution quote. The backend can fetch dated Bank of Canada CAD rates when enabled. Cross rates are never inferred.</p>
       {snapshot.fx.map((fx, index) => <fieldset className="position-editor" key={index}><legend>FX rate {index + 1}</legend><div className="grid three">
         <Field label="From currency" required value={fx.from_currency} onChange={from_currency => fxChange(index, { from_currency: from_currency.toUpperCase() })} />
         <Field label="To currency" required value={fx.to_currency} onChange={to_currency => fxChange(index, { to_currency: to_currency.toUpperCase() })} />
         <Field label="FX rate" required value={fx.rate} onChange={rate => fxChange(index, { rate })} />
         <Field label="FX date" required type="date" value={fx.as_of} onChange={as_of => fxChange(index, { as_of })} />
         <Field label="FX source label" required value={fx.source} onChange={source => fxChange(index, { source })} />
+        <Field label="FX capture time (optional, with timezone)" placeholder="2026-09-30T21:00:00Z" value={fx.captured_at || ""}
+          onChange={captured_at => fxChange(index, { captured_at: captured_at || null })} />
       </div><button type="button" className="text-button remove" onClick={() => setSnapshot(current => ({
         ...current, fx: current.fx.filter((_, i) => i !== index),
       }))}>Remove FX rate {index + 1}</button></fieldset>)}

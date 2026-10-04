@@ -263,7 +263,13 @@ def test_csv_and_manual_snapshots_have_identical_review():
         "/api/analyze", json={"question": "Review my exposure", "portfolio": loaded.json()}
     )
     assert second.status_code == 200, second.text
-    assert second.json()["portfolio"] == first.json()["portfolio"]
+    first_review = first.json()["portfolio"]
+    second_review = second.json()["portfolio"]
+    # Equivalent inputs have the same dated values and provenance; each request
+    # records its own review timestamp rather than pretending both ran together.
+    assert first_review.pop("reviewed_at")
+    assert second_review.pop("reviewed_at")
+    assert second_review == first_review
 
 
 @pytest.mark.parametrize("missing", ["mark", "listing", "company_id", "fx", "old_mark", "old_fx"])

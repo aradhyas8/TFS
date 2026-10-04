@@ -1,6 +1,6 @@
 # Personal Investment Analyst
 
-A standalone Next.js and FastAPI app for ticket 01: enter a dated whole-portfolio snapshot, ask a question, and receive calculated holdings, cash, weights, direct-company exposure and a qualified review. All code is new.
+A standalone Next.js and FastAPI app for tickets 01 and 02: enter a dated whole-portfolio snapshot, ask a question, and receive calculated holdings, cash, weights, direct-company exposure and a qualified review. All code is new.
 
 ## Run locally
 
@@ -36,9 +36,9 @@ For production, set the Next.js server's `BACKEND_URL` **before building**, run 
 
 ## Snapshot entry and CSV
 
-Set an as-of date and reporting currency, add accounts, then holdings or cash rows. For direct stocks, use a stable **company ID shared across all accounts and listings** and a company name. A ticker plus exchange identifies the supplied listing. ETFs need a ticker and listing; indirect company exposure stays unknown. Identities are user supplied, never presented as independently verified.
+Set an as-of date and reporting currency, add accounts, then holdings or cash rows. For direct stocks, use a stable **company ID shared across all accounts and listings** and a company name. A ticker plus exchange identifies the supplied listing. ETFs need a ticker and listing; indirect company exposure stays unknown. Identities remain user supplied unless independently reviewed backend source records resolve and verify them. Verified source metadata can fill omitted issuer/listing fields; conflicts remain unresolved.
 
-Supply shares, an unadjusted mark, its actual date and a source label. Cash uses a balance and currency. For foreign-currency positions, supply a direct FX pair into the reporting currency, its rate, actual date and source. Rates are reporting-currency units per one local-currency unit. Marks and FX must match the snapshot date to support valuation; older, future or missing data stays unknown. No cross rates, inverse rates or live refresh are inferred.
+Supply shares, an unadjusted mark, its actual date and a source label. Cash uses a balance and currency. For foreign-currency positions, supply a direct FX pair into the reporting currency, its rate, actual date and source. Rates are reporting-currency units per one local-currency unit. Marks and FX must match the snapshot date to support valuation; older, future or missing data stays unknown. No cross rates or older dates are inferred. The optional Bank of Canada adapter supports dated CAD rates and discloses inverse conversion. Quote capture times and price basis can be added in the editor; unknown capture times remain unknown.
 
 Download the CSV header template in the app. A worked fictional example is [examples/portfolio.csv](examples/portfolio.csv), dated **2026-09-30** in **CAD**. Its expected totals are CAD 3,600 portfolio value, CAD 2,300 stock value, CAD 1,300 cash, and CAD 2,300 direct Acme exposure (63.89%). It contains two accounts, two listings and two cash balances. This is a calculation fixture, not an investment suggestion.
 
@@ -54,13 +54,13 @@ Use `stock`, `etf`, `cash`, `fx`, or `account` row types. An `account` row prese
 
 `POST /api/analyze` accepts `{question, portfolio}` and returns `{status, question, portfolio, recommendation}`. `/docs` on FastAPI exposes the complete typed contract. `POST /api/portfolio/csv` accepts `{csv, as_of, reporting_currency}` and returns the same snapshot shape accepted by analysis.
 
-The backend validates the request, binds the snapshot from the data provider, asks the model to call `review_portfolio`, dispatches the allowlisted Python tool, returns its computed result to the model, validates the final recommendation and preserves the deterministic result in the response. The tool has no arguments: a model cannot replace the submitted holdings or supply financial values. The loop is bounded to three turns. Production uses one backend-owned OpenAI Responses integration, without extra orchestration frameworks or a database. [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling) and [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) document the integration pattern.
+The backend validates the request, binds the snapshot from the data provider, asks the model to call `review_portfolio`, dispatches the allowlisted Python tool, returns its computed result to the model, validates the final recommendation and preserves the deterministic result in the response. The tool has no arguments: a model cannot replace the submitted holdings or supply financial values. The loop is bounded to six turns. Backend-bound `resolve_identities`, `get_quotes` and `get_fx` tools share one request-local evidence set with `review_portfolio`. All take no financial inputs from the model. Production uses one backend-owned OpenAI Responses integration, without extra orchestration frameworks or a database. [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling) and [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) document the integration pattern.
 
 Python uses Decimal arithmetic, pandas grouping across accounts, and NumPy completeness checks. Values are serialized as decimal strings; weights are fractions rounded to eight decimal places. The browser only formats these fields. No adjusted-price returns, dividends, splits, costs or tax effects are inferred from a snapshot.
 
 Missing valuation makes the complete total and all portfolio weights `null`. A separately labeled known subtotal remains available. Missing baseline and guardrails remain `null`. Recommendations at this milestone are limited to review, clarification or no action, and amount must be `null`. Unknown tools, invalid arguments, extra output fields, unsupported numeric prose, trade direction, refusals and incomplete answers fail without a completed recommendation. Qualitative claims still require separate human judgment; schema and arithmetic checks do not establish reasoning quality.
 
-Later tickets extend `analyst.pipeline.analyze`, the provider boundaries and the request/result contract. Live data, numeric guardrails, evidence research, scenarios, ETF look-through and saved decisions remain deferred to their numbered tickets.
+Ticket 02 adds dated financial evidence and refreshed valuation to `analyst.pipeline.analyze`. See [docs/financial-sources.md](docs/financial-sources.md) for source qualification, broker fallback, independently reviewed backend references and optional Bank of Canada FX. Quote source, status, as-of date, capture time and age appear in the same result. Cached/manual valuations are provisional; unusable identity, quote or FX leaves values unknown. `source_inputs_usable` describes source completeness; `sizing_eligible` stays false while personal guardrails are unset. Numeric guardrails, issuer research, scenarios, ETF look-through and saved decisions remain in later tickets.
 
 ## Verify
 

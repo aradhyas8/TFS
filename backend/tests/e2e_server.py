@@ -7,7 +7,10 @@ from typing import Any
 
 from analyst.api import create_app
 from analyst.config import Settings
+from analyst.financial_data import FakeFinancialProvider
 from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
+from analyst.schemas import FinancialEvidence, Snapshot
+from tests.test_freshness import evidence_fixture
 
 # No network outside the local test servers, even if a provider is changed accidentally.
 original_connect = socket.socket.connect
@@ -54,8 +57,29 @@ class BrowserTestModel:
         return ModelTurn(answer=answer)
 
 
+financial = FakeFinancialProvider()
+
+
+class BrowserTestData(FakeDataProvider):
+    def snapshot(self, supplied: Snapshot) -> Snapshot:
+        # Browser journeys run serially. Bind the external source fixture to the
+        # submitted listing; every request resets it, including ordinary broker marks.
+        financial.reference = FinancialEvidence()
+        for position in supplied.positions:
+            if position.id == "p1" and position.mark and position.mark.source.startswith("Fixture "):
+                fixture = evidence_fixture()
+                scenario = position.mark.source.removeprefix("Fixture ")
+                if scenario == "ambiguous":
+                    fixture["identities"]["p1"]["status"] = "ambiguous"
+                else:
+                    fixture["quotes"]["p1"]["status"] = scenario
+                financial.reference = FinancialEvidence.model_validate(fixture)
+        return super().snapshot(supplied)
+
+
 app = create_app(
     model=BrowserTestModel(),
-    data=FakeDataProvider(),
+    data=BrowserTestData(),
+    financial=financial,
     settings=Settings("sk-test-backend-only-never-browser", "test-model"),
 )

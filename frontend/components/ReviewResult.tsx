@@ -13,6 +13,7 @@ export default function ReviewResult({ result }: { result: Analysis }) {
       <div className="section-heading"><div><p className="eyebrow">PORTFOLIO REVIEW / {portfolio.as_of}</p><h2>{actionLabel(answer.preferred_action)}</h2></div>
         <span className="badge">{portfolio.complete ? "Snapshot valued" : "Incomplete valuation"}</span></div>
       <p className="answer-reason">{answer.reason}</p>
+      <p className="muted small">Reviewed at {portfolio.reviewed_at}. Values describe the snapshot date; historical marks are not current quotes.</p>
       <div className="totals"><div><span>Portfolio total</span><strong data-testid="portfolio-total">{valueLabel(portfolio.total_value, currency)}</strong></div>
         <div><span>Holdings</span><strong>{valueLabel(portfolio.holdings_value, currency)}</strong></div>
         <div><span>Cash</span><strong>{valueLabel(portfolio.cash_value, currency)}</strong></div></div>
@@ -22,21 +23,33 @@ export default function ReviewResult({ result }: { result: Analysis }) {
         {account.total_value === null && <small>Known subtotal: {valueLabel(account.known_value, currency)}</small>}
       </div>)}</div>
       <h3>Holdings &amp; cash</h3><div className="table-scroll"><table aria-label="Calculated holdings and cash">
-        <thead><tr><th>Position / account</th><th>Supplied basis</th><th>Value ({currency})</th><th>Weight</th></tr></thead>
+        <thead><tr><th>Position / account</th><th>Dated valuation basis</th><th>Value ({currency})</th><th>Weight</th></tr></thead>
         <tbody>{portfolio.positions.map(row => <tr key={row.supplied.id}>
-          <td><strong>{row.supplied.kind === "cash" ? "Cash" : row.supplied.ticker || "Unresolved security"}</strong>
+          <td><strong>{row.supplied.kind === "cash" ? "Cash" : row.identity?.ticker || row.supplied.ticker || "Unresolved security"}</strong>
             <small>{portfolio.accounts.find(account => account.id === row.supplied.account_id)?.name} · {row.supplied.listing || row.supplied.currency}</small>
-            <small>Identity: {row.identity_status.replaceAll("_", " ")}</small></td>
+            <small>Identity: {row.identity_status.replaceAll("_", " ")}</small>
+            {row.identity && <><small>{row.identity.company_name || row.identity.ticker} | {row.identity.listing} | {row.identity.currency}</small>
+              <small>{row.identity.source} | {row.identity.as_of || "Identity date unknown"}</small>
+              <small>Identity captured: {row.identity.captured_at || "Unknown"}</small>
+              {row.identity.source_url && /^https?:\/\//.test(row.identity.source_url) && <a href={row.identity.source_url} target="_blank" rel="noreferrer">Identity source</a>}
+              {row.identity.status !== row.identity_status && <small className="issue">Source identity: {row.identity.status}</small>}</>}</td>
           <td>{row.supplied.kind === "cash" ? <span>{row.supplied.cash} {row.supplied.currency} cash balance</span> : <>
-            <span>{row.supplied.shares} shares · {row.supplied.mark ? `${row.supplied.mark.value} ${row.supplied.currency}` : "Mark unknown"}</span>
-            {row.supplied.mark && <small>{row.supplied.mark.source} · {row.supplied.mark.as_of} · user supplied</small>}</>}
-            {row.fx_used && <small>FX: {row.fx_used.rate} {row.fx_used.to_currency}/{row.fx_used.from_currency} · {row.fx_used.as_of} · {row.fx_used.source}</small>}
+            <span>{row.supplied.shares} shares at {row.quote_used ? `${row.quote_used.value} ${row.quote_used.currency}` : "Mark unknown"}</span>
+            {row.quote_used && <><small>{row.quote_used.source} | {row.quote_used.as_of} | {row.quote_used.status}</small>
+              <small>Quote captured: {row.quote_used.captured_at || "Unknown"}</small>
+              <small>Quote age vs review: {row.quote_age_days ?? "Unknown"} days | age at capture: {row.quote_age_at_capture_days ?? "Unknown"} days</small>
+              <small>Quote age at request: {row.quote_age_at_request_days ?? "Unknown"} days</small>
+              <small>Price basis: {row.quote_used.basis?.replaceAll("_", " ") || "Unknown"}</small></>}</>}
+            {row.fx_used && <><small>FX: {row.fx_used.rate} {row.fx_used.to_currency}/{row.fx_used.from_currency} | {row.fx_used.as_of} | {row.fx_used.source}</small>
+              <small>FX status: {row.fx_used.status} | captured: {row.fx_used.captured_at || "Unknown"} | age vs review: {row.fx_age_days ?? "Unknown"} days | indicative only</small></>}
+            <small>Local value: {valueLabel(row.local_value, row.supplied.currency)} | reporting currency: {currency}</small>
+            {!row.source_inputs_usable && <small className="issue">Source inputs do not support confident sizing.</small>}
             {row.issues.map(issue => <small className="issue" key={issue}>{issue}</small>)}</td>
           <td>{valueLabel(row.value, currency)}</td><td>{weightLabel(row.weight)}</td>
         </tr>)}</tbody>
       </table></div>
       <h3>Direct company exposure</h3>
-      <p className="muted small">Aggregated by the supplied company identity across all accounts. ETF look-through is unknown.</p>
+      <p className="muted small">Aggregated by company identity across all accounts; supplied identities remain provisional. ETF look-through is unknown.</p>
       {portfolio.direct_companies.length ? <div className="table-scroll"><table aria-label="Direct company exposure">
         <thead><tr><th>Company</th><th>Value ({currency})</th><th>Portfolio weight</th></tr></thead>
         <tbody>{portfolio.direct_companies.map(company => <tr key={company.company_id}>

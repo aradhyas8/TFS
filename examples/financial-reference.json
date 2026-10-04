@@ -1,0 +1,50 @@
+{
+  "identities": {
+    "p1": {
+      "status": "verified",
+      "ticker": "ACME",
+      "listing": "XNAS",
+      "currency": "USD",
+      "kind": "stock",
+      "company_id": "acme",
+      "company_name": "Acme",
+      "source": "Exchange reference",
+      "source_url": "https://example.test/listing/acme",
+      "as_of": "2026-09-30",
+      "captured_at": "2026-09-30T20:00:00Z"
+    }
+  },
+  "quotes": {
+    "p1": {
+      "value": "120",
+      "as_of": "2026-09-30",
+      "source": "Qualified fixture",
+      "captured_at": "2026-09-30T20:00:00Z",
+      "ticker": "ACME",
+      "listing": "XNAS",
+      "currency": "USD",
+      "status": "delayed",
+      "basis": "unadjusted",
+      "qualification": {
+        "source": "Qualified fixture",
+        "terms_url": "https://example.test/terms",
+        "checked_on": "2026-09-29",
+        "personal_use_permitted": true,
+        "covered_listings": [
+          "XNAS"
+        ]
+      }
+    }
+  },
+  "fx": [
+    {
+      "from_currency": "USD",
+      "to_currency": "CAD",
+      "rate": "1.4",
+      "as_of": "2026-09-30",
+      "source": "Dated FX fixture",
+      "status": "indicative",
+      "captured_at": "2026-09-30T21:00:00Z"
+    }
+  ]
+}
