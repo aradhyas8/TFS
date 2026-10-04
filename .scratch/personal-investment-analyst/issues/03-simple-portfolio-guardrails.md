@@ -4,7 +4,7 @@
 
 **Blocked by:** 02: Quotes, FX, and source freshness.
 
-**Status:** ready-for-agent
+**Status:** implemented
 
 **Authority:** [Personal Investment Analyst specification](../../../specs/personal-investment-analyst.md).
 
@@ -33,10 +33,10 @@ Implement within the single shared FastAPI decision pipeline and the authoritati
 
 ## Acceptance criteria
 
-- [ ] Only explicit user-provided values are stored and applied; unset settings stay unknown.
-- [ ] Current and proposed exposures are checked against configured limits using the dated valuation basis.
-- [ ] Configured caps and budgets cannot be waived by analyst conviction.
-- [ ] The implementation contains no risk-profile subsystem, questionnaire, scoring model, or policy engine.
+- [x] Only explicit user-provided values are stored and applied; unset settings stay unknown.
+- [x] Current and proposed exposures are checked against configured limits using the dated valuation basis.
+- [x] Configured caps and budgets cannot be waived by analyst conviction.
+- [x] The implementation contains no risk-profile subsystem, questionnaire, scoring model, or policy engine.
 
 ## Non-goals
 

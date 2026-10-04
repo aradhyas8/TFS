@@ -3,12 +3,15 @@
 import { useState, type FormEvent } from "react";
 import PortfolioEditor from "../components/PortfolioEditor";
 import ReviewResult from "../components/ReviewResult";
-import { post, type Analysis, type Snapshot } from "../lib/contracts";
+import GuardrailInputs from "../components/GuardrailInputs";
+import { post, type Analysis, type Snapshot, type PortfolioSettings, type ProposedChanges } from "../lib/contracts";
 
 export default function Page() {
   const [snapshot, setSnapshot] = useState<Snapshot>({ as_of: "", reporting_currency: "CAD",
     accounts: [{ id: "account-1", name: "" }], positions: [], fx: [] });
   const [question, setQuestion] = useState("");
+  const [settings, setSettings] = useState<PortfolioSettings>({});
+  const [changes, setChanges] = useState<ProposedChanges>({ new_cash: [], trades: [] });
   const [result, setResult] = useState<Analysis | null>(null);
   const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -17,7 +20,9 @@ export default function Page() {
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(""); setResult(null);
     try {
-      const answer = await post<Analysis>("/api/analyze", { question, portfolio: snapshot });
+      const answer = await post<Analysis>("/api/analyze", { question, portfolio: snapshot,
+        settings: Object.values(settings).some(value => value !== undefined) ? settings : undefined,
+        proposed_changes: changes.new_cash.length || changes.trades.length ? changes : undefined });
       if (answer.status !== "completed") throw new Error("The review was not completed.");
       setResult(answer);
     } catch (failure) { setError(failure instanceof Error ? failure.message : "The review could not be completed."); }
@@ -31,6 +36,8 @@ export default function Page() {
     <form onSubmit={submit}>
       <PortfolioEditor snapshot={snapshot} setSnapshot={setSnapshot} busy={busy || importing} onError={setError}
         importing={importing} setImporting={setImporting} />
+      <GuardrailInputs settings={settings} setSettings={setSettings} changes={changes} setChanges={setChanges}
+        snapshot={snapshot} busy={busy || importing} />
       <section className="panel question-panel" aria-labelledby="question-title"><p className="eyebrow">02 / ASK YOUR ANALYST</p><h2 id="question-title">What would you like to understand?</h2>
         <label className="sr-only" htmlFor="question">Investment question</label><textarea id="question" required maxLength={1000} value={question}
           disabled={busy || importing} placeholder="How concentrated is my portfolio across all accounts?" onChange={event => setQuestion(event.target.value)} />

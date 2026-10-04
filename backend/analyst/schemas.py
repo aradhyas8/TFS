@@ -9,6 +9,8 @@ Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=
 Currency = Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$")]
 Quantity = Annotated[Decimal, Field(ge=0, le=Decimal("1e12"), max_digits=24, decimal_places=10)]
 Rate = Annotated[Decimal, Field(gt=0, le=Decimal("1e6"), max_digits=24, decimal_places=10)]
+Fraction = Annotated[Decimal, Field(ge=0, le=1, max_digits=11, decimal_places=10)]
+SharesChange = Annotated[Decimal, Field(ge=Decimal("-1e12"), le=Decimal("1e12"), max_digits=24, decimal_places=10)]
 
 
 class Contract(BaseModel):
@@ -40,9 +42,12 @@ class Position(Contract):
     shares: Quantity | None = None
     cash: Quantity | None = None
     mark: Mark | None = None
+    etf_role: Literal["diversified", "sector_theme"] | None = None
 
     @model_validator(mode="after")
     def check_quantity(self) -> Self:
+        if self.kind != "etf" and self.etf_role is not None:
+            raise ValueError("Only ETFs have an ETF classification.")
         if self.kind == "cash":
             if self.cash is None or self.shares is not None or self.mark is not None:
                 raise ValueError("Cash rows need a balance, without shares or a mark.")
@@ -133,9 +138,55 @@ class Snapshot(Contract):
         return self
 
 
+class Baseline(Contract):
+    stocks: Fraction | None = None
+    diversified_etfs: Fraction | None = None
+    sector_theme_etfs: Fraction | None = None
+    cash: Fraction | None = None
+
+    @model_validator(mode="after")
+    def check_total(self) -> Self:
+        if sum((value for value in (self.stocks, self.diversified_etfs, self.sector_theme_etfs, self.cash) if value is not None), Decimal(0)) > 1:
+            raise ValueError("Supplied baseline weights cannot exceed the whole portfolio.")
+        return self
+
+
+class PortfolioSettings(Contract):
+    single_company_cap: Fraction | None = None
+    active_budget: Fraction | None = None
+    baseline: Baseline | None = None
+    indirect_cap_policy: Literal["direct_only", "include_known_indirect"] | None = None
+    cash_is_deliberate_tilt: bool | None = None
+
+
+class CashContribution(Contract):
+    cash_position_id: Identifier
+    amount: Quantity
+
+
+class ProposedTrade(Contract):
+    position_id: Identifier
+    shares_change: SharesChange
+    cash_position_id: Identifier
+
+
+class ProposedChanges(Contract):
+    new_cash: list[CashContribution] = Field(max_length=2000)
+    trades: list[ProposedTrade] = Field(max_length=2000)
+
+    @model_validator(mode="after")
+    def check_duplicates(self) -> Self:
+        for ids in ([row.cash_position_id for row in self.new_cash], [row.position_id for row in self.trades]):
+            if len(ids) != len(set(ids)):
+                raise ValueError("Aggregate proposed changes explicitly; duplicate rows are not allowed.")
+        return self
+
+
 class AnalysisRequest(Contract):
     question: Text
     portfolio: Snapshot
+    settings: PortfolioSettings | None = None
+    proposed_changes: ProposedChanges | None = None
 
 
 class CSVRequest(Contract):
@@ -193,6 +244,45 @@ class CompanyExposure(Contract):
     position_ids: list[str]
 
 
+CheckStatus = Literal["unset", "unknown", "within_limit", "breached"]
+
+
+class CompanyCapCheck(Contract):
+    company_id: str
+    company_name: str
+    current_weight: str | None
+    cap: str | None
+    status: CheckStatus
+    excess_value: str | None
+    reduction_to_cash: str | None
+    explanation: str
+
+
+class ActiveBudgetCheck(Contract):
+    value: str | None
+    known_value: str
+    weight: str | None
+    budget: str | None
+    status: CheckStatus
+    contributions: dict[str, str | None]
+    qualifications: list[str]
+
+
+class BaselineComparison(Contract):
+    category: str
+    current_weight: str | None
+    baseline_weight: str | None
+    difference: str | None
+
+
+class GuardrailReview(Contract):
+    settings: PortfolioSettings
+    companies: list[CompanyCapCheck]
+    active: ActiveBudgetCheck
+    baseline_comparison: list[BaselineComparison]
+    qualifications: list[str]
+
+
 class PortfolioReview(Contract):
     as_of: date
     reviewed_at: AwareDatetime
@@ -207,11 +297,22 @@ class PortfolioReview(Contract):
     complete: bool
     source_inputs_usable: bool = False
     sizing_eligible: Literal[False] = False
-    baseline: None = None
-    guardrails: None = None
+    baseline: Baseline | None = None
+    guardrails: GuardrailReview | None = None
     indirect_exposure: Literal["unknown"] = "unknown"
     qualifications: list[str]
     calculation_basis: str
+
+
+class ProposalReview(Contract):
+    changes: ProposedChanges
+    source: Literal["user", "model"]
+    status: Literal["within_limits", "blocked", "unknown"]
+    post_total_value: str | None = None
+    post_cash_value: str | None = None
+    positions: list[PositionResult] = Field(default_factory=list)
+    guardrails: GuardrailReview | None = None
+    qualifications: list[str]
 
 
 class AnalysisResult(Contract):
@@ -219,3 +320,4 @@ class AnalysisResult(Contract):
     question: str
     portfolio: PortfolioReview
     recommendation: Recommendation
+    proposals: list[ProposalReview] = Field(default_factory=list)

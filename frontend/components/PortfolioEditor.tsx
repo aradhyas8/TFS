@@ -68,14 +68,19 @@ export default function PortfolioEditor({ snapshot, setSnapshot, busy, onError, 
             const kind = event.target.value as Position["kind"];
             if (kind === position.kind) return;
             if (kind !== "cash" && position.kind !== "cash") {
-              positionChange(index, { kind, company_id: null, company_name: null });
+              positionChange(index, { kind, company_id: null, company_name: null, etf_role: null });
             } else {
               positionChange(index, { kind, shares: kind === "cash" ? null : "", cash: kind === "cash" ? "" : null,
-                mark: null, ticker: null, listing: null, company_id: null, company_name: null });
+                mark: null, ticker: null, listing: null, company_id: null, company_name: null, etf_role: null });
             }
           }}><option value="stock">Company stock</option><option value="etf">ETF</option><option value="cash">Cash</option></select></label>
           <Field label="Quote / cash currency" required value={position.currency} onChange={currency => positionChange(index, { currency: currency.toUpperCase() })} />
           {position.kind === "cash" ? <Field label="Cash balance" required value={position.cash || ""} onChange={cash => positionChange(index, { cash })} /> : <>
+            {position.kind === "etf" && <label className="field"><span>ETF classification for active budget</span><select value={position.etf_role ?? ""}
+              onChange={event => positionChange(index, { etf_role: event.target.value as Position["etf_role"] || null })}>
+              <option value="">Unknown / not supplied</option><option value="diversified">Diversified ETF</option>
+              <option value="sector_theme">Sector or theme ETF</option>
+            </select></label>}
             <Field label="Ticker" value={position.ticker || ""} onChange={ticker => positionChange(index, { ticker: ticker || null })} />
             <Field label="Listing / exchange" placeholder="XNAS" value={position.listing || ""} onChange={listing => positionChange(index, { listing: listing || null })} />
             <Field label="Shares" required value={position.shares || ""} onChange={shares => positionChange(index, { shares })} />

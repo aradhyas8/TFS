@@ -193,3 +193,79 @@ for (const scenario of ["delayed", "cached", "stale", "ambiguous"] as const) {
     await expect(result).toContainText("Allocation amount: not determined");
   });
 }
+
+test("explicit cap and funded new-cash preview display authoritative blocked checks", async ({ page }) => {
+  await loadCSV(page);
+  const cash = page.getByRole("group", { name: "Position 4", exact: true });
+  await cash.getByLabel("Quote / cash currency", { exact: true }).fill("CAD");
+  await cash.getByLabel("Cash balance", { exact: true }).fill("650");
+  await page.getByLabel("Single-company cap (fraction)").fill("0.6");
+  await page.getByLabel("Active budget (fraction)").fill("0.9");
+  await page.getByLabel("Cash above baseline is a deliberate tilt").selectOption("false");
+  await page.getByText("Preview explicit proposed changes", { exact: true }).click();
+  await page.getByRole("button", { name: "+ Add proposed new cash", exact: true }).click();
+  await page.getByLabel("New cash destination").selectOption("c2");
+  await page.getByLabel("New cash amount").fill("1000");
+  await page.getByRole("button", { name: "+ Add proposed share change", exact: true }).click();
+  await page.getByLabel("Proposed security").selectOption("p2");
+  await page.getByLabel("Share change").fill("5");
+  await page.getByLabel("Funding cash balance").selectOption("c2");
+  await page.getByLabel("Investment question").fill("Check my proposed change");
+  const returned = page.waitForResponse(response => response.url().endsWith("/api/analyze"));
+  await page.getByRole("button", { name: /Review portfolio/ }).click();
+  const response = await returned;
+  expect(response.status()).toBe(200);
+  const answer = await response.json();
+  expect(answer.proposals[0].status).toBe("blocked");
+  expect(answer.recommendation.preferred_action).toBe("wait_for_inputs");
+  const result = page.getByRole("region", { name: "Completed portfolio review" });
+  await expect(result.getByRole("table", { name: "Current company cap checks", exact: true })).toContainText("breached");
+  await expect(result).toContainText("Baseline is unknown");
+  const preview = result.getByRole("region", { name: "Proposed change 1" });
+  await expect(preview).toContainText("blocked");
+  await expect(preview).toContainText("4,600 CAD");
+  await expect(preview).toContainText("71.74%");
+  await expect(preview).toContainText("540 CAD");
+  await page.screenshot({ path: "artifacts/portfolio-guardrails.png", fullPage: true });
+});
+
+test("model conviction cannot waive displayed cap and active-budget breaches", async ({ page }) => {
+  await loadCSV(page);
+  const cash = page.getByRole("group", { name: "Position 4", exact: true });
+  await cash.getByLabel("Quote / cash currency", { exact: true }).fill("CAD");
+  await cash.getByLabel("Cash balance", { exact: true }).fill("650");
+  await page.getByLabel("Single-company cap (fraction)").fill("0.7");
+  await page.getByLabel("Active budget (fraction)").fill("0.7");
+  await page.getByLabel("Cash above baseline is a deliberate tilt").selectOption("false");
+  await page.getByLabel("Investment question").fill("Check model proposal");
+  await page.getByRole("button", { name: /Review portfolio/ }).click();
+  const result = page.getByRole("region", { name: "Completed portfolio review" });
+  await expect(result.getByRole("heading", { name: "Clarify missing inputs", exact: true })).toBeVisible();
+  const preview = result.getByRole("region", { name: "Proposed change 1" });
+  await expect(preview).toContainText("Source: model");
+  await expect(preview).toContainText("blocked");
+  await expect(preview).toContainText("75%");
+  await expect(preview).toContainText("Active-budget check: breached");
+  await expect(result).not.toContainText("Strong conviction permits an exception");
+});
+
+test("explicit ETF classifications and cash baseline determine the active budget", async ({ page }) => {
+  await loadCSV(page);
+  for (const [index, role] of [[1, "diversified"], [2, "sector_theme"]] as const) {
+    const position = page.getByRole("group", { name: `Position ${index}`, exact: true });
+    await position.getByRole("combobox", { name: "Kind", exact: true }).selectOption("etf");
+    await position.getByLabel("ETF classification for active budget").selectOption(role);
+  }
+  await page.getByLabel("Active budget (fraction)").fill("0.5");
+  await page.getByLabel("Cash baseline (fraction)").fill("0.1");
+  await page.getByLabel("Cash above baseline is a deliberate tilt").selectOption("true");
+  await page.getByLabel("Investment question").fill("Check explicit active classifications");
+  await page.getByRole("button", { name: /Review portfolio/ }).click();
+  const result = page.getByRole("region", { name: "Completed portfolio review" });
+  await expect(result).toContainText("Active-budget check: breached");
+  await expect(result).toContainText("1,940 CAD / 53.89%");
+  await expect(result).toContainText("Deliberate excess cash: 940 CAD");
+  const baseline = result.getByRole("table", { name: "Current baseline comparison", exact: true });
+  await expect(baseline.getByRole("row").filter({ hasText: "Cash" })).toContainText("10%");
+  await expect(baseline.getByRole("row").filter({ hasText: "Individual stocks" })).toContainText("Unknown");
+});
