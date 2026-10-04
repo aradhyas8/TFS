@@ -1,0 +1,6 @@
+row_type,id,account_id,account_name,ticker,listing,company_id,company_name,shares,cash,currency,mark,mark_date,mark_source,to_currency,fx_rate,fx_date,fx_source
+stock,p1,tfsa,TFSA,ACME,XNAS,acme,Acme,10,,USD,100,2026-09-30,Broker display,,,,
+stock,p2,broker,Brokerage,ACME,XTSE,acme,Acme,5,,CAD,200,2026-09-30,Manual mark,,,,
+cash,c1,tfsa,TFSA,,,,,,650,CAD,,,,,,,
+cash,c2,broker,Brokerage,,,,,,500,USD,,,,,,,
+fx,,,,,,,,,,USD,,,,CAD,1.3,2026-09-30,Supplied FX

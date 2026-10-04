@@ -1,0 +1,16 @@
+node_modules/
+.next/
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+test-results/
+playwright-report/
+artifacts/
+*.egg-info/
+.scratch/npm-cache/
