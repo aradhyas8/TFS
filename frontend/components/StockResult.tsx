@@ -10,9 +10,10 @@ export default function StockResult({ stock, currency }: { stock: Stock | null; 
     {stock.research.documents.length === 0 && <p>Primary evidence is unavailable.</p>}
     {stock.research.documents.map(doc => <article key={doc.id}>
       <h4><a href={doc.url} target="_blank" rel="noreferrer">{doc.title}</a></h4>
-      <p>{doc.authority} | Published {doc.published_on} | As of {doc.as_of} | {doc.available ? "Reviewed extract available" : "Unavailable"}</p>
+      <p>{["sedar", "sedar_plus"].includes(doc.authority) ? "SEDAR+ verification link" : doc.authority} | Published {doc.published_on} | As of {doc.as_of} | {doc.available ? "Reviewed extract available" : "Unavailable"}</p>
       <p>{doc.available ? doc.excerpt : "This source was not reviewed."}</p>
       <p className="muted small">Transcript Q&amp;A: {doc.available && doc.qa_available ? "Available in this evidence" : "Unavailable; not reviewed"}</p>
+      {["sedar", "sedar_plus"].includes(doc.authority) && <p className="muted small">Open the exact SEDAR+ verification link above to confirm primary disclosure directly. SEDAR+ filings are not automatically scraped or indexed.</p>}
     </article>)}
     <h3>Reported facts and provenance</h3>
     <p className="muted small">Reported records below remain subject to the checks and conflicts disclosed in each calculated case. An unavailable or conflicting input does not become a known calculation.</p>

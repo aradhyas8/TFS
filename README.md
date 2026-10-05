@@ -1,6 +1,6 @@
 # Personal Investment Analyst
 
-A standalone Next.js and FastAPI app for tickets 01–09: enter a dated whole-portfolio snapshot, supply optional personal settings, select comparison alternatives, ask a question, and receive calculated exposure, guardrail checks and conditional five-year cases. All code is new.
+A standalone Next.js and FastAPI app for tickets 01–10: enter a dated whole-portfolio snapshot, supply optional personal settings, select comparison alternatives, ask a question, and receive calculated exposure, guardrail checks and conditional five-year cases. All code is new.
 
 ## Run locally
 
@@ -120,4 +120,8 @@ Ticket 08 adds **Explore a theme** to the existing question flow. Agree an econo
 ## ETF indirect overlap and look-through
 
 Ticket 09 adds dated ETF company overlap look-through, recursive nested fund decomposition, honest coverage labeling (`full`, `partial`, `unknown`, `stale`, `none`), and enforcement of user's explicit `indirect_cap_policy` (`direct_only` vs `include_known_indirect`) without double counting or blocking sizing on partial coverage. Optional backend-only `SPONSOR_HOLDINGS_REFERENCE_FILE` supplies dated sponsor constituents; outdated or contradictory snapshots are marked stale. See [docs/etf-indirect-overlap.md](docs/etf-indirect-overlap.md) for contracts, formulas, cycle prevention, and limitations.
+
+## Canadian stock evidence support
+
+Ticket 10 extends stock assessment to Canadian issuers using permitted issuer evidence and exact user-opened SEDAR+ verification links (`www.sedarplus.ca`). Supported Canadian exchanges include `XTSE` (TSX), `XTSX` (TSX Venture), `NEOE` (Cboe Canada), and `XCNQ` (CSE). The single shared FastAPI decision pipeline dispatches `get_sedar_filings` dynamically for Canadian securities while forbidding SEC retrieval for non-US issuers and SEDAR retrieval for US issuers (enforced via 502 Bad Gateway). SEDAR+ links must target valid, specific document URLs; automated SEDAR+ scraping or local database construction is strictly prohibited. The feature integrates seamlessly across stock assessment, new cash allocation, portfolio review (re-underwriting), and theme exploration through the common evidence boundary. See [docs/canadian-stock-evidence.md](docs/canadian-stock-evidence.md) for contracts, evidence boundaries, and verification procedures.
 

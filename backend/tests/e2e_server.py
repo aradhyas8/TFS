@@ -10,8 +10,15 @@ from analyst.config import Settings
 from analyst.financial_data import FakeFinancialProvider
 from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
 from analyst.research import ReviewedResearchProvider
-from analyst.schemas import CompanyResearch, FinancialEvidence, Snapshot, SponsorHoldings
+from analyst.schemas import (
+    AnalysisRequest,
+    CompanyResearch,
+    FinancialEvidence,
+    Snapshot,
+    SponsorHoldings,
+)
 from tests.test_allocation import allocation_answer, allocation_evidence, comparison_judgments
+from tests.test_canadian_stock import canadian_research_fixture
 from tests.test_comparison import case_drivers, driver, judgments
 from tests.test_freshness import evidence_fixture
 from tests.test_portfolio_review import assessment, review_answer, review_research_fixture
@@ -76,14 +83,21 @@ class BrowserTestModel:
                           evidence_ids=["review-p1-filing", "review-p1-issuer"])
             return ModelTurn(answer=answer)
         if request.get("stock"):
+            target_id = request["stock"].get("position_id")
+            target_pos = next((p for p in request.get("portfolio", {}).get("positions", []) if p.get("id") == target_id), None)
+            is_canadian = target_pos and (target_pos.get("currency") == "CAD" or target_pos.get("listing") in {"XTSE", "XTSX", "NEOE", "XCNQ"})
+            filing_tool = "get_sedar_filings" if is_canadian else "get_sec_filings"
             called = {item["name"] for item in messages if item.get("type") == "function_call"}
-            for name, args in [("get_sec_filings", {}), ("get_issuer_material", {}),
+            bound_request = request if request.get("comparison") else AnalysisRequest.model_validate(request).model_dump(mode="json")
+            for name, args in [(filing_tool, {}), ("get_issuer_material", {}),
                                ("calculate_company_cases", company_judgments()),
-                               ("calculate_comparison", stock_comparison_judgments(request))]:
+                               ("calculate_comparison", stock_comparison_judgments(bound_request))]:
                 if name not in called:
                     return ModelTurn(calls=[ToolCall(name, name, json.dumps(args))])
             answer = stock_answer()
-            if request["question"] == "Review unavailable primary facts":
+            if is_canadian:
+                answer["evidence_ids"] = ["sedar_filing", "issuer_release"]
+            if "Review unavailable primary" in request["question"]:
                 answer["evidence_ids"] = []
             return ModelTurn(answer=answer)
         if request.get("comparison") and "total_value" in tool:
@@ -146,10 +160,18 @@ class BrowserTestData(FakeDataProvider):
         # Browser journeys run serially. Bind the external source fixture to the
         # submitted listing; every request resets it, including ordinary broker marks.
         financial.reference = FinancialEvidence()
-        stock_research.records = {"acme": CompanyResearch.model_validate(review_research_fixture())}
+        stock_research.records = {
+            "acme": CompanyResearch.model_validate(review_research_fixture()),
+            "acme:XTSE": CompanyResearch.model_validate(canadian_research_fixture()),
+        }
         for position in supplied.positions:
             if position.id == "fund" and position.mark and position.mark.source == "Fixture allocation":
                 financial.reference = allocation_evidence()
+            if position.id == "p2" and position.mark and position.mark.source.startswith("Fixture "):
+                scenario = position.mark.source.removeprefix("Fixture ")
+                if scenario == "missing_research":
+                    stock_research.records = {}
+                    continue
             if position.id == "p1" and position.mark and position.mark.source.startswith("Fixture "):
                 fixture = evidence_fixture()
                 scenario = position.mark.source.removeprefix("Fixture ")

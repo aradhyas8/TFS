@@ -30,7 +30,11 @@ class ReviewedResearchProvider:
         return cls(records)
 
     async def company(self, position: Position, as_of: date) -> CompanyResearch:
-        record = self.records.get(position.company_id or "")
+        record = (
+            self.records.get(f"{position.company_id}:{position.listing}")
+            or self.records.get(f"{position.company_id}:{position.currency}")
+            or self.records.get(position.company_id or "")
+        )
         if record is None:
             return CompanyResearch(company_id=position.company_id or position.id, sector="unknown",
                                    cyclical=None, documents=[], facts=[],

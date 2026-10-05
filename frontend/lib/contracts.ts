@@ -157,11 +157,21 @@ export const weightLabel = (value: string | null) => value === null ? "Unknown" 
   new Intl.NumberFormat("en-CA", { style: "percent", maximumFractionDigits: 2 }).format(Number(value));
 
 
+export const US_LISTINGS = ["XNAS", "XNYS", "XASE"];
+export const CANADIAN_LISTINGS = ["XTSE", "XTSX", "NEOE", "XCNQ"];
+
+export function isSupportedStock(row: Position): boolean {
+  if (row.kind !== "stock") return false;
+  const isUs = row.currency === "USD" && US_LISTINGS.includes(row.listing || "");
+  const isCanadian = row.currency === "CAD" && CANADIAN_LISTINGS.includes(row.listing || "");
+  return isUs || isCanadian;
+}
+
 export function portfolioReviewComparison(snapshot: Snapshot): ComparisonInput {
   const seen = new Set<string>();
   const companies = snapshot.positions.filter(row => {
     const key = row.company_id || row.id;
-    if (row.kind !== "stock" || !(Number(row.shares) > 0) || row.currency !== "USD" || !["XNAS", "XNYS", "XASE"].includes(row.listing || "") || seen.has(key)) return false;
+    if (row.kind !== "stock" || !(Number(row.shares) > 0) || !isSupportedStock(row) || seen.has(key)) return false;
     seen.add(key); return true;
   });
   const alternatives: ComparisonAlternative[] = companies.map(row => ({ id: `company-${row.id}`, kind: "stock", position_id: row.id }));
@@ -191,5 +201,5 @@ export function themeComparison(snapshot: Snapshot, theme: ThemeInput): Comparis
 }
 
 export function isThemeCandidate(row: Position): boolean {
-  return row.kind === "etf" || row.kind === "stock" && row.currency === "USD" && ["XNAS", "XNYS", "XASE"].includes(row.listing || "");
+  return row.kind === "etf" || (row.kind === "stock" && isSupportedStock(row));
 }

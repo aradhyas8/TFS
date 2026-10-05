@@ -15,6 +15,7 @@ from .schemas import (
     ReviewSizingInput,
     Snapshot,
     ThemeResult,
+    is_supported_stock,
 )
 
 
@@ -25,8 +26,8 @@ async def bind_holdings(snapshot: Snapshot, current: PortfolioReview,
         pos = row.supplied
         if pos.kind != "stock" or not pos.shares:
             continue
-        if pos.currency != "USD" or pos.listing not in {"XNAS", "XNYS", "XASE"}:
-            result.qualifications.append(f"{pos.id}: listing-specific cases are unavailable in this core US review; retained outcomes remain unknown.")
+        if not is_supported_stock(pos):
+            result.qualifications.append(f"{pos.id}: listing-specific cases are unavailable in this review; retained outcomes remain unknown.")
             continue
         key = pos.company_id or pos.id
         if key in seen:
