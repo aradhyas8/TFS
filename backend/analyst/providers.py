@@ -7,7 +7,14 @@ from openai import AsyncOpenAI
 from openai.types.responses import FunctionToolParam, ResponseInputParam, ToolChoiceFunctionParam
 
 from .config import Settings
-from .schemas import ComparisonJudgments, ProposedChanges, Recommendation, Snapshot
+from .schemas import (
+    CompanyJudgments,
+    ComparisonJudgments,
+    ProposedChanges,
+    Recommendation,
+    Snapshot,
+    StockRecommendation,
+)
 
 
 @dataclass(frozen=True)
@@ -102,6 +109,13 @@ COMPARISON_TOOL: FunctionToolParam = {
 }
 
 
+STOCK_TOOLS: list[FunctionToolParam] = [
+    {**PORTFOLIO_TOOL, "name": "get_sec_filings", "description": "Read backend-bound dated original SEC filing excerpts and checked facts for the selected issuer. No arguments."},
+    {**PORTFOLIO_TOOL, "name": "get_issuer_material", "description": "Read backend-bound issuer investor-relations material with dates and availability. No arguments."},
+    {"type": "function", "name": "calculate_company_cases", "description": "Calculate conditional company cases from bound reported facts and explained operating judgments. All paths have five annual elements. Net margin uses earnings, FCF applies cash conversion then reinvestment; book/FFO grow a reported metric with neutral operating transforms. Dilution changes shares; payout distributions remain idle cash. Exit multiple and sensitivities are explicit. No facts, probabilities or allocations may be supplied.", "parameters": CompanyJudgments.model_json_schema(), "strict": True},
+]
+
+
 class OpenAIModel:
     def __init__(self, settings: Settings) -> None:
         if not settings.api_key or not settings.model:
@@ -119,18 +133,18 @@ class OpenAIModel:
         response = await self.client.responses.create(
             model=self.settings.model,
             input=cast(ResponseInputParam, messages),
-            tools=[PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL],
+            tools=[PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL, *STOCK_TOOLS],
             tool_choice=choice if require_tool else "auto",
             parallel_tool_calls=False,
             text={
                 "format": {
                     "type": "json_schema",
                     "name": "portfolio_recommendation",
-                    "schema": Recommendation.model_json_schema(),
+                    "schema": (StockRecommendation if json.loads(messages[1]["content"]).get("stock") else Recommendation).model_json_schema(),
                     "strict": True,
                 }
             },
-            max_output_tokens=4000,
+            max_output_tokens=8000,
             store=False,
             include=["reasoning.encrypted_content"],
         )

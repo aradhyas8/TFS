@@ -18,3 +18,5 @@ def no_live_services(monkeypatch):
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
     monkeypatch.setenv("BOC_FX_ENABLED", "false")
     monkeypatch.delenv("FINANCIAL_REFERENCE_FILE", raising=False)
+
+    monkeypatch.delenv("RESEARCH_REFERENCE_FILE", raising=False)

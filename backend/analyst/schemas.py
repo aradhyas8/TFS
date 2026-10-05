@@ -201,7 +201,7 @@ class FundFacts(Contract):
 
 class ComparisonAlternative(Contract):
     id: Identifier
-    kind: Literal["etf", "cash", "short_bill", "no_action"]
+    kind: Literal["stock", "etf", "cash", "short_bill", "no_action"]
     position_id: Identifier | None = None
 
     @model_validator(mode="after")
@@ -221,9 +221,9 @@ class KnownEffects(Contract):
 
 class ComparisonInput(Contract):
     scope_position_ids: list[Identifier] = Field(min_length=1, max_length=20)
-    alternatives: list[ComparisonAlternative] = Field(min_length=1, max_length=3)
+    alternatives: list[ComparisonAlternative] = Field(min_length=1, max_length=4)
     fund_facts: list[FundFacts] = Field(default_factory=list, max_length=20)
-    effects: list[KnownEffects] = Field(default_factory=list, max_length=3)
+    effects: list[KnownEffects] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
     def unique_inputs(self) -> Self:
@@ -270,7 +270,11 @@ class AlternativeJudgment(Contract):
 
 
 class ComparisonJudgments(Contract):
-    alternatives: list[AlternativeJudgment] = Field(min_length=1, max_length=3)
+    alternatives: list[AlternativeJudgment] = Field(min_length=1, max_length=4)
+
+
+class StockInput(Contract):
+    position_id: Identifier
 
 
 class AnalysisRequest(Contract):
@@ -279,9 +283,26 @@ class AnalysisRequest(Contract):
     settings: PortfolioSettings | None = None
     proposed_changes: ProposedChanges | None = None
     comparison: ComparisonInput | None = None
+    stock: StockInput | None = None
 
     @model_validator(mode="after")
     def comparison_references(self) -> Self:
+        if self.stock is not None:
+            target = next((row for row in self.portfolio.positions if row.id == self.stock.position_id), None)
+            if target is None or target.kind != "stock" or target.listing not in {"XNAS", "XNYS", "XASE"} or target.currency != "USD":
+                raise ValueError("Stock research requires a supplied US stock listing in USD.")
+        if self.stock is not None and self.comparison is None:
+            target = next(row for row in self.portfolio.positions if row.id == self.stock.position_id)
+            cash = next((row for row in self.portfolio.positions if row.kind == "cash" and row.cash), None)
+            fund = next((row for row in self.portfolio.positions if row.kind == "etf" and row.etf_role == "diversified"), None)
+            alternatives = [ComparisonAlternative(id="company", kind="stock", position_id=target.id)]
+            if fund is not None:
+                alternatives.append(ComparisonAlternative(id="fund", kind="etf", position_id=fund.id))
+            if cash is not None:
+                alternatives.append(ComparisonAlternative(id="cash", kind="cash", position_id=cash.id))
+            alternatives.append(ComparisonAlternative(id="keep", kind="no_action"))
+            scope = [target.id] if target.shares else [cash.id] if cash else [target.id]
+            self.comparison = ComparisonInput(scope_position_ids=scope, alternatives=alternatives)
         if self.comparison is None:
             return self
         rows = {row.id: row for row in self.portfolio.positions}
@@ -292,6 +313,8 @@ class AnalysisRequest(Contract):
             if alternative.position_id is None:
                 continue
             row = rows.get(alternative.position_id)
+            if alternative.kind == "stock" and (self.stock is None or alternative.position_id != self.stock.position_id):
+                raise ValueError("Stock alternatives must use the selected researched US listing.")
             if row is None or (alternative.kind == "etf" and (row.kind != "etf" or row.etf_role != "diversified")) or (alternative.kind in {"cash", "short_bill"} and row.kind != "cash"):
                 raise ValueError("Select a supplied diversified ETF or a cash-currency row for cash/short bills.")
         relevant = set(comparison.scope_position_ids) | {row.position_id for row in comparison.alternatives}
@@ -308,12 +331,12 @@ class CSVRequest(Contract):
 
 
 class Alternative(Contract):
-    action: Literal["clarify_inputs", "keep_snapshot", "no_action"]
+    action: Literal["clarify_inputs", "keep_snapshot", "no_action", "add", "hold", "reduce", "exit"]
     reason: Text
 
 
 class Recommendation(Contract):
-    preferred_action: Literal["review_only", "wait_for_inputs", "no_action"]
+    preferred_action: Literal["review_only", "wait_for_inputs", "no_action", "add", "hold", "reduce", "exit"]
     amount: None
     reason: Text
     alternatives: list[Alternative] = Field(min_length=1, max_length=2)
@@ -321,6 +344,10 @@ class Recommendation(Contract):
     assumptions: list[Text] = Field(min_length=1, max_length=8)
     uncertainty: list[Text] = Field(min_length=1, max_length=8)
     what_could_change: list[Text] = Field(min_length=1, max_length=8)
+
+
+class StockRecommendation(Recommendation):
+    evidence_ids: list[Identifier] = Field(min_length=0, max_length=20)
 
 
 class PositionResult(Contract):
@@ -464,10 +491,132 @@ class ComparisonResult(Contract):
     calculation_basis: str
 
 
+class ResearchDocument(Contract):
+    id: Identifier
+    authority: Literal["sec", "issuer", "macro"]
+    company_id: Identifier
+    url: str
+    published_on: date
+    as_of: date
+    title: Text
+    excerpt: str = Field(max_length=20000)
+    available: bool
+    qa_available: bool
+
+    @model_validator(mode="after")
+    def source_url(self) -> Self:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(self.url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Primary evidence needs a public HTTPS reference.")
+        if self.authority == "sec" and (parsed.hostname != "www.sec.gov" or not parsed.path.startswith("/Archives/edgar/data/")):
+            raise ValueError("SEC evidence must reference the original EDGAR filing.")
+        return self
+
+
+class ResearchFact(Contract):
+    id: Identifier
+    metric: Literal["revenue", "shares", "book_value", "ffo"]
+    value: Quantity | None
+    unit: Literal["currency", "shares"]
+    currency: Currency | None
+    period_start: date | None
+    period_end: date
+    definition: Text
+    document_ids: list[Identifier] = Field(min_length=1, max_length=5)
+    filing_checked: bool
+    notes_checked: bool
+    custom_tags_checked: bool
+    segments_checked: bool
+
+
+class CompanyResearch(Contract):
+    company_id: Identifier
+    sector: Literal["industrial", "financial", "reit", "other", "unknown"]
+    cyclical: bool | None
+    documents: list[ResearchDocument] = Field(max_length=20)
+    facts: list[ResearchFact] = Field(max_length=40)
+    issues: list[Text] = Field(max_length=40)
+
+    @model_validator(mode="after")
+    def references(self) -> Self:
+        for ids in ([row.id for row in self.documents], [row.id for row in self.facts]):
+            if len(set(ids)) != len(ids):
+                raise ValueError("Research IDs must be unique.")
+        if any(row.company_id != self.company_id for row in self.documents):
+            raise ValueError("Research must match the backend-bound issuer.")
+        if any(key not in {row.id for row in self.documents} for fact in self.facts for key in fact.document_ids):
+            raise ValueError("Facts must link to bound primary documents.")
+        return self
+
+
+class CompanyCase(Contract):
+    name: CaseName
+    growth: FiveReturns
+    margins: Annotated[list[Annotated[Decimal, Field(ge=-1, le=1, max_digits=11, decimal_places=10)]], Field(min_length=5, max_length=5)]
+    cash_conversion: Annotated[list[Fraction], Field(min_length=5, max_length=5)]
+    reinvestment: Annotated[list[Fraction], Field(min_length=5, max_length=5)]
+    dilution: FiveReturns
+    payout: Annotated[list[Fraction], Field(min_length=5, max_length=5)]
+    fx_multipliers: FiveFX
+    discount_rate: Fraction
+    exit_multiple: Rate
+    exit_sensitivity: Annotated[list[Rate], Field(min_length=3, max_length=3)]
+    assumptions: list[Text] = Field(min_length=1, max_length=8)
+    uncertainty: list[Text] = Field(min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def positive_shares(self) -> Self:
+        if any(value <= -1 for value in self.dilution):
+            raise ValueError("Diluted shares must remain positive.")
+        return self
+
+
+class CompanyJudgments(Contract):
+    method: Literal["earnings_exit", "fcf_exit", "book_exit", "ffo_exit"]
+    revenue_fact_id: Identifier | None
+    shares_fact_id: Identifier
+    metric_fact_id: Identifier | None
+    mid_cycle_context: Text | None
+    cases: list[CompanyCase] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def three_cases(self) -> Self:
+        if {row.name for row in self.cases} != {"downside", "base", "upside"}:
+            raise ValueError("Exactly one downside/base/upside case is required.")
+        return self
+
+
+class CalculatedCompanyCase(Contract):
+    name: CaseName
+    judgment: CompanyCase
+    terminal_metric: str | None
+    terminal_shares: str | None
+    terminal_price: str | None
+    terminal_reporting_per_share: str | None
+    known_terminal_value: str | None
+    present_value_per_share: str | None
+    sensitivity_prices: list[str | None]
+    required_exit_multiple: str | None
+    qualifications: list[str]
+
+
+class StockResult(Contract):
+    position_id: str
+    as_of: date
+    reporting_currency: Currency
+    research: CompanyResearch
+    judgments: CompanyJudgments
+    cases: list[CalculatedCompanyCase]
+    calculation_basis: str
+    qualifications: list[str]
+
+
 class AnalysisResult(Contract):
     status: Literal["completed"] = "completed"
     question: str
     portfolio: PortfolioReview
-    recommendation: Recommendation
+    recommendation: StockRecommendation | Recommendation
     proposals: list[ProposalReview] = Field(default_factory=list)
     comparison: ComparisonResult | None = None
+    stock: StockResult | None = None

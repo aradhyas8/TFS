@@ -43,8 +43,8 @@ export type Review = {
   source_inputs_usable: boolean; sizing_eligible: false;
 };
 export type Recommendation = {
-  preferred_action: "review_only" | "wait_for_inputs" | "no_action"; amount: null;
-  reason: string; alternatives: { action: "clarify_inputs" | "keep_snapshot" | "no_action"; reason: string }[];
+  preferred_action: "review_only" | "wait_for_inputs" | "no_action" | "add" | "hold" | "reduce" | "exit"; amount: null;
+  evidence_ids?: string[]; reason: string; alternatives: { action: "clarify_inputs" | "keep_snapshot" | "no_action" | "add" | "hold" | "reduce" | "exit"; reason: string }[];
   downside: string; assumptions: string[]; uncertainty: string[]; what_could_change: string[];
 };
 export type ProposalReview = { changes: ProposedChanges; source: "user" | "model"; status: string;
@@ -52,7 +52,7 @@ export type ProposalReview = { changes: ProposedChanges; source: "user" | "model
   guardrails: GuardrailReview | null; qualifications: string[] };
 export type FundFacts = { position_id: string; as_of: string; source: string; source_url: string | null;
   exposure: string; annual_cost: string | null; income_yield: string | null };
-export type ComparisonAlternative = { id: string; kind: "etf" | "cash" | "short_bill" | "no_action"; position_id: string | null };
+export type ComparisonAlternative = { id: string; kind: "stock" | "etf" | "cash" | "short_bill" | "no_action"; position_id: string | null };
 export type KnownEffects = { alternative_id: string; transaction_cost: string | null; terminal_tax: string | null; as_of: string; source: string };
 export type ComparisonInput = { scope_position_ids: string[]; alternatives: ComparisonAlternative[];
   fund_facts: FundFacts[]; effects: KnownEffects[] };
@@ -66,8 +66,23 @@ export type ComparisonResult = { as_of: string; reporting_currency: string; hori
     components: { position_id: string; local_currency: string; starting_local_value: string | null;
       fx_used: FX | null; terminal_local_value: string | null; known_terminal_value: string | null; fully_specified: boolean; qualifications: string[] }[];
   }[] }[] };
+export type StockResult = { position_id: string; as_of: string; reporting_currency: string;
+  research: { company_id: string; sector: string; cyclical: boolean | null; issues: string[];
+    documents: { id: string; authority: string; url: string; title: string; published_on: string; as_of: string;
+      excerpt: string; available: boolean; qa_available: boolean }[];
+    facts: { id: string; metric: string; value: string | null; unit: string; currency: string | null;
+      period_start: string | null; period_end: string; definition: string; document_ids: string[];
+      filing_checked: boolean; notes_checked: boolean; custom_tags_checked: boolean; segments_checked: boolean }[] };
+  judgments: { method: string; mid_cycle_context: string | null };
+  cases: { name: string; terminal_metric: string | null; terminal_shares: string | null;
+    terminal_price: string | null; known_terminal_value: string | null; present_value_per_share: string | null;
+    sensitivity_prices: (string | null)[]; required_exit_multiple: string | null; qualifications: string[];
+    judgment: { growth: string[]; margins: string[]; cash_conversion: string[]; reinvestment: string[];
+      dilution: string[]; payout: string[]; fx_multipliers: string[]; discount_rate: string;
+      exit_multiple: string; exit_sensitivity: string[]; assumptions: string[]; uncertainty: string[] } }[];
+  qualifications: string[]; calculation_basis: string };
 export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation;
-  proposals: ProposalReview[]; comparison: ComparisonResult | null };
+  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null };
 
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -84,6 +99,7 @@ export async function post<T>(path: string, body: unknown): Promise<T> {
 
 export const actionLabel = (action: string) => ({
   review_only: "Review current exposure", wait_for_inputs: "Clarify missing inputs", no_action: "No action",
+  add: "Add conditionally", hold: "Hold conditionally", reduce: "Reduce conditionally", exit: "Exit conditionally",
   clarify_inputs: "Clarify inputs", keep_snapshot: "Keep the dated snapshot",
 }[action] || action);
 

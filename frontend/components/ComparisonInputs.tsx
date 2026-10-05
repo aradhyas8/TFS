@@ -1,10 +1,10 @@
 import type { ComparisonInput, FundFacts, KnownEffects, Snapshot } from "../lib/contracts";
 
-export default function ComparisonInputs({ value, onChange, snapshot, busy }: {
-  value: ComparisonInput | null; onChange: (value: ComparisonInput | null) => void; snapshot: Snapshot; busy: boolean;
+export default function ComparisonInputs({ value, onChange, snapshot, busy, stockId }: {
+  value: ComparisonInput | null; onChange: (value: ComparisonInput | null) => void; snapshot: Snapshot; busy: boolean; stockId?: string;
 }) {
   const empty: ComparisonInput = { scope_position_ids: [], alternatives: [{ id: "keep", kind: "no_action", position_id: null }], fund_facts: [], effects: [] };
-  function destination(id: string, kind: "etf" | "cash" | "short_bill", position: string) {
+  function destination(id: string, kind: "stock" | "etf" | "cash" | "short_bill", position: string) {
     if (!value) return;
     onChange({ ...value, alternatives: [...value.alternatives.filter(row => row.id !== id),
       ...(position ? [{ id, kind, position_id: position }] : [])] });
@@ -35,6 +35,8 @@ export default function ComparisonInputs({ value, onChange, snapshot, busy }: {
       {snapshot.positions.map(row => <label key={row.id}><input type="checkbox" aria-label={`Comparison scope ${row.id}`}
         checked={value.scope_position_ids.includes(row.id)} onChange={event => onChange({ ...value,
           scope_position_ids: event.target.checked ? [...value.scope_position_ids, row.id] : value.scope_position_ids.filter(id => id !== row.id) })} /> {row.ticker || "Cash"} / {row.id} / {row.currency}</label>)}
+      {stockId && <label><input type="checkbox" checked={value.alternatives.some(row => row.kind === "stock")}
+        onChange={event => destination("company", "stock", event.target.checked ? stockId : "")} /> Compare the researched stock</label>}
       <div className="form-grid">
         <label>Diversified ETF alternative<select value={value.alternatives.find(row => row.id === "fund")?.position_id || ""}
           onChange={event => destination("fund", "etf", event.target.value)}><option value="">Not selected</option>
