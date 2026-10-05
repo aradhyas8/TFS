@@ -13,8 +13,10 @@ from .schemas import (
     CandidateResearchInput,
     CompanyJudgments,
     ComparisonJudgments,
+    HoldingReviewInput,
     ProposedChanges,
     Recommendation,
+    ReviewSizingInput,
     Snapshot,
     StockRecommendation,
 )
@@ -142,9 +144,13 @@ class OpenAIModel:
         choice: ToolChoiceFunctionParam = {"type": "function", "name": "review_portfolio"}
         request = json.loads(messages[1]["content"])
         allocation = bool(request.get("new_cash"))
-        schema = (StockRecommendation if request.get("stock") or allocation else Recommendation).model_json_schema()
+        review = bool(request.get("portfolio_review"))
+        schema = (StockRecommendation if request.get("stock") or allocation or review else Recommendation).model_json_schema()
         schema["properties"]["amount"] = {"type": "null"}
         stock_tools: list[FunctionToolParam] = copy.deepcopy(STOCK_TOOLS)
+        if review:
+            stock_tools = [{"type": "function", "name": "reunderwrite_holding", "description": "Challenge a bound current holding thesis against current primary evidence and any supplied prior thesis, then compute company cases. No price history or facts may be invented. Each bound US company runs once before comparison.", "parameters": HoldingReviewInput.model_json_schema(), "strict": True},
+                           {"type": "function", "name": "size_review", "description": "Translate an explained whole-portfolio issuer exposure range into local adjustment amounts after evidence-backed holding review and comparison. Python checks both endpoints, funding, source inputs, supplied risk context, costs/tax effects and configured cap/budget. Unknown inputs never authorize an amount.", "parameters": ReviewSizingInput.model_json_schema(), "strict": True}]
         if allocation:
             stock_tools = [{**STOCK_TOOLS[-1], "parameters": CandidateCasesInput.model_json_schema()}]
         response = await self.client.responses.create(

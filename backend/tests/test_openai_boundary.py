@@ -181,3 +181,48 @@ def test_new_cash_uses_production_sdk_tools_and_backend_only_amounts(monkeypatch
     assert response.json()["recommendation"]["amount"]["maximum"] == "2400"
     assert "sk-test-backend-only-never-browser" not in response.text
     assert len(sent) == 5
+
+
+
+def test_portfolio_review_uses_production_sdk_tools_and_preserves_bound_evidence(monkeypatch):
+    from tests.test_portfolio_review import assessment, review_request, review_research_fixture
+    bound = AnalysisRequest.model_validate(review_request()).model_dump(mode="json")
+    turns = [("review_portfolio", {}), ("reunderwrite_holding", assessment()),
+             ("calculate_comparison", stock_comparison_judgments(bound))]
+    sent = []
+
+    def fake_openai(request):
+        payload = json.loads(request.content)
+        sent.append(payload)
+        assert request.url == "https://api.openai.com/v1/responses"
+        assert payload["text"]["format"]["schema"]["properties"]["amount"] == {"type": "null"}
+        names = {tool["name"] for tool in payload["tools"]}
+        assert {"review_portfolio", "reunderwrite_holding", "calculate_comparison", "size_review", "check_proposed_changes"} <= names
+        assert not {"scan_opportunities", "research_candidate", "get_sec_filings"} & names
+        assert payload["parallel_tool_calls"] is False
+        assert payload["store"] is False
+        if len(sent) <= len(turns):
+            name, args = turns[len(sent) - 1]
+            output = [{"type": "function_call", "id": f"fc_{len(sent)}", "call_id": f"call_{len(sent)}",
+                       "name": name, "arguments": json.dumps(args), "status": "completed"}]
+        else:
+            comparison = json.loads(payload["input"][-1]["output"])
+            assert comparison["starting_value"] == "3600"
+            answer = {**recommendation(), "preferred_action": "reduce", "evidence_ids": ["review-p1-filing", "review-p1-issuer"]}
+            output = [{"type": "message", "id": "msg_final", "role": "assistant", "status": "completed",
+                       "content": [{"type": "output_text", "text": json.dumps(answer), "annotations": []}]}]
+        return httpx.Response(200, json={"id": f"resp_{len(sent)}", "object": "response", "created_at": 1,
+            "model": "test-model", "status": "completed", "output": output, "parallel_tool_calls": False,
+            "error": None, "incomplete_details": None})
+
+    def local_sdk(**kwargs):
+        return AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openai)))
+
+    monkeypatch.setattr("analyst.providers.AsyncOpenAI", local_sdk)
+    response = TestClient(create_app(settings=Settings("sk-test-backend-only-never-browser", "test-model"),
+        data=FakeDataProvider(), research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=review_request())
+    assert response.status_code == 200, response.text
+    assert response.json()["recommendation"]["preferred_action"] == "reduce"
+    assert response.json()["reunderwriting"]["assessments"][0]["status"] == "changed"
+    assert "sk-test-backend-only-never-browser" not in response.text
+    assert len(sent) == 4

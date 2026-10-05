@@ -1,0 +1,637 @@
+{
+  "verification": "Completed application response excerpts from local fake providers; not live-model reasoning evaluation.",
+  "samples": [
+    {
+      "scenario": "changed_thesis_without_baseline",
+      "question": "Review the whole portfolio after weaker demand and a falling price.",
+      "as_of": "2026-09-30",
+      "portfolio_total": "3600",
+      "reporting_currency": "CAD",
+      "baseline": null,
+      "recommendation": {
+        "preferred_action": "reduce",
+        "amount": null,
+        "reason": "Weaker current demand warrants a conditional reduction despite prior ownership.",
+        "alternatives": [
+          {
+            "action": "no_action",
+            "reason": "Retaining exposure is conditional on demand resilience improving; it retains the existing concentration risk."
+          }
+        ],
+        "downside": "Operating-demand weakness, valuation compression and concentrated exposure can impair capital.",
+        "assumptions": [
+          "Cases are conditional judgments using the dated whole portfolio and current primary excerpts."
+        ],
+        "uncertainty": [
+          "Uncovered listing outcomes, indirect overlap and future operating or valuation paths remain qualified."
+        ],
+        "what_could_change": [
+          "Changed demand evidence, revised margin paths or supplied personal context could change the view."
+        ],
+        "evidence_ids": [
+          "review-p1-filing",
+          "review-p1-issuer"
+        ]
+      },
+      "thesis_assessments": [
+        {
+          "position_id": "p1",
+          "status": "changed",
+          "action": "reduce",
+          "current_thesis": "Weaker operating demand challenges the resilience thesis.",
+          "change_reason": "Demand evidence challenges prior assumptions independently of the falling price.",
+          "downside": "Demand weakness and valuation compression could impair capital.",
+          "what_could_change": [
+            "Improving demand and supported margins could restore the case."
+          ],
+          "evidence_ids": [
+            "review-p1-filing",
+            "review-p1-issuer"
+          ]
+        }
+      ],
+      "missing_inputs": [],
+      "primary_evidence": [
+        {
+          "id": "review-p1-filing",
+          "url": "https://www.sec.gov/Archives/edgar/data/123/456/acme.htm",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        },
+        {
+          "id": "review-p1-issuer",
+          "url": "https://investors.example.com/annual",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        }
+      ],
+      "company_base_prices": [
+        {
+          "position_id": "p1",
+          "terminal_price": "100"
+        }
+      ],
+      "comparison_capital": "3600",
+      "preview_checks": [],
+      "qualifications": [
+        "Price movement is context, never proof of thesis failure or a reason to average down. Prior ownership does not protect a weak thesis.",
+        "Target-relative changes use only the supplied baseline. Without it, this is current-exposure and thesis review, without invented targets.",
+        "ETF overlap, missing company coverage, costs and taxes remain unknown. Conditional actions are not orders or justified amounts.",
+        "p2: listing-specific cases are unavailable in this core US review; retained outcomes remain unknown."
+      ]
+    },
+    {
+      "scenario": "unchanged_thesis_falling_price",
+      "question": "Review the whole portfolio after weaker demand and a falling price.",
+      "as_of": "2026-09-30",
+      "portfolio_total": "2950",
+      "reporting_currency": "CAD",
+      "baseline": null,
+      "recommendation": {
+        "preferred_action": "hold",
+        "amount": null,
+        "reason": "Current primary demand evidence supports a conditional hold; price movement does not determine thesis validity.",
+        "alternatives": [
+          {
+            "action": "no_action",
+            "reason": "Retaining exposure is conditional on demand resilience improving; it retains the existing concentration risk."
+          }
+        ],
+        "downside": "Operating-demand weakness, valuation compression and concentrated exposure can impair capital.",
+        "assumptions": [
+          "Cases are conditional judgments using the dated whole portfolio and current primary excerpts."
+        ],
+        "uncertainty": [
+          "Uncovered listing outcomes, indirect overlap and future operating or valuation paths remain qualified."
+        ],
+        "what_could_change": [
+          "Changed demand evidence, revised margin paths or supplied personal context could change the view."
+        ],
+        "evidence_ids": [
+          "review-p1-filing",
+          "review-p1-issuer"
+        ]
+      },
+      "thesis_assessments": [
+        {
+          "position_id": "p1",
+          "status": "unchanged",
+          "action": "hold",
+          "current_thesis": "Current demand evidence still supports the operating case.",
+          "change_reason": "The price decline alone does not invalidate the demand thesis.",
+          "downside": "Demand weakness and valuation compression could impair capital.",
+          "what_could_change": [
+            "Deteriorating demand or unsupported margins could challenge the operating case."
+          ],
+          "evidence_ids": [
+            "review-p1-filing",
+            "review-p1-issuer"
+          ]
+        }
+      ],
+      "missing_inputs": [],
+      "primary_evidence": [
+        {
+          "id": "review-p1-filing",
+          "url": "https://www.sec.gov/Archives/edgar/data/123/456/acme.htm",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Current orders and margins remain resilient; revenue and diluted shares are reported in the statements."
+        },
+        {
+          "id": "review-p1-issuer",
+          "url": "https://investors.example.com/annual",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Current orders and margins remain resilient; revenue and diluted shares are reported in the statements."
+        }
+      ],
+      "company_base_prices": [
+        {
+          "position_id": "p1",
+          "terminal_price": "100"
+        }
+      ],
+      "comparison_capital": "2950",
+      "preview_checks": [],
+      "qualifications": [
+        "Price movement is context, never proof of thesis failure or a reason to average down. Prior ownership does not protect a weak thesis.",
+        "Target-relative changes use only the supplied baseline. Without it, this is current-exposure and thesis review, without invented targets.",
+        "ETF overlap, missing company coverage, costs and taxes remain unknown. Conditional actions are not orders or justified amounts.",
+        "p2: listing-specific cases are unavailable in this core US review; retained outcomes remain unknown."
+      ]
+    },
+    {
+      "scenario": "no_prior_thesis",
+      "question": "Review the whole portfolio after weaker demand and a falling price.",
+      "as_of": "2026-09-30",
+      "portfolio_total": "3600",
+      "reporting_currency": "CAD",
+      "baseline": null,
+      "recommendation": {
+        "preferred_action": "reduce",
+        "amount": null,
+        "reason": "Weaker current demand warrants a conditional reduction despite prior ownership.",
+        "alternatives": [
+          {
+            "action": "no_action",
+            "reason": "Retaining exposure is conditional on demand resilience improving; it retains the existing concentration risk."
+          }
+        ],
+        "downside": "Operating-demand weakness, valuation compression and concentrated exposure can impair capital.",
+        "assumptions": [
+          "Cases are conditional judgments using the dated whole portfolio and current primary excerpts."
+        ],
+        "uncertainty": [
+          "Uncovered listing outcomes, indirect overlap and future operating or valuation paths remain qualified."
+        ],
+        "what_could_change": [
+          "Changed demand evidence, revised margin paths or supplied personal context could change the view."
+        ],
+        "evidence_ids": [
+          "review-p1-filing",
+          "review-p1-issuer"
+        ]
+      },
+      "thesis_assessments": [
+        {
+          "position_id": "p1",
+          "status": "unknown",
+          "action": "reduce",
+          "current_thesis": "Current weaker demand warrants a conditional independent review of the operating case.",
+          "change_reason": "No dated prior thesis was supplied; change status is unknown. The current thesis is assessed independently using available evidence.",
+          "downside": "Demand weakness and valuation compression could impair capital.",
+          "what_could_change": [
+            "Improving demand and supported margins could restore the case."
+          ],
+          "evidence_ids": [
+            "review-p1-filing",
+            "review-p1-issuer"
+          ]
+        }
+      ],
+      "missing_inputs": [],
+      "primary_evidence": [
+        {
+          "id": "review-p1-filing",
+          "url": "https://www.sec.gov/Archives/edgar/data/123/456/acme.htm",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        },
+        {
+          "id": "review-p1-issuer",
+          "url": "https://investors.example.com/annual",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        }
+      ],
+      "company_base_prices": [
+        {
+          "position_id": "p1",
+          "terminal_price": "100"
+        }
+      ],
+      "comparison_capital": "3600",
+      "preview_checks": [],
+      "qualifications": [
+        "Price movement is context, never proof of thesis failure or a reason to average down. Prior ownership does not protect a weak thesis.",
+        "Target-relative changes use only the supplied baseline. Without it, this is current-exposure and thesis review, without invented targets.",
+        "ETF overlap, missing company coverage, costs and taxes remain unknown. Conditional actions are not orders or justified amounts.",
+        "p2: listing-specific cases are unavailable in this core US review; retained outcomes remain unknown."
+      ]
+    },
+    {
+      "scenario": "missing_current_revenue",
+      "question": "Review the whole portfolio after weaker demand and a falling price.",
+      "as_of": "2026-09-30",
+      "portfolio_total": "3600",
+      "reporting_currency": "CAD",
+      "baseline": null,
+      "recommendation": {
+        "preferred_action": "wait_for_inputs",
+        "amount": null,
+        "reason": "Current company evidence or applicable portfolio inputs remain unresolved. Review each conditional thesis assessment before deciding.",
+        "alternatives": [
+          {
+            "action": "no_action",
+            "reason": "Retain the snapshot while decisive evidence is clarified."
+          }
+        ],
+        "downside": "Direct company exposure can amplify company-specific losses.",
+        "assumptions": [
+          "Supplied marks describe the dated snapshot."
+        ],
+        "uncertainty": [
+          "Risk preferences and indirect fund overlap are unknown."
+        ],
+        "what_could_change": [
+          "A verified snapshot or supplied risk context could change the review."
+        ]
+      },
+      "thesis_assessments": [
+        {
+          "position_id": "p1",
+          "status": "unknown",
+          "action": "wait_for_inputs",
+          "current_thesis": "Company evidence or the applicable portfolio inputs cannot support the proposed stock direction. Review the unknown facts and deterministic checks before deciding.",
+          "change_reason": "Missing current evidence prevents a supported thesis comparison.",
+          "downside": "Demand weakness and valuation compression could impair capital.",
+          "what_could_change": [
+            "Improving demand and supported margins could restore the case."
+          ],
+          "evidence_ids": [
+            "review-p1-filing",
+            "review-p1-issuer"
+          ]
+        }
+      ],
+      "missing_inputs": [],
+      "primary_evidence": [
+        {
+          "id": "review-p1-filing",
+          "url": "https://www.sec.gov/Archives/edgar/data/123/456/acme.htm",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        },
+        {
+          "id": "review-p1-issuer",
+          "url": "https://investors.example.com/annual",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        }
+      ],
+      "company_base_prices": [
+        {
+          "position_id": "p1",
+          "terminal_price": null
+        }
+      ],
+      "comparison_capital": "3600",
+      "preview_checks": [],
+      "qualifications": [
+        "Price movement is context, never proof of thesis failure or a reason to average down. Prior ownership does not protect a weak thesis.",
+        "Target-relative changes use only the supplied baseline. Without it, this is current-exposure and thesis review, without invented targets.",
+        "ETF overlap, missing company coverage, costs and taxes remain unknown. Conditional actions are not orders or justified amounts.",
+        "p2: listing-specific cases are unavailable in this core US review; retained outcomes remain unknown."
+      ]
+    },
+    {
+      "scenario": "supported_reduction_range",
+      "question": "Review the whole portfolio after weaker demand and a falling price.",
+      "as_of": "2026-09-30",
+      "portfolio_total": "1700",
+      "reporting_currency": "USD",
+      "baseline": null,
+      "recommendation": {
+        "preferred_action": "reduce",
+        "amount": {
+          "minimum": "350",
+          "maximum": "520",
+          "currency": "USD",
+          "position_id": "p1"
+        },
+        "reason": "Weaker demand supports a conditional reduction after comparing company, cash and retained exposure.",
+        "alternatives": [
+          {
+            "action": "no_action",
+            "reason": "Retaining exposure is conditional on demand resilience improving; it retains the existing concentration risk."
+          }
+        ],
+        "downside": "Operating-demand weakness, valuation compression and concentrated exposure can impair capital.",
+        "assumptions": [
+          "Current primary evidence informs the judged exposure range.",
+          "Supplied loss/withdrawal context supports considering an amount."
+        ],
+        "uncertainty": [
+          "Operating paths and exit valuation remain conditional; unknown sizing inputs stay visible in the review."
+        ],
+        "what_could_change": [
+          "Changed demand evidence, revised margin paths or supplied personal context could change the view."
+        ],
+        "evidence_ids": [
+          "review-p1-filing",
+          "review-p1-issuer"
+        ]
+      },
+      "thesis_assessments": [
+        {
+          "position_id": "p1",
+          "status": "changed",
+          "action": "reduce",
+          "current_thesis": "Weaker operating demand challenges the resilience thesis.",
+          "change_reason": "Demand evidence challenges prior assumptions independently of the falling price.",
+          "downside": "Demand weakness and valuation compression could impair capital.",
+          "what_could_change": [
+            "Improving demand and supported margins could restore the case."
+          ],
+          "evidence_ids": [
+            "review-p1-filing",
+            "review-p1-issuer"
+          ]
+        }
+      ],
+      "missing_inputs": [],
+      "primary_evidence": [
+        {
+          "id": "review-p1-filing",
+          "url": "https://www.sec.gov/Archives/edgar/data/123/456/acme.htm",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        },
+        {
+          "id": "review-p1-issuer",
+          "url": "https://investors.example.com/annual",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        }
+      ],
+      "company_base_prices": [
+        {
+          "position_id": "p1",
+          "terminal_price": "100"
+        }
+      ],
+      "comparison_capital": "1700",
+      "preview_checks": [
+        {
+          "source": "model",
+          "status": "within_limits",
+          "post_total_value": "1700",
+          "post_cash_value": "1019.999999996",
+          "companies": [
+            {
+              "company_id": "acme",
+              "company_name": "Acme",
+              "current_weight": "0.40000000",
+              "cap": "0.6",
+              "status": "within_limit",
+              "excess_value": "0",
+              "reduction_to_cash": "0",
+              "explanation": "Direct exposure is within the configured cap."
+            }
+          ]
+        },
+        {
+          "source": "model",
+          "status": "within_limits",
+          "post_total_value": "1700",
+          "post_cash_value": "849.999999992",
+          "companies": [
+            {
+              "company_id": "acme",
+              "company_name": "Acme",
+              "current_weight": "0.50000000",
+              "cap": "0.6",
+              "status": "within_limit",
+              "excess_value": "0",
+              "reduction_to_cash": "0",
+              "explanation": "Direct exposure is within the configured cap."
+            }
+          ]
+        }
+      ],
+      "qualifications": [
+        "Price movement is context, never proof of thesis failure or a reason to average down. Prior ownership does not protect a weak thesis.",
+        "Target-relative changes use only the supplied baseline. Without it, this is current-exposure and thesis review, without invented targets.",
+        "ETF overlap, missing company coverage, costs and taxes remain unknown. Conditional actions are not orders or justified amounts.",
+        "Approximate adjustment range uses whole-portfolio issuer exposure and the selected account/currency balance. Fractional-share previews are hypothetical, use dated marks, and do not imply executable quantities or placed orders."
+      ]
+    },
+    {
+      "scenario": "missing_risk_context",
+      "question": "Review the whole portfolio after weaker demand and a falling price.",
+      "as_of": "2026-09-30",
+      "portfolio_total": "1700",
+      "reporting_currency": "USD",
+      "baseline": null,
+      "recommendation": {
+        "preferred_action": "reduce",
+        "amount": null,
+        "reason": "Weaker demand supports a conditional reduction after comparing company, cash and retained exposure.",
+        "alternatives": [
+          {
+            "action": "no_action",
+            "reason": "Retaining exposure is conditional on demand resilience improving; it retains the existing concentration risk."
+          }
+        ],
+        "downside": "Operating-demand weakness, valuation compression and concentrated exposure can impair capital.",
+        "assumptions": [
+          "Current primary evidence informs the judged exposure range.",
+          "Loss/withdrawal context is missing, so the amount remains undetermined."
+        ],
+        "uncertainty": [
+          "Operating paths and exit valuation remain conditional; unknown sizing inputs stay visible in the review."
+        ],
+        "what_could_change": [
+          "Changed demand evidence, revised margin paths or supplied personal context could change the view."
+        ],
+        "evidence_ids": [
+          "review-p1-filing",
+          "review-p1-issuer"
+        ]
+      },
+      "thesis_assessments": [
+        {
+          "position_id": "p1",
+          "status": "changed",
+          "action": "reduce",
+          "current_thesis": "Weaker operating demand challenges the resilience thesis.",
+          "change_reason": "Demand evidence challenges prior assumptions independently of the falling price.",
+          "downside": "Demand weakness and valuation compression could impair capital.",
+          "what_could_change": [
+            "Improving demand and supported margins could restore the case."
+          ],
+          "evidence_ids": [
+            "review-p1-filing",
+            "review-p1-issuer"
+          ]
+        }
+      ],
+      "missing_inputs": [
+        "Supply decision-critical loss tolerance and withdrawal context."
+      ],
+      "primary_evidence": [
+        {
+          "id": "review-p1-filing",
+          "url": "https://www.sec.gov/Archives/edgar/data/123/456/acme.htm",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        },
+        {
+          "id": "review-p1-issuer",
+          "url": "https://investors.example.com/annual",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        }
+      ],
+      "company_base_prices": [
+        {
+          "position_id": "p1",
+          "terminal_price": "100"
+        }
+      ],
+      "comparison_capital": "1700",
+      "preview_checks": [],
+      "qualifications": [
+        "Price movement is context, never proof of thesis failure or a reason to average down. Prior ownership does not protect a weak thesis.",
+        "Target-relative changes use only the supplied baseline. Without it, this is current-exposure and thesis review, without invented targets.",
+        "ETF overlap, missing company coverage, costs and taxes remain unknown. Conditional actions are not orders or justified amounts."
+      ]
+    },
+    {
+      "scenario": "supplied_baseline_and_reduction_preview",
+      "question": "Review the whole portfolio after weaker demand and a falling price.",
+      "as_of": "2026-09-30",
+      "portfolio_total": "3600",
+      "reporting_currency": "CAD",
+      "baseline": {
+        "stocks": "0.5",
+        "diversified_etfs": null,
+        "sector_theme_etfs": null,
+        "cash": "0.5"
+      },
+      "recommendation": {
+        "preferred_action": "reduce",
+        "amount": null,
+        "reason": "Weaker current demand warrants a conditional reduction despite prior ownership.",
+        "alternatives": [
+          {
+            "action": "no_action",
+            "reason": "Retaining exposure is conditional on demand resilience improving; it retains the existing concentration risk."
+          }
+        ],
+        "downside": "Operating-demand weakness, valuation compression and concentrated exposure can impair capital.",
+        "assumptions": [
+          "Cases are conditional judgments using the dated whole portfolio and current primary excerpts."
+        ],
+        "uncertainty": [
+          "Uncovered listing outcomes, indirect overlap and future operating or valuation paths remain qualified."
+        ],
+        "what_could_change": [
+          "Changed demand evidence, revised margin paths or supplied personal context could change the view."
+        ],
+        "evidence_ids": [
+          "review-p1-filing",
+          "review-p1-issuer"
+        ]
+      },
+      "thesis_assessments": [
+        {
+          "position_id": "p1",
+          "status": "changed",
+          "action": "reduce",
+          "current_thesis": "Weaker operating demand challenges the resilience thesis.",
+          "change_reason": "Demand evidence challenges prior assumptions independently of the falling price.",
+          "downside": "Demand weakness and valuation compression could impair capital.",
+          "what_could_change": [
+            "Improving demand and supported margins could restore the case."
+          ],
+          "evidence_ids": [
+            "review-p1-filing",
+            "review-p1-issuer"
+          ]
+        }
+      ],
+      "missing_inputs": [],
+      "primary_evidence": [
+        {
+          "id": "review-p1-filing",
+          "url": "https://www.sec.gov/Archives/edgar/data/123/456/acme.htm",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        },
+        {
+          "id": "review-p1-issuer",
+          "url": "https://investors.example.com/annual",
+          "published_on": "2026-02-01",
+          "as_of": "2025-12-31",
+          "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Current orders softened and management lowered its demand outlook, challenging the earlier resilience assumption."
+        }
+      ],
+      "company_base_prices": [
+        {
+          "position_id": "p1",
+          "terminal_price": "100"
+        }
+      ],
+      "comparison_capital": "3600",
+      "preview_checks": [
+        {
+          "source": "user",
+          "status": "within_limits",
+          "post_total_value": "3600",
+          "post_cash_value": "1950",
+          "companies": [
+            {
+              "company_id": "acme",
+              "company_name": "Acme",
+              "current_weight": "0.45833333",
+              "cap": "0.5",
+              "status": "within_limit",
+              "excess_value": "0",
+              "reduction_to_cash": "0",
+              "explanation": "Direct exposure is within the configured cap."
+            }
+          ]
+        }
+      ],
+      "qualifications": [
+        "Price movement is context, never proof of thesis failure or a reason to average down. Prior ownership does not protect a weak thesis.",
+        "Target-relative changes use only the supplied baseline. Without it, this is current-exposure and thesis review, without invented targets.",
+        "ETF overlap, missing company coverage, costs and taxes remain unknown. Conditional actions are not orders or justified amounts.",
+        "p2: listing-specific cases are unavailable in this core US review; retained outcomes remain unknown."
+      ]
+    }
+  ]
+}
