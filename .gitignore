@@ -18,3 +18,5 @@ artifacts/
 .scratch/ticket-02.diff
 .agents/
 skills-lock.json
+data/
+*.tmp

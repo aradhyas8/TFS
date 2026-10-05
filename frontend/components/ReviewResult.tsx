@@ -1,4 +1,5 @@
-import { actionLabel, valueLabel, weightLabel, type Analysis } from "../lib/contracts";
+import { useState } from "react";
+import { actionLabel, post, valueLabel, weightLabel, type Analysis, type SavedDecision } from "../lib/contracts";
 import GuardrailResult from "./GuardrailResult";
 import ComparisonResult from "./ComparisonResult";
 import AllocationResult from "./AllocationResult";
@@ -10,8 +11,35 @@ function Points({ title, items }: { title: string; items: string[] }) {
   return <div className="review-points"><h3>{title}</h3><ul>{items.map((item, index) => <li key={index}>{item}</li>)}</ul></div>;
 }
 
-export default function ReviewResult({ result }: { result: Analysis }) {
+export default function ReviewResult({
+  result,
+  onSaved,
+  onReopen,
+}: {
+  result: Analysis;
+  onSaved?: (saved: SavedDecision) => void;
+  onReopen?: (saved: SavedDecision) => void;
+}) {
+  const [savedDecision, setSavedDecision] = useState<SavedDecision | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
+  async function handleSave() {
+    setSaving(true);
+    setSaveError("");
+    try {
+      const saved = await post<SavedDecision>("/api/decisions", { result });
+      setSavedDecision(saved);
+      if (onSaved) onSaved(saved);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Failed to save decision.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const { portfolio: portfolio, recommendation: answer } = result;
+
   const currency = portfolio.reporting_currency;
   return <section className="review-result" aria-label="Completed portfolio review" aria-live="polite">
     <ThemeResult theme={result.theme} currency={currency} />
@@ -117,6 +145,43 @@ export default function ReviewResult({ result }: { result: Analysis }) {
       <Points title="Uncertainty" items={answer.uncertainty} />
       <Points title="What could change the view" items={answer.what_could_change} />
       <details><summary>Calculation basis</summary><p className="muted small">{portfolio.calculation_basis}</p></details>
+      <section className="panel save-decision-panel" aria-label="Save decision panel">
+        <h3>Save decision for honest revisit</h3>
+        <p className="muted small">
+          Store the dated question, original evidence references, reasoning, and conclusion to plain local files. Saving is optional and does not affect your analysis.
+        </p>
+        {savedDecision ? (
+          <div className="saved-confirmation" data-testid="save-success-message">
+            <p><strong>Decision saved successfully.</strong> Reference ID: {savedDecision.id}</p>
+            <p className="muted small">As-of: {savedDecision.as_of}. Stored to plain local file without database or external dependencies.</p>
+            {onReopen && (
+              <button
+                type="button"
+                className="button"
+                onClick={() => onReopen(savedDecision)}
+                aria-label="Reopen saved decision view"
+              >
+                Reopen saved decision view →
+              </button>
+            )}
+          </div>
+        ) : (
+          <div>
+            <button
+              type="button"
+              className="button primary"
+              disabled={saving}
+              onClick={handleSave}
+              aria-label="Save decision"
+              data-testid="save-decision-button"
+            >
+              {saving ? "Saving decision…" : "Save decision"}
+            </button>
+            {saveError && <p className="error">{saveError}</p>}
+          </div>
+        )}
+      </section>
     </div>
   </section>;
 }
+
