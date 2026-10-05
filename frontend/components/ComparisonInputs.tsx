@@ -1,9 +1,9 @@
-import type { ComparisonInput, FundFacts, KnownEffects, Snapshot } from "../lib/contracts";
+import { portfolioReviewComparison, type ComparisonInput, type FundFacts, type KnownEffects, type Snapshot } from "../lib/contracts";
 
-export default function ComparisonInputs({ value, onChange, snapshot, busy, stockId }: {
-  value: ComparisonInput | null; onChange: (value: ComparisonInput | null) => void; snapshot: Snapshot; busy: boolean; stockId?: string;
+export default function ComparisonInputs({ value, onChange, snapshot, busy, stockId, portfolioReview = false }: {
+  value: ComparisonInput | null; onChange: (value: ComparisonInput | null) => void; snapshot: Snapshot; busy: boolean; stockId?: string; portfolioReview?: boolean;
 }) {
-  const empty: ComparisonInput = { scope_position_ids: [], alternatives: [{ id: "keep", kind: "no_action", position_id: null }], fund_facts: [], effects: [] };
+  const empty: ComparisonInput = portfolioReview ? portfolioReviewComparison(snapshot) : { scope_position_ids: portfolioReview ? snapshot.positions.map(row => row.id) : [], alternatives: [{ id: "keep", kind: "no_action", position_id: null }], fund_facts: [], effects: [] };
   function destination(id: string, kind: "stock" | "etf" | "cash" | "short_bill", position: string) {
     if (!value) return;
     onChange({ ...value, alternatives: [...value.alternatives.filter(row => row.id !== id),
@@ -32,9 +32,10 @@ export default function ComparisonInputs({ value, onChange, snapshot, busy, stoc
       <legend>Current holdings and cash to compare</legend>
       {value.scope_position_ids.length === 0 && <p className="qualification">Select at least one current holding or cash balance for the comparison basis.</p>}
       {value.alternatives.length === 0 && <p className="qualification">Select at least one comparison alternative.</p>}
-      {snapshot.positions.map(row => <label key={row.id}><input type="checkbox" aria-label={`Comparison scope ${row.id}`}
+      {snapshot.positions.map(row => <label key={row.id}><input type="checkbox" disabled={portfolioReview} aria-label={`Comparison scope ${row.id}`}
         checked={value.scope_position_ids.includes(row.id)} onChange={event => onChange({ ...value,
           scope_position_ids: event.target.checked ? [...value.scope_position_ids, row.id] : value.scope_position_ids.filter(id => id !== row.id) })} /> {row.ticker || "Cash"} / {row.id} / {row.currency}</label>)}
+      {portfolioReview && value.alternatives.filter(row => row.kind === "stock").map(row => <p key={row.id} className="muted small">Company alternative: {snapshot.positions.find(pos => pos.id === row.position_id)?.ticker} / {row.position_id}</p>)}
       {stockId && <label><input type="checkbox" checked={value.alternatives.some(row => row.kind === "stock")}
         onChange={event => destination("company", "stock", event.target.checked ? stockId : "")} /> Compare the researched stock</label>}
       <div className="form-grid">
@@ -46,7 +47,7 @@ export default function ComparisonInputs({ value, onChange, snapshot, busy, stoc
         {cash && <label>Cash alternative type<select value={cash.kind} onChange={event => destination("cash", event.target.value as "cash" | "short_bill", cash.position_id || "")}>
           <option value="cash">Cash</option><option value="short_bill">Short government bills</option></select></label>}
       </div>
-      <label><input type="checkbox" checked={value.alternatives.some(row => row.kind === "no_action")}
+      <label><input type="checkbox" disabled={portfolioReview} checked={value.alternatives.some(row => row.kind === "no_action")}
         onChange={event => onChange({ ...value, alternatives: [...value.alternatives.filter(row => row.kind !== "no_action"),
           ...(event.target.checked ? [{ id: "keep", kind: "no_action" as const, position_id: null }] : [])] })} /> Compare no action: retain selected holdings and cash</label>
       {snapshot.positions.filter(row => row.kind === "etf" && relevant.has(row.id)).map(row => {

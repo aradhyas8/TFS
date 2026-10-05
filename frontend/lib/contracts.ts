@@ -89,8 +89,13 @@ export type AllocationResult = { context: NewCashInput;
   researched: { position_id: string; reason: string }[]; stocks: StockResult[];
   judgment: { position_id: string; min_weight: string; max_weight: string; reason: string } | null;
   amount: AllocationAmount | null; previews: ProposalReview[]; missing_inputs: string[]; qualifications: string[] };
+export type PortfolioReviewInput = { prior_theses: { company_id: string; as_of: string; thesis: string }[]; risk_context: string | null };
+export type ReunderwritingResult = { context: PortfolioReviewInput; research: Record<string, StockResult["research"]>;
+  stocks: StockResult[]; sizing: { position_id: string; cash_position_id: string; min_weight: string; max_weight: string; reason: string } | null; amount: AllocationAmount | null; previews: ProposalReview[]; missing_inputs: string[]; assessments: { position_id: string; status: "changed" | "unchanged" | "unknown";
+    action: string; current_thesis: string; change_reason: string; downside: string; what_could_change: string[]; evidence_ids: string[] }[];
+  qualifications: string[] };
 export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation;
-  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null; allocation: AllocationResult | null };
+  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null; allocation: AllocationResult | null; reunderwriting: ReunderwritingResult | null };
 
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -121,3 +126,20 @@ export const valueLabel = (value: string | null, currency: string) => {
 };
 export const weightLabel = (value: string | null) => value === null ? "Unknown" :
   new Intl.NumberFormat("en-CA", { style: "percent", maximumFractionDigits: 2 }).format(Number(value));
+
+
+export function portfolioReviewComparison(snapshot: Snapshot): ComparisonInput {
+  const seen = new Set<string>();
+  const companies = snapshot.positions.filter(row => {
+    const key = row.company_id || row.id;
+    if (row.kind !== "stock" || !(Number(row.shares) > 0) || row.currency !== "USD" || !["XNAS", "XNYS", "XASE"].includes(row.listing || "") || seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  const alternatives: ComparisonAlternative[] = companies.map(row => ({ id: `company-${row.id}`, kind: "stock", position_id: row.id }));
+  const fund = snapshot.positions.find(row => row.kind === "etf" && row.etf_role === "diversified");
+  const cash = snapshot.positions.find(row => row.kind === "cash");
+  if (fund) alternatives.push({ id: "fund", kind: "etf", position_id: fund.id });
+  if (cash) alternatives.push({ id: "cash", kind: "cash", position_id: cash.id });
+  alternatives.push({ id: "keep", kind: "no_action", position_id: null });
+  return { scope_position_ids: snapshot.positions.map(row => row.id), alternatives, fund_facts: [], effects: [] };
+}

@@ -14,6 +14,7 @@ from analyst.schemas import CompanyResearch, FinancialEvidence, Snapshot
 from tests.test_allocation import allocation_answer, allocation_evidence, comparison_judgments
 from tests.test_comparison import case_drivers, driver, judgments
 from tests.test_freshness import evidence_fixture
+from tests.test_portfolio_review import assessment, review_answer, review_research_fixture
 from tests.test_stock import (
     company_judgments,
     research_fixture,
@@ -50,6 +51,22 @@ class BrowserTestModel:
                 if name not in called:
                     return ModelTurn(calls=[ToolCall(name, name, json.dumps(args))])
             return ModelTurn(answer=allocation_answer())
+        if request.get("portfolio_review"):
+            called = {item["name"] for item in messages if item.get("type") == "function_call"}
+            if "reunderwrite_holding" not in called:
+                args = assessment()
+                if not request["portfolio_review"]["prior_theses"]:
+                    args["assessment"]["status"] = "unknown"
+                return ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(args))])
+            if "calculate_comparison" not in called:
+                return ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(stock_comparison_judgments(request)))])
+            if request["question"] == "Review supported reduction" and "size_review" not in called:
+                return ModelTurn(calls=[ToolCall("sizing", "size_review", json.dumps({"position_id": "p1", "cash_position_id": "c2", "min_weight": "0.4", "max_weight": "0.5", "reason": "Weaker demand justifies lower issuer exposure and a retained reserve."}))])
+            answer = review_answer()
+            answer.update(preferred_action="reduce", reason="Weaker demand warrants a conditional reduction despite prior ownership.",
+                          alternatives=[{"action": "no_action", "reason": "Retaining exposure is conditional on the current demand evidence improving."}],
+                          evidence_ids=["review-p1-filing", "review-p1-issuer"])
+            return ModelTurn(answer=answer)
         if request.get("stock"):
             called = {item["name"] for item in messages if item.get("type") == "function_call"}
             for name, args in [("get_sec_filings", {}), ("get_issuer_material", {}),
@@ -121,7 +138,7 @@ class BrowserTestData(FakeDataProvider):
         # Browser journeys run serially. Bind the external source fixture to the
         # submitted listing; every request resets it, including ordinary broker marks.
         financial.reference = FinancialEvidence()
-        stock_research.records = {"acme": CompanyResearch.model_validate(research_fixture())}
+        stock_research.records = {"acme": CompanyResearch.model_validate(review_research_fixture())}
         for position in supplied.positions:
             if position.id == "fund" and position.mark and position.mark.source == "Fixture allocation":
                 financial.reference = allocation_evidence()

@@ -106,3 +106,8 @@ Ticket 05 adds the US stock selector to the existing question form and returns d
 ## New-cash questions
 
 Ticket 06 adds **Analyze new cash** beside the existing question input. Confirm the additional amount, intended account/currency balance, and loss/withdrawal context. The same backend pipeline performs a request-local bounded opportunity screen, researches at most two decision-changing stocks, compares them with broad ETF/cash/no action, and calculates an approximate range only when source inputs and post-allocation caps/budget justify it. Missing inputs produce completed conditional guidance. Optional backend-only `DISCOVERY_REFERENCE_FILE` widens the dated screen beyond supplied holdings; unavailable or older coverage is openly qualified. See [docs/new-cash-allocation.md](docs/new-cash-allocation.md) for the contracts, arithmetic, coverage limits and controlled answer review.
+
+
+## Portfolio re-underwriting
+
+Ticket 07 adds **Review holdings and rebalance** to the existing question flow. Supply optional dated prior company theses, risk context, limits and a baseline. The shared backend reviews current evidence and conditional cases, challenges material thesis changes, checks proposed outcomes and provides an approximate adjustment range only when all required inputs are supported. Baseline-free exposure review works; unknown ETF overlap and uncovered company cases remain explicit. See [docs/portfolio-reunderwriting.md](docs/portfolio-reunderwriting.md) for contracts, formulas, setup and limitations.

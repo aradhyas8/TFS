@@ -1,0 +1,61 @@
+import { test, expect } from "@playwright/test";
+import path from "node:path";
+
+test("whole portfolio review challenges the thesis and compares all accounts without targets", async ({ page }) => {
+  await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
+  await page.goto("/");
+  await page.getByLabel("As-of date", { exact: true }).fill("2026-09-30");
+  await page.getByLabel("Load portfolio CSV").setInputFiles(path.resolve("../examples/portfolio.csv"));
+  await expect(page.getByRole("group", { name: "Position 1", exact: true })).toBeVisible();
+  await page.getByLabel("Review holdings and rebalance").check();
+  await page.getByLabel("Prior thesis for acme", { exact: true }).fill("Demand should remain resilient.");
+  await page.getByLabel("Prior thesis date for acme", { exact: true }).fill("2025-12-31");
+  await page.getByLabel("Investment question").fill("Review weaker demand despite a falling price.");
+  await page.getByRole("button", { name: /Review portfolio/ }).click();
+  const result = page.getByRole("region", { name: "Completed portfolio review" });
+  await expect(result.getByRole("heading", { name: "Reduce conditionally", exact: true })).toBeVisible();
+  const review = result.getByRole("region", { name: "Portfolio thesis review" });
+  await expect(review).toContainText("Change status: changed");
+  await expect(review).toContainText("Demand should remain resilient.");
+  await expect(review).toContainText("independently of the falling price");
+  await expect(review).toContainText("Acme annual filing");
+  await expect(review.getByRole("table", { name: "Company conditional cases" })).toContainText("100 USD");
+  await expect(result.getByRole("region", { name: "Five-year conditional comparison" })).toContainText("3,600 CAD");
+  await expect(result).toContainText("Allocation amount: not determined");
+  await expect(result).toContainText("without invented targets");
+  await expect(result).toContainText("ETF overlap");
+  await expect(page.locator("body")).not.toContainText("sk-test-backend-only-never-browser");
+});
+
+
+test("supported sizing can be reached through company cost and tax inputs", async ({ page }) => {
+  await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
+  await page.goto("/");
+  await page.getByLabel("As-of date", { exact: true }).fill("2026-09-30");
+  await page.getByLabel("Reporting currency", { exact: true }).fill("USD");
+  const header = "row_type,id,account_id,account_name,ticker,listing,company_id,company_name,shares,cash,currency,mark,mark_date,mark_source,to_currency,fx_rate,fx_date,fx_source";
+  const csv = `${header}\nstock,p1,broker,Brokerage,ACME,XNAS,acme,Acme,10,,USD,100,2026-09-30,Fixture delayed,,,,\ncash,c2,broker,Brokerage,,,,,,500,USD,,,,,,,\n`;
+  await page.getByLabel("Load portfolio CSV").setInputFiles({ name: "review.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });
+  await expect(page.getByRole("group", { name: "Position 1", exact: true })).toBeVisible();
+  await page.getByLabel("Review holdings and rebalance").check();
+  await page.getByLabel("Portfolio review risk and withdrawal context").fill("Can tolerate equity losses; no near-term withdrawals.");
+  await page.getByLabel("Prior thesis for acme", { exact: true }).fill("Demand should remain resilient.");
+  await page.getByLabel("Prior thesis date for acme", { exact: true }).fill("2025-12-31");
+  await page.getByLabel("Single-company cap (fraction)").fill("0.6");
+  await page.getByLabel("Active budget (fraction)").fill("0.8");
+  await page.getByLabel("Company cap policy for indirect exposure").selectOption("direct_only");
+  await page.getByLabel("Cash above baseline is a deliberate tilt").selectOption("false");
+  await page.getByLabel("Include conditional comparison").check();
+  await page.getByText("Known transaction costs and tax effects", { exact: true }).click();
+  await page.getByLabel("Transaction cost for company-p1", { exact: true }).fill("0");
+  await page.getByLabel("Terminal tax for company-p1", { exact: true }).fill("0");
+  await page.getByLabel("Investment question").fill("Review supported reduction");
+  await page.getByRole("button", { name: /Review portfolio/ }).click();
+  const result = page.getByRole("region", { name: "Completed portfolio review" });
+  await expect(result).toContainText("Approximate adjustment amount: 350 USD to 520 USD for p1");
+  await expect(result.getByRole("heading", { name: "Reduce conditionally", exact: true })).toBeVisible();
+  await expect(result.getByRole("region", { name: "Proposed change 1", exact: true })).toContainText("within limits");
+  await expect(result.getByRole("region", { name: "Proposed change 2", exact: true })).toContainText("within limits");
+  await expect(result).toContainText("not an approved exception");
+  await expect(page.locator("body")).not.toContainText("sk-test-backend-only-never-browser");
+});

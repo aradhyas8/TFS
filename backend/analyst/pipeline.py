@@ -16,6 +16,7 @@ from .financial_data import FinancialProvider, PersonalFinancialProvider, refres
 from .guardrails import apply_guardrails, has_etf_exposure, preview_changes
 from .providers import DataProvider, ModelProvider
 from .research import ResearchProvider, ReviewedResearchProvider
+from .reunderwriting import bind_holdings, size_review
 from .scenarios import calculate_comparison
 from .schemas import (
     AllocationJudgment,
@@ -28,11 +29,14 @@ from .schemas import (
     CompanyJudgments,
     CompanyResearch,
     ComparisonJudgments,
+    HoldingReviewInput,
     PortfolioReview,
     ProposalReview,
     ProposedChanges,
     Recommendation,
     ResearchDocument,
+    ReunderwritingResult,
+    ReviewSizingInput,
     StockRecommendation,
     StockResult,
 )
@@ -131,6 +135,29 @@ def validate_prose(prose: str, *, stock: bool = False) -> None:
         raise InvalidReview("Unsupported quantitative claims or execution direction.")
 
 
+def validate_review_baseline(prose: str, request: AnalysisRequest) -> None:
+    if request.portfolio_review is None:
+        return
+    baseline = request.settings.baseline if request.settings else None
+    values = baseline.model_dump() if baseline else {}
+    for sentence in re.split(r"[.!?;]", prose):
+        target_claim = re.search(r"(?:rebalance|return|restore|move|align).*?(?:target|baseline)|(?:target|baseline).*?(?:mix|weight|allocation)", sentence, re.I)
+        qualification = re.search(r"\b(?:without|missing|unknown|unavailable|cannot|supply|required|needs)\b|\bno (?:target|baseline)|not supplied|do not|don't|not to", sentence, re.I)
+        if not target_claim or qualification:
+            continue
+        if not any(value is not None for value in values.values()):
+            raise InvalidReview("Target-relative rebalancing requires a user-supplied baseline.")
+        categories = [key for key, pattern in {
+            "stocks": r"\bstocks?\b", "cash": r"\bcash\b",
+            "diversified_etfs": r"\b(?:diversified|broad)\b",
+            "sector_theme_etfs": r"\b(?:sector|theme)\b",
+        }.items() if re.search(pattern, sentence, re.I)]
+        if not categories and re.search(r"\b(?:ETF|fund)s?\b", sentence, re.I):
+            categories = ["diversified_etfs", "sector_theme_etfs"]
+        if any(values.get(key) is None for key in categories) or not categories and any(value is None for value in values.values()):
+            raise InvalidReview("Partial baselines cannot authorize unsupplied category targets or a complete target mix.")
+
+
 def validate_company_judgments(judgments: CompanyJudgments) -> None:
     for case in judgments.cases:
         validate_prose(" ".join([*case.assumptions, *case.uncertainty]))
@@ -187,10 +214,11 @@ async def analyze(
         scan = await (discovery or ReviewedDiscoveryProvider()).scan(supplied)
         supplied = bind_scan(supplied, scan)
         allocation = AllocationResult(context=request.new_cash, scan=scan)
+    reunderwriting = ReunderwritingResult(context=request.portfolio_review) if request.portfolio_review else None
     scan_reviewed = False
     candidate_research: dict[str, CompanyResearch] = {}
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": INSTRUCTIONS + (STOCK_INSTRUCTIONS if request.stock else "") + (ALLOCATION_INSTRUCTIONS if allocation else "")},
+        {"role": "system", "content": INSTRUCTIONS + (STOCK_INSTRUCTIONS if request.stock else "") + (ALLOCATION_INSTRUCTIONS if allocation else "") + (REVIEW_INSTRUCTIONS if reunderwriting else "")},
         {"role": "user", "content": request.model_dump_json()},
     ]
     computed = None
@@ -204,14 +232,14 @@ async def analyze(
     try:
         # One required portfolio tool turn, then a final response. Bound any repeated
         # tool requests to prevent unbounded loops and reject unknown dispatch names.
-        for _ in range(18 if allocation else 12 if request.stock else 8):
+        for _ in range(len(supplied.positions) + 12 if reunderwriting else 18 if allocation else 12 if request.stock else 8):
             turn = await model.respond(messages, require_tool=computed is None)
             if turn.calls:
                 if turn.answer is not None or len(turn.calls) != 1:
                     raise InvalidReview("Invalid mixed or parallel model response.")
                 call = turn.calls[0]
                 if (
-                    call.name not in {"review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes", "calculate_comparison", "get_sec_filings", "get_issuer_material", "calculate_company_cases", "scan_opportunities", "research_candidate", "size_allocation"}
+                    call.name not in {"review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes", "calculate_comparison", "get_sec_filings", "get_issuer_material", "calculate_company_cases", "scan_opportunities", "research_candidate", "size_allocation", "reunderwrite_holding", "size_review"}
                     or not call.call_id
                     or call.call_id in seen_calls
                 ):
@@ -219,7 +247,7 @@ async def analyze(
                 if allocation is None and call.name in {"scan_opportunities", "research_candidate", "size_allocation"}:
                     raise InvalidReview("Allocation tools require a new-cash question.")
                 arguments = json.loads(call.arguments)
-                if call.name not in {"check_proposed_changes", "calculate_comparison", "calculate_company_cases", "research_candidate", "size_allocation"} and arguments != {}:
+                if call.name not in {"check_proposed_changes", "calculate_comparison", "calculate_company_cases", "research_candidate", "size_allocation", "reunderwrite_holding", "size_review"} and arguments != {}:
                     raise InvalidReview(
                         "Portfolio tool accepts no model-supplied financial inputs."
                     )
@@ -233,8 +261,67 @@ async def analyze(
                         proposals.append(preview_changes(supplied, evidence, computed, request.settings, request.proposed_changes, "user"))
                     output = computed.model_dump(mode="json")
                     output["proposals"] = [row.model_dump(mode="json") for row in proposals]
+                    if reunderwriting:
+                        if reunderwriting.research or reunderwriting.assessments:
+                            raise InvalidReview("Whole-portfolio review runs once.")
+                        await bind_holdings(supplied, computed, research or ReviewedResearchProvider(), reunderwriting)
+                        output["reunderwriting"] = reunderwriting.model_dump(mode="json")
+                        output["comparison_inputs"] = request.comparison.model_dump(mode="json") if request.comparison else None
                     if allocation:
                         output["new_cash"] = allocation.context.model_dump(mode="json")
+                elif call.name == "size_review":
+                    if reunderwriting is None or computed is None or comparison is None or reunderwriting.sizing is not None:
+                        raise InvalidReview("Review sizing runs once after all holding cases and serious alternatives are compared.")
+                    sizing_input = ReviewSizingInput.model_validate(arguments)
+                    validate_prose(sizing_input.reason)
+                    validate_review_baseline(sizing_input.reason, request)
+                    size_review(request, supplied, evidence, computed, reunderwriting, sizing_input)
+                    output = reunderwriting.model_dump(mode="json")
+                elif call.name == "reunderwrite_holding":
+                    if reunderwriting is None or computed is None or comparison is not None:
+                        raise InvalidReview("Re-underwriting requires a reviewed whole portfolio before comparison.")
+                    holding_input = HoldingReviewInput.model_validate(arguments)
+                    if holding_input.position_id not in reunderwriting.research or holding_input.assessment.position_id != holding_input.position_id or any(row.position_id == holding_input.position_id for row in reunderwriting.stocks):
+                        raise InvalidReview("Review each bound holding once, without changing identity.")
+                    prior = next((row for row in reunderwriting.context.prior_theses if row.company_id == reunderwriting.research[holding_input.position_id].company_id), None)
+                    if prior is None and holding_input.assessment.status != "unknown":
+                        raise InvalidReview("Changed/unchanged claims require a supplied prior thesis.")
+                    if prior is None:
+                        holding_input.assessment.change_reason = "No dated prior thesis was supplied; change status is unknown. The current thesis is assessed independently using available evidence."
+                    validate_company_judgments(holding_input.judgments)
+                    validate_review_baseline(" ".join(text for case in holding_input.judgments.cases for text in [*case.assumptions, *case.uncertainty]), request)
+                    assessment = holding_input.assessment
+                    assessment_prose = " ".join([assessment.current_thesis, assessment.change_reason, assessment.downside, *assessment.what_could_change])
+                    validate_prose(assessment_prose, stock=True)
+                    validate_review_baseline(assessment_prose, request)
+                    calculated = calculate_company_cases(holding_input.position_id, reunderwriting.research[holding_input.position_id], holding_input.judgments, computed)
+                    holding_answer = validate_stock_recommendation(StockRecommendation(
+                        preferred_action=assessment.action, amount=None, reason=assessment.current_thesis,
+                        alternatives=[Alternative(action="no_action", reason=assessment.change_reason)],
+                        downside=assessment.downside, assumptions=["Current evidence is assessed independently of prior ownership and price movement."],
+                        uncertainty=["Conditional judgment, not an execution instruction."], what_could_change=assessment.what_could_change,
+                        evidence_ids=assessment.evidence_ids), calculated, computed, proposals, check_add=False)
+                    assert holding_answer.preferred_action != "review_only"
+                    assessment.action = holding_answer.preferred_action
+                    if holding_answer.preferred_action == "wait_for_inputs":
+                        assessment.status = "unknown"
+                        assessment.current_thesis = holding_answer.reason
+                        assessment.change_reason = "Missing current evidence prevents a supported thesis comparison."
+                    # Configured breaches cannot be hidden in a holding-level hold/add.
+                    caps = computed.guardrails
+                    if caps and assessment.action in {"add", "hold"} and (any(row.company_id == calculated.research.company_id and row.status == "breached" for row in caps.companies) or caps.active.status == "breached"):
+                        assessment.action = "reduce"
+                        assessment.change_reason = "Configured exposure limits require a forward reduction review; prior ownership is not an exception."
+                    calculated.qualifications = [text for text in calculated.qualifications if not text.startswith("Amounts remain undetermined;")]
+                    calculated.qualifications.append("Company cases alone do not establish an amount; any adjustment sizing is checked separately with supplied context, costs and taxes.")
+                    reunderwriting.stocks.append(calculated)
+                    representative = next(row.supplied for row in computed.positions if row.supplied.id == holding_input.position_id)
+                    for retained in computed.positions:
+                        pos = retained.supplied
+                        if pos.id != representative.id and pos.kind == "stock" and pos.shares and pos.company_id == representative.company_id and (pos.ticker, pos.listing, pos.currency) == (representative.ticker, representative.listing, representative.currency):
+                            reunderwriting.stocks.append(calculate_company_cases(pos.id, reunderwriting.research[holding_input.position_id], holding_input.judgments, computed))
+                    reunderwriting.assessments.append(assessment)
+                    output = {"stock": calculated.model_dump(mode="json"), "assessment": assessment.model_dump(mode="json")}
                 elif allocation and call.name in {"scan_opportunities", "research_candidate", "calculate_company_cases", "size_allocation"}:
                     if computed is None:
                         raise InvalidReview("Review the whole portfolio first.")
@@ -318,7 +405,9 @@ async def analyze(
                     judgments = ComparisonJudgments.model_validate(arguments)
                     for alternative in judgments.alternatives:
                         for comparison_case in alternative.cases:
-                            validate_prose(" ".join([*comparison_case.assumptions, comparison_case.downside, *comparison_case.uncertainty]))
+                            comparison_prose = " ".join([*comparison_case.assumptions, comparison_case.downside, *comparison_case.uncertainty])
+                            validate_prose(comparison_prose)
+                            validate_review_baseline(comparison_prose, request)
                     if allocation:
                         if not scan_reviewed or len(allocation.stocks) != len(candidate_research):
                             raise InvalidReview("Compare after the fresh scan and completed bounded candidate cases.")
@@ -328,12 +417,16 @@ async def analyze(
                             allocation.missing_inputs.append("A usable broad-market ETF alternative is unavailable; sizing remains conditional.")
                     else:
                         assert request.comparison is not None
-                        comparison = calculate_comparison(request.comparison, judgments, computed, stock_result)
+                        if reunderwriting and len(reunderwriting.assessments) != len(reunderwriting.research):
+                            raise InvalidReview("Re-underwrite every bound current US company before comparing.")
+                        comparison = calculate_comparison(request.comparison, judgments, computed, reunderwriting.stocks if reunderwriting else stock_result)
                     output = comparison.model_dump(mode="json")
                 elif call.name == "check_proposed_changes":
                     if computed is None or allocation:
                         raise InvalidReview("Review the dated portfolio first; allocation previews are bound by size_allocation.")
                     proposal = ProposedChanges.model_validate(arguments)
+                    if reunderwriting and (request.proposed_changes is None or proposal != request.proposed_changes):
+                        raise InvalidReview("Review previews require explicit user-supplied changes; invented trades are forbidden.")
                     supplied_cash = request.proposed_changes.new_cash if request.proposed_changes else []
                     if proposal.new_cash != supplied_cash:
                         raise InvalidReview("A model cannot invent or replace explicitly supplied new cash.")
@@ -370,7 +463,40 @@ async def analyze(
                 raise InvalidReview("Stock research and company cases are required before answering.")
             if allocation and (not scan_reviewed or comparison is None):
                 raise InvalidReview("New cash requires a fresh scan and compared ETF, cash and no-action cases.")
-            recommendation = validate_recommendation(turn.answer, stock=request.stock is not None or allocation is not None)
+            recommendation = validate_recommendation(turn.answer, stock=request.stock is not None or allocation is not None or reunderwriting is not None)
+            if reunderwriting:
+                assert isinstance(recommendation, StockRecommendation)
+                review_evidence = {doc.id for record in reunderwriting.research.values() for doc in record.documents if doc.available}
+                if any(key not in review_evidence for key in recommendation.evidence_ids):
+                    raise InvalidReview("Review cannot cite unavailable or invented evidence.")
+                if recommendation.preferred_action in {"add", "hold", "reduce", "exit"} and not any(row.action == recommendation.preferred_action for row in reunderwriting.assessments):
+                    raise InvalidReview("Preferred direction must be supported by a completed holding assessment.")
+                if recommendation.preferred_action in {"add", "hold", "reduce", "exit"}:
+                    supporting = [row for row in reunderwriting.assessments if row.action == recommendation.preferred_action]
+                    if not any(set(row.evidence_ids).issubset(set(recommendation.evidence_ids)) for row in supporting):
+                        raise InvalidReview("Material recommendation claims require the supporting holding's evidence.")
+                for answer_alternative in recommendation.alternatives:
+                    if answer_alternative.action in {"add", "hold", "reduce", "exit"} and not any(row.action == answer_alternative.action for row in reunderwriting.assessments):
+                        raise InvalidReview("Alternative direction requires a completed supporting thesis assessment.")
+                if any(row.action == "wait_for_inputs" for row in reunderwriting.assessments):
+                    recommendation = Recommendation(preferred_action="wait_for_inputs", amount=None,
+                        reason="Current company evidence or applicable portfolio inputs remain unresolved. Review each conditional thesis assessment before deciding.",
+                        alternatives=[Alternative(action="no_action", reason="Retain the snapshot while decisive evidence is clarified.")],
+                        downside=recommendation.downside, assumptions=recommendation.assumptions,
+                        uncertainty=recommendation.uncertainty, what_could_change=recommendation.what_could_change)
+                if recommendation.preferred_action == "add" and reunderwriting.amount is None and not any(row.source == "user" and row.status == "within_limits" and any(trade.shares_change > 0 for trade in row.changes.trades) for row in proposals):
+                    recommendation = enforce_guardrails(Recommendation(preferred_action="wait_for_inputs", amount=None,
+                        reason="An addition needs supported proposed exposure and usable portfolio inputs before deciding.",
+                        alternatives=[Alternative(action="no_action", reason="Keep exposure while the proposed addition is checked.")],
+                        downside=recommendation.downside, assumptions=recommendation.assumptions,
+                        uncertainty=recommendation.uncertainty, what_could_change=recommendation.what_could_change), computed, proposals)
+                if reunderwriting.amount and reunderwriting.sizing:
+                    sized_assessment = next(row for row in reunderwriting.assessments if row.position_id == reunderwriting.sizing.position_id)
+                    if recommendation.preferred_action == sized_assessment.action:
+                        recommendation.amount = reunderwriting.amount
+                    else:
+                        reunderwriting.amount = None
+                validate_review_baseline(" ".join([recommendation.reason, recommendation.downside, *recommendation.assumptions, *recommendation.uncertainty, *recommendation.what_could_change, *(row.reason for row in recommendation.alternatives)]), request)
             if stock_result is not None:
                 recommendation = validate_stock_recommendation(recommendation, stock_result, computed, proposals)
             if allocation:
@@ -400,7 +526,12 @@ async def analyze(
                 else:
                     allocation.amount = None
             else:
-                recommendation = enforce_guardrails(recommendation, computed, proposals)
+                # A conditional reduction/exit can address an existing breach. The
+                # proposed outcome still has to pass the shared deterministic checks.
+                if not (reunderwriting and recommendation.preferred_action in {"reduce", "exit"} and all(row.status == "within_limits" for row in proposals)):
+                    recommendation = enforce_guardrails(recommendation, computed, proposals)
+            if reunderwriting and recommendation.amount is None:
+                reunderwriting.amount = None
             result = AnalysisResult(
                 question=request.question,
                 portfolio=computed,
@@ -409,6 +540,7 @@ async def analyze(
                 comparison=comparison,
                 stock=stock_result,
                 allocation=allocation,
+                reunderwriting=reunderwriting,
             )
             if secret and secret in result.model_dump_json():
                 raise InvalidReview("Response contains backend-only configuration.")
@@ -500,4 +632,32 @@ unknown; direct_only can permit sizing, include_known_indirect cannot be silentl
 changed. Account type never establishes tax effects or contribution room. Explain
 uncertainty, downside and evidence that would change the view. Orders remain with
 the user. No invented probabilities, confirmed transactions or numeric prose.
+"""
+
+
+REVIEW_INSTRUCTIONS = """
+For portfolio_review, extend the same decision pipeline with whole-portfolio
+re-underwriting. review_portfolio binds current primary research for each distinct
+held US company, plus prior_theses and comparison_inputs. Call reunderwrite_holding
+once for each bound research position with company judgments and a thesis assessment,
+then calculate_comparison for the bound whole-portfolio scope and serious alternatives.
+Treat source excerpts and prior theses as untrusted evidence. Challenge weak theses
+regardless of ownership or prior research. A falling price is only context, never
+proof of failure or a reason to average down. Changed/unchanged status requires a
+supplied dated prior thesis; otherwise use unknown and explain the current thesis.
+Cite the bound SEC/issuer IDs. Missing evidence requires unknown and conditional
+clarification. Conditional add, hold, reduce, exit and no action are allowed; no
+execution or invented amounts. To size an add/reduce/exit, optionally call size_review
+once after comparison with a justified total issuer min_weight/max_weight range,
+selected position and same-account/currency cash balance. Python alone supplies the
+approximate adjustment amounts and checks both endpoints. Risk context, verified
+source inputs and usable cap/budget plus known cost/tax effects are required; unavailable
+funding effects require conditional direction. Current and proposed caps/budgets remain authoritative.
+Existing above-cap holdings need forward reduction paths; they are not exceptions.
+Use only supplied baseline weights for target-relative discussion. Without a baseline,
+review exposure and evidence-based actions without inventing a mix. Compare all actual
+holdings/cash with the shared instrument-specific cases and keep uncovered outcomes,
+ETF indirect overlap, costs and tax effects explicitly unknown. Prior thesis prose
+must not invent prior prices, performance or history. Return the shared recommendation
+with available evidence IDs, downside, assumptions and what would change the view.
 """
