@@ -122,10 +122,16 @@ STOCK_TOOLS: list[FunctionToolParam] = [
     {"type": "function", "name": "calculate_company_cases", "description": "Calculate conditional company cases from bound reported facts and explained operating judgments. All paths have five annual elements. Net margin uses earnings, FCF applies cash conversion then reinvestment; book/FFO grow a reported metric with neutral operating transforms. Dilution changes shares; payout distributions remain idle cash. Book-value payout uses explicit annual return_on_equity earnings on opening book, never book capital itself. Use null return_on_equity for other methods. Exit multiple and sensitivities are explicit. No facts, probabilities or allocations may be supplied.", "parameters": CompanyJudgments.model_json_schema(), "strict": True},
 ]
 
+SEDAR_TOOL: FunctionToolParam = {
+    **PORTFOLIO_TOOL,
+    "name": "get_sedar_filings",
+    "description": "Read backend-bound dated SEDAR+ filing verification links and checked facts for the selected Canadian issuer. No arguments.",
+}
+
 
 ALLOCATION_TOOLS: list[FunctionToolParam] = [
     {**PORTFOLIO_TOOL, "name": "scan_opportunities", "description": "Read the fresh backend-bound request-local opportunity screen and refreshed prices. No arguments; coverage is explicit."},
-    {"type": "function", "name": "research_candidate", "description": "Read primary SEC and issuer evidence for a scanned US candidate that could change this decision. At most two distinct candidates; give a qualitative decision-changing reason.", "parameters": CandidateResearchInput.model_json_schema(), "strict": True},
+    {"type": "function", "name": "research_candidate", "description": "Read primary filing and issuer evidence for a scanned US or Canadian candidate that could change this decision. At most two distinct candidates; give a qualitative decision-changing reason.", "parameters": CandidateResearchInput.model_json_schema(), "strict": True},
     {"type": "function", "name": "size_allocation", "description": "Propose a justified total post-contribution company or fund exposure range. Python converts it into approximate local-currency new-cash amounts and checks both endpoints against company cap and active budget; never waive limits.", "parameters": AllocationJudgment.model_json_schema(), "strict": True},
 ]
 
@@ -151,6 +157,11 @@ class OpenAIModel:
         schema = (StockRecommendation if request.get("stock") or allocation or review or theme else Recommendation).model_json_schema()
         schema["properties"]["amount"] = {"type": "null"}
         stock_tools: list[FunctionToolParam] = copy.deepcopy(STOCK_TOOLS)
+        if request.get("stock"):
+            target_id = request["stock"].get("position_id")
+            target_pos = next((p for p in request.get("portfolio", {}).get("positions", []) if p.get("id") == target_id), None)
+            if target_pos and (target_pos.get("currency") == "CAD" or target_pos.get("listing") in {"XTSE", "XTSX", "NEOE", "XCNQ"}):
+                stock_tools = [SEDAR_TOOL, STOCK_TOOLS[1], STOCK_TOOLS[2]]
         if review:
             stock_tools = [{"type": "function", "name": "reunderwrite_holding", "description": "Challenge a bound current holding thesis against current primary evidence and any supplied prior thesis, then compute company cases. No price history or facts may be invented. Each bound US company runs once before comparison.", "parameters": HoldingReviewInput.model_json_schema(), "strict": True},
                            {"type": "function", "name": "size_review", "description": "Translate an explained whole-portfolio issuer exposure range into local adjustment amounts after evidence-backed holding review and comparison. Python checks both endpoints, funding, source inputs, supplied risk context, costs/tax effects and configured cap/budget. Unknown inputs never authorize an amount.", "parameters": ReviewSizingInput.model_json_schema(), "strict": True}]

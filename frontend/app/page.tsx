@@ -9,7 +9,7 @@ import NewCashInputs from "../components/NewCashInputs";
 import ReviewResult from "../components/ReviewResult";
 import GuardrailInputs from "../components/GuardrailInputs";
 import ComparisonInputs from "../components/ComparisonInputs";
-import { post, isThemeCandidate, themeComparison, portfolioReviewComparison, type PortfolioReviewInput, type NewCashInput, type Analysis, type Snapshot, type PortfolioSettings, type ProposedChanges, type ComparisonInput } from "../lib/contracts";
+import { post, isThemeCandidate, isSupportedStock, themeComparison, portfolioReviewComparison, type PortfolioReviewInput, type NewCashInput, type Analysis, type Snapshot, type PortfolioSettings, type ProposedChanges, type ComparisonInput } from "../lib/contracts";
 
 export default function Page() {
   const [snapshot, setSnapshot] = useState<Snapshot>({ as_of: "", reporting_currency: "CAD",
@@ -37,7 +37,7 @@ export default function Page() {
     setReviewContext(current => ({ ...current, prior_theses: current.prior_theses.filter(prior => next.positions.some(row => row.company_id === prior.company_id)) }));
     if (next !== snapshot) setNewCash(current => ({ ...current, confirmed: false,
       cash_position_id: next.positions.some(row => row.kind === "cash" && row.id === current.cash_position_id) ? current.cash_position_id : null }));
-    const nextStockId = next.positions.some(row => row.id === stockId && row.kind === "stock" && row.currency === "USD" && ["XNAS", "XNYS", "XASE"].includes(row.listing || "")) ? stockId : "";
+    const nextStockId = next.positions.some(row => row.id === stockId && isSupportedStock(row)) ? stockId : "";
     setStockId(nextStockId);
     setComparison(current => {
       if (!current) return null;
@@ -94,10 +94,10 @@ export default function Page() {
       <PortfolioReviewInputs enabled={reviewEnabled} onEnabled={enabled => { setReviewEnabled(enabled); if (enabled) { setThemeEnabled(false); setNewCashEnabled(false); setStockId(""); setComparison(null); } }} value={reviewContext} onChange={setReviewContext} snapshot={snapshot} busy={busy || importing} />
       <NewCashInputs enabled={newCashEnabled} onEnabled={enabled => { setNewCashEnabled(enabled); if (enabled) { setThemeEnabled(false); setReviewEnabled(false); } }} value={newCash} onChange={setNewCash}
         snapshot={snapshot} busy={busy || importing} />
-      {!newCashEnabled && !themeEnabled && <>{!reviewEnabled && <section className="panel" aria-label="Stock question inputs"><h2>Analyze a US stock</h2>
-        <label>US stock to analyze<select value={stockId} disabled={busy || importing} onChange={event => { const id = event.target.value; setStockId(id); setComparison(current => current ? { ...current, alternatives: current.alternatives.flatMap(alt => alt.kind === "stock" ? id ? [{ ...alt, position_id: id }] : [] : [alt]), effects: current.effects.filter(effect => id || effect.alternative_id !== "company") } : null); }}>
-          <option value="">Portfolio review only</option>{snapshot.positions.filter(row => row.kind === "stock" && row.currency === "USD" && ["XNAS", "XNYS", "XASE"].includes(row.listing || "")).map(row => <option key={row.id} value={row.id}>{row.ticker} / {row.listing} / {row.id}</option>)}
-        </select></label><p className="muted small">Choose the listing and ask your stock question below. Add a candidate with zero shares if needed. Primary research uses available issuer and SEC evidence. Without a custom comparison, the analysis compares the company with available diversified fund and cash rows and retaining the selected scope.</p></section>}
+      {!newCashEnabled && !themeEnabled && <>{!reviewEnabled && <section className="panel" aria-label="Stock question inputs"><h2>Analyze a stock</h2>
+        <label>US or Canadian stock to analyze<select aria-label="US stock to analyze" value={stockId} disabled={busy || importing} onChange={event => { const id = event.target.value; setStockId(id); setComparison(current => current ? { ...current, alternatives: current.alternatives.flatMap(alt => alt.kind === "stock" ? id ? [{ ...alt, position_id: id }] : [] : [alt]), effects: current.effects.filter(effect => id || effect.alternative_id !== "company") } : null); }}>
+          <option value="">Portfolio review only</option>{snapshot.positions.filter(isSupportedStock).map(row => <option key={row.id} value={row.id}>{row.ticker} / {row.listing} / {row.id}</option>)}
+        </select></label><p className="muted small">Choose the listing and ask your stock question below. Add a candidate with zero shares if needed. Primary research uses available issuer and SEC or SEDAR+ evidence. Without a custom comparison, the analysis compares the company with available diversified fund and cash rows and retaining the selected scope.</p></section>}
       <ComparisonInputs value={comparison} onChange={setComparison} snapshot={snapshot} stockId={stockId} portfolioReview={reviewEnabled} busy={busy || importing} /></>}
       <section className="panel question-panel" aria-labelledby="question-title"><p className="eyebrow">02 / ASK YOUR ANALYST</p><h2 id="question-title">What would you like to understand?</h2>
         <label className="sr-only" htmlFor="question">Investment question</label><textarea id="question" required maxLength={1000} value={question}

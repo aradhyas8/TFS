@@ -23,6 +23,7 @@ from .schemas import (
     ProposedChanges,
     ProposedTrade,
     Snapshot,
+    is_supported_stock,
 )
 
 
@@ -51,7 +52,7 @@ class ReviewedDiscoveryProvider:
             scan.issues.append("Opportunity universe date differs from the decision date; no current coverage is claimed.")
         ids = {row.position.id for row in scan.candidates}
         for row in snapshot.positions:
-            eligible = row.kind == "etf" and row.etf_role == "diversified" or row.kind == "stock" and row.currency == "USD" and row.listing in {"XNAS", "XNYS", "XASE"}
+            eligible = row.kind == "etf" and row.etf_role == "diversified" or is_supported_stock(row)
             if eligible and row.id not in ids and len(scan.candidates) < 8:
                 candidate = row.model_copy(update={"shares": Decimal(0)}, deep=True)
                 scan.candidates.append(DiscoveryCandidate(position=candidate, as_of=snapshot.as_of,

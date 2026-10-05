@@ -58,6 +58,27 @@ class Position(Contract):
         return self
 
 
+US_LISTINGS = frozenset({"XNAS", "XNYS", "XASE"})
+CANADIAN_LISTINGS = frozenset({"XTSE", "XTSX", "NEOE", "XCNQ"})
+
+
+def is_canadian_security(currency: str | None, listing: str | None) -> bool:
+    if listing in CANADIAN_LISTINGS:
+        return True
+    if listing in US_LISTINGS:
+        return False
+    return currency == "CAD"
+
+
+def is_supported_stock(row: Position) -> bool:
+    if row.kind != "stock":
+        return False
+    return (
+        (row.currency == "USD" and row.listing in US_LISTINGS)
+        or (row.currency == "CAD" and row.listing in CANADIAN_LISTINGS)
+    )
+
+
 class FX(Contract):
     from_currency: Currency
     to_currency: Currency
@@ -344,8 +365,8 @@ class DiscoveryCandidate(Contract):
     def prospective(self) -> Self:
         if self.position.kind == "cash" or self.position.shares != 0:
             raise ValueError("Discovery records must be zero-share prospective securities.")
-        if self.position.kind == "stock" and (self.position.currency != "USD" or self.position.listing not in {"XNAS", "XNYS", "XASE"}):
-            raise ValueError("Discovery stock research supports US listings only.")
+        if self.position.kind == "stock" and not is_supported_stock(self.position):
+            raise ValueError("Discovery stock research supports US and Canadian listings only.")
         if self.position.kind == "etf" and self.position.etf_role != "diversified":
             raise ValueError("Allocation fund alternatives require diversified exposure.")
         return self
@@ -426,8 +447,8 @@ class AnalysisRequest(Contract):
                 row = rows.get(key)
                 if row is None or row.kind not in {"stock", "etf"}:
                     raise ValueError("Shortlist must reference supplied securities.")
-                if row.kind == "stock" and (row.currency != "USD" or row.listing not in {"XNAS", "XNYS", "XASE"}):
-                    raise ValueError("Canadian company research awaits the later evidence extension.")
+                if row.kind == "stock" and not is_supported_stock(row):
+                    raise ValueError("Shortlist stock research supports US and Canadian listings only.")
             if self.comparison is None and self.theme.shortlist:
                 alternatives = [ComparisonAlternative(id=f"candidate-{key}", kind=rows[key].kind, position_id=key) for key in self.theme.shortlist]
                 fund = next((row for row in rows.values() if row.kind == "etf" and row.etf_role == "diversified" and row.id not in self.theme.shortlist), None)
@@ -455,7 +476,7 @@ class AnalysisRequest(Contract):
             if self.comparison is None:
                 representatives: dict[str, Position] = {}
                 for held in self.portfolio.positions:
-                    if held.kind == "stock" and held.shares and held.currency == "USD" and held.listing in {"XNAS", "XNYS", "XASE"}:
+                    if held.kind == "stock" and held.shares and is_supported_stock(held):
                         representatives.setdefault(held.company_id or held.id, held)
                 alternatives = [ComparisonAlternative(id=f"company-{row.id}", kind="stock", position_id=row.id) for row in representatives.values()]
                 fund = next((row for row in self.portfolio.positions if row.kind == "etf" and row.etf_role == "diversified"), None)
@@ -478,8 +499,8 @@ class AnalysisRequest(Contract):
             return self
         if self.stock is not None:
             target = next((row for row in self.portfolio.positions if row.id == self.stock.position_id), None)
-            if target is None or target.kind != "stock" or target.listing not in {"XNAS", "XNYS", "XASE"} or target.currency != "USD":
-                raise ValueError("Stock research requires a supplied US stock listing in USD.")
+            if target is None or target.kind != "stock" or not is_supported_stock(target):
+                raise ValueError("Stock research requires a supplied US or Canadian stock listing.")
         if self.stock is not None and self.comparison is None:
             target = next(row for row in self.portfolio.positions if row.id == self.stock.position_id)
             cash = next((row for row in self.portfolio.positions if row.kind == "cash" and row.cash), None)
@@ -503,7 +524,7 @@ class AnalysisRequest(Contract):
                 continue
             row = rows.get(alternative.position_id)
             if alternative.kind == "stock" and self.theme is None and self.portfolio_review is None and (self.stock is None or alternative.position_id != self.stock.position_id):
-                raise ValueError("Stock alternatives must use the selected researched US listing.")
+                raise ValueError("Stock alternatives must use the selected researched listing.")
             if row is None or (alternative.kind == "etf" and (row.kind != "etf" or row.etf_role != "diversified" and not (self.theme and row.id in self.theme.shortlist))) or (alternative.kind in {"cash", "short_bill"} and row.kind != "cash"):
                 raise ValueError("Select a supplied diversified ETF or a cash-currency row for cash/short bills.")
         if self.portfolio_review:
@@ -512,8 +533,8 @@ class AnalysisRequest(Contract):
             for alt in comparison.alternatives:
                 if alt.kind == "stock":
                     row = rows[str(alt.position_id)]
-                    if row.kind != "stock" or row.currency != "USD" or row.listing not in {"XNAS", "XNYS", "XASE"} or not row.shares:
-                        raise ValueError("Review stock alternatives require held US listings.")
+                    if row.kind != "stock" or not is_supported_stock(row) or not row.shares:
+                        raise ValueError("Review stock alternatives require held US or Canadian listings.")
         relevant = set(comparison.scope_position_ids) | {row.position_id for row in comparison.alternatives}
         for fact in comparison.fund_facts:
             if fact.position_id not in relevant or fact.position_id not in rows or rows[fact.position_id].kind != "etf":
@@ -722,7 +743,7 @@ class ComparisonResult(Contract):
 
 class ResearchDocument(Contract):
     id: Identifier
-    authority: Literal["sec", "issuer", "macro"]
+    authority: Literal["sec", "sedar", "sedar_plus", "issuer", "macro"]
     company_id: Identifier
     url: str
     published_on: date
@@ -740,6 +761,8 @@ class ResearchDocument(Contract):
             raise ValueError("Primary evidence needs a public HTTPS reference.")
         if self.authority == "sec" and (parsed.hostname != "www.sec.gov" or not parsed.path.startswith("/Archives/edgar/data/")):
             raise ValueError("SEC evidence must reference the original EDGAR filing.")
+        if self.authority in {"sedar", "sedar_plus"} and (parsed.hostname not in {"www.sedarplus.ca", "sedarplus.ca"} or not parsed.path or parsed.path == "/"):
+            raise ValueError("SEDAR+ evidence must reference an exact sedarplus.ca filing verification link.")
         return self
 
 

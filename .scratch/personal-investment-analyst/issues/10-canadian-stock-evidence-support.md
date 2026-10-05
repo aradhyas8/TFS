@@ -4,7 +4,7 @@
 
 **Blocked by:** 05: US stock analysis in portfolio context.
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **Authority:** [Personal Investment Analyst specification](../../../specs/personal-investment-analyst.md).
 
@@ -33,10 +33,10 @@ Implement within the single shared FastAPI decision pipeline and the authoritati
 
 ## Acceptance criteria
 
-- [ ] A Canadian stock can be assessed through the same pipeline using permitted evidence and exact SEDAR+ verification links.
-- [ ] Evidence limits and unresolved facts remain visible and affect confidence/sizing appropriately.
-- [ ] Existing US and portfolio journeys remain usable and unchanged in architecture.
-- [ ] Only ticket 05 directly blocks this extension; priority remains after the main four workflows.
+- [x] A Canadian stock can be assessed through the same pipeline using permitted evidence and exact SEDAR+ verification links.
+- [x] Evidence limits and unresolved facts remain visible and affect confidence/sizing appropriately.
+- [x] Existing US and portfolio journeys remain usable and unchanged in architecture.
+- [x] Only ticket 05 directly blocks this extension; priority remains after the main four workflows.
 
 ## Non-goals
 

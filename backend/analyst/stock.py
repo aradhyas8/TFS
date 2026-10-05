@@ -9,6 +9,7 @@ from .schemas import (
     PortfolioReview,
     ResearchFact,
     StockResult,
+    is_canadian_security,
 )
 
 BASIS = (
@@ -44,6 +45,8 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
             return None
         expected_unit = "shares" if metric == "shares" else "currency"
         refs = [documents[ref] for ref in candidate.document_ids]
+        is_canadian = is_canadian_security(row.supplied.currency, row.supplied.listing) or any(doc.authority in {"sedar", "sedar_plus"} for doc in research.documents)
+        required_filing = {"sedar", "sedar_plus"} if is_canadian else {"sec"}
         if (candidate.metric != metric or candidate.unit != expected_unit
                 or candidate.currency != (None if metric == "shares" else row.supplied.currency)
                 or candidate.value is None or candidate.period_end > portfolio.as_of
@@ -51,7 +54,7 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
                 or metric in {"revenue", "ffo"} and (candidate.period_start is None or not 350 <= (candidate.period_end - candidate.period_start).days <= 380)
                 or not all((candidate.filing_checked, candidate.notes_checked,
                             candidate.custom_tags_checked, candidate.segments_checked))
-                or not any(doc.authority == "sec" and doc.available for doc in refs)
+                or not any(doc.authority in required_filing and doc.available for doc in refs)
                 or any(not doc.available or doc.published_on > portfolio.as_of or doc.as_of > portfolio.as_of or doc.as_of < candidate.period_end for doc in refs)):
             issues.append(f"{metric}: period, unit, definition or primary filing checks are unusable; fact remains unknown.")
             return None
