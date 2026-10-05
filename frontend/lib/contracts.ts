@@ -20,10 +20,38 @@ export type PortfolioSettings = { single_company_cap?: string | null; active_bud
   cash_is_deliberate_tilt?: boolean | null };
 export type ProposedChanges = { new_cash: { cash_position_id: string; amount: string }[];
   trades: { position_id: string; shares_change: string; cash_position_id: string }[] };
+export type HoldingsCoverage = "full" | "partial" | "unknown" | "stale";
+export type FundOverlapContribution = {
+  position_id: string;
+  ticker: string | null;
+  listing: string | null;
+  fund_name: string | null;
+  fund_weight: string | null;
+  weight_in_fund: string;
+  indirect_weight: string | null;
+  indirect_value: string | null;
+  as_of: string;
+  source: string;
+  coverage: HoldingsCoverage;
+};
+export type CompanyOverlap = {
+  company_id: string;
+  company_name: string;
+  direct_value: string;
+  direct_weight: string | null;
+  indirect_value: string;
+  indirect_weight: string | null;
+  total_value: string | null;
+  total_weight: string | null;
+  coverage: HoldingsCoverage;
+  source_dates: string[];
+  contributing_funds: FundOverlapContribution[];
+};
 export type GuardrailReview = {
   settings: PortfolioSettings;
   companies: { company_id: string; company_name: string; current_weight: string | null; cap: string | null;
-    status: string; excess_value: string | null; reduction_to_cash: string | null; explanation: string }[];
+    status: string; excess_value: string | null; reduction_to_cash: string | null; explanation: string;
+    direct_weight?: string | null; indirect_weight?: string | null; policy?: "direct_only" | "include_known_indirect" | null }[];
   active: { value: string | null; known_value: string; weight: string | null; budget: string | null; status: string;
     contributions: Record<string, string | null>; qualifications: string[] };
   baseline_comparison: { category: string; current_weight: string | null; baseline_weight: string | null; difference: string | null }[];
@@ -39,7 +67,8 @@ export type Review = {
   accounts: { id: string; name: string; total_value: string | null; known_value: string }[];
   direct_companies: { company_id: string; company_name: string; value: string | null; known_value: string;
     weight: string | null; position_ids: string[] }[];
-  baseline: Baseline | null; guardrails: GuardrailReview | null; indirect_exposure: "unknown"; qualifications: string[]; calculation_basis: string;
+  company_overlap: CompanyOverlap[];
+  baseline: Baseline | null; guardrails: GuardrailReview | null; indirect_exposure: HoldingsCoverage | "none"; qualifications: string[]; calculation_basis: string;
   source_inputs_usable: boolean; sizing_eligible: false;
 };
 export type Recommendation = {

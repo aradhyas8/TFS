@@ -16,3 +16,5 @@ artifacts/
 .scratch/npm-cache/
 .scratch/ticket-02-baseline/
 .scratch/ticket-02.diff
+.agents/
+skills-lock.json

@@ -1,5 +1,6 @@
 """Dated financial-source boundary. No model supplies identities, prices or rates."""
 
+import json
 import os
 from datetime import UTC, date, datetime
 from decimal import Decimal, localcontext
@@ -8,13 +9,14 @@ from typing import Protocol
 
 import httpx
 
-from .schemas import FX, FinancialEvidence, Identity, Position, Quote, Snapshot
+from .schemas import FX, FinancialEvidence, Identity, Position, Quote, Snapshot, SponsorHoldings
 
 
 class FinancialProvider(Protocol):
     async def identity(self, position: Position, as_of: date) -> Identity: ...
     async def quote(self, position: Position, as_of: date) -> Quote | None: ...
     async def fx(self, from_currency: str, to_currency: str, as_of: date) -> FX | None: ...
+    async def sponsor_holdings(self, position: Position, as_of: date) -> SponsorHoldings | None: ...
 
 
 class PersonalFinancialProvider:
@@ -34,6 +36,13 @@ class PersonalFinancialProvider:
     def from_environment(cls) -> "PersonalFinancialProvider":
         path = os.environ.get("FINANCIAL_REFERENCE_FILE")
         reference = FinancialEvidence.model_validate_json(Path(path).read_text(encoding="utf-8")) if path else None
+        holdings_path = os.environ.get("SPONSOR_HOLDINGS_REFERENCE_FILE")
+        if holdings_path:
+            extra = json.loads(Path(holdings_path).read_text(encoding="utf-8"))
+            if reference is None:
+                reference = FinancialEvidence()
+            for key, val in extra.items():
+                reference.sponsor_holdings[key] = SponsorHoldings.model_validate(val) if val else None
         return cls(reference, valet=os.environ.get("BOC_FX_ENABLED", "false").lower() == "true")
 
     async def identity(self, position: Position, as_of: date) -> Identity:
@@ -46,6 +55,20 @@ class PersonalFinancialProvider:
 
     async def quote(self, position: Position, as_of: date) -> Quote | None:
         return self.reference.quotes.get(position.id)
+
+    async def sponsor_holdings(self, position: Position, as_of: date) -> SponsorHoldings | None:
+        holdings = self.reference.sponsor_holdings.get(position.id)
+        if holdings is not None:
+            return holdings
+        if position.ticker and position.listing:
+            holdings = self.reference.sponsor_holdings.get(f"{position.ticker}:{position.listing}")
+            if holdings is not None:
+                return holdings
+        if position.ticker:
+            holdings = self.reference.sponsor_holdings.get(position.ticker)
+            if holdings is not None:
+                return holdings
+        return None
 
     async def fx(self, from_currency: str, to_currency: str, as_of: date) -> FX | None:
         supplied = next((rate for rate in self.reference.fx if
@@ -96,6 +119,9 @@ def contradictory_capture(as_of: date, captured_at: datetime | None) -> bool:
 
 async def refresh_financial_data(snapshot: Snapshot, provider: FinancialProvider) -> FinancialEvidence:
     evidence = FinancialEvidence()
+    if hasattr(provider, "reference") and getattr(provider.reference, "sponsor_holdings", None):
+        for key, holdings_item in provider.reference.sponsor_holdings.items():
+            evidence.sponsor_holdings[key] = holdings_item
     for position in snapshot.positions:
         if position.kind == "cash":
             continue
@@ -146,8 +172,26 @@ async def refresh_financial_data(snapshot: Snapshot, provider: FinancialProvider
             quote = quote.model_copy(update={"status": "stale"})
             evidence.issues.append(f"{position.id}: Contradictory quote capture time; quote remains unusable.")
         evidence.quotes[position.id] = quote
+
+        if position.kind == "etf":
+            holdings = None
+            if hasattr(provider, "sponsor_holdings"):
+                try:
+                    holdings = await provider.sponsor_holdings(position, snapshot.as_of)
+                except SOURCE_ERRORS:
+                    holdings = None
+                    evidence.issues.append(f"{position.id}: Sponsor holdings source failed; look-through remains unknown.")
+            if holdings is not None:
+                if holdings.as_of != snapshot.as_of:
+                    holdings = holdings.model_copy(update={"coverage": "stale", "status": "stale"})
+                    evidence.issues.append(f"{position.id}: Sponsor holdings date differs from snapshot date; look-through is stale.")
+                elif contradictory_capture(snapshot.as_of, holdings.captured_at):
+                    holdings = holdings.model_copy(update={"coverage": "stale", "status": "stale"})
+                    evidence.issues.append(f"{position.id}: Contradictory sponsor holdings capture time; look-through is stale.")
+                evidence.sponsor_holdings[position.id] = holdings
+
     currencies = dict.fromkeys(p.currency for p in snapshot.positions
-                               if p.currency != snapshot.reporting_currency)
+                                if p.currency != snapshot.reporting_currency)
     for currency in currencies:
         try:
             rate = await provider.fx(currency, snapshot.reporting_currency, snapshot.as_of)

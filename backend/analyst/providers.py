@@ -99,6 +99,7 @@ FINANCIAL_TOOLS: list[FunctionToolParam] = [
         ("resolve_identities", "Resolve the submitted security/listing identities with backend source provenance. Takes no arguments."),
         ("get_quotes", "Get qualified dated indicative quotes or labeled broker-display fallback for the submitted positions. Takes no arguments."),
         ("get_fx", "Get dated indicative FX into the submitted reporting currency. Takes no arguments."),
+        ("get_sponsor_holdings", "Get dated ETF sponsor holdings and look-through coverage for submitted positions. Takes no arguments."),
     ]
 ]
 

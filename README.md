@@ -1,6 +1,6 @@
 # Personal Investment Analyst
 
-A standalone Next.js and FastAPI app for tickets 01–05: enter a dated whole-portfolio snapshot, supply optional personal settings, select comparison alternatives, ask a question, and receive calculated exposure, guardrail checks and conditional five-year cases. All code is new.
+A standalone Next.js and FastAPI app for tickets 01–09: enter a dated whole-portfolio snapshot, supply optional personal settings, select comparison alternatives, ask a question, and receive calculated exposure, guardrail checks and conditional five-year cases. All code is new.
 
 ## Run locally
 
@@ -116,3 +116,8 @@ Ticket 07 adds **Review holdings and rebalance** to the existing question flow. 
 ## Theme discovery
 
 Ticket 08 adds **Explore a theme** to the existing question flow. Agree an economic mechanism, supplied US stock/ETF shortlist and tool-call effort before research. The same backend tests the mechanism against dated primary evidence, calculates instrument-appropriate cases, compares ETF/cash/no action and applies portfolio guardrails. A theme can lead to no action; unsupported amounts remain undetermined. See [docs/theme-discovery.md](docs/theme-discovery.md) for agreement, bounds, evidence and verification limits.
+
+## ETF indirect overlap and look-through
+
+Ticket 09 adds dated ETF company overlap look-through, recursive nested fund decomposition, honest coverage labeling (`full`, `partial`, `unknown`, `stale`, `none`), and enforcement of user's explicit `indirect_cap_policy` (`direct_only` vs `include_known_indirect`) without double counting or blocking sizing on partial coverage. Optional backend-only `SPONSOR_HOLDINGS_REFERENCE_FILE` supplies dated sponsor constituents; outdated or contradictory snapshots are marked stale. See [docs/etf-indirect-overlap.md](docs/etf-indirect-overlap.md) for contracts, formulas, cycle prevention, and limitations.
+

@@ -98,11 +98,35 @@ class Quote(Mark):
     qualification: SourceQualification | None = None
 
 
+HoldingsCoverage = Literal["full", "partial", "unknown", "stale"]
+
+
+class HoldingConstituent(Contract):
+    company_id: Identifier | None = None
+    company_name: Text | None = None
+    ticker: Identifier | None = None
+    listing: Identifier | None = None
+    kind: Literal["stock", "etf"] = "stock"
+    weight: Fraction
+
+
+class SponsorHoldings(Contract):
+    as_of: date
+    source: Identifier
+    source_url: str | None = None
+    coverage: HoldingsCoverage = "full"
+    holdings: list[HoldingConstituent] = Field(default_factory=list)
+    captured_at: AwareDatetime | None = None
+    status: Literal["verified", "indicative", "stale", "partial", "unresolved"] | None = None
+
+
 class FinancialEvidence(Contract):
     identities: dict[str, Identity] = Field(default_factory=dict)
     quotes: dict[str, Quote | None] = Field(default_factory=dict)
     fx: list[FX] = Field(default_factory=list)
+    sponsor_holdings: dict[str, SponsorHoldings | None] = Field(default_factory=dict)
     issues: list[str] = Field(default_factory=list)
+
 
 
 class Snapshot(Contract):
@@ -556,6 +580,34 @@ class CompanyExposure(Contract):
     position_ids: list[str]
 
 
+class FundOverlapContribution(Contract):
+    position_id: str
+    ticker: str | None = None
+    listing: str | None = None
+    fund_name: str | None = None
+    fund_weight: str | None = None
+    weight_in_fund: str
+    indirect_value: str | None = None
+    indirect_weight: str | None = None
+    as_of: date
+    source: str
+    coverage: HoldingsCoverage
+
+
+class CompanyOverlap(Contract):
+    company_id: str
+    company_name: str
+    direct_value: str | None = None
+    direct_weight: str | None = None
+    indirect_value: str | None = None
+    indirect_weight: str | None = None
+    total_value: str | None = None
+    total_weight: str | None = None
+    coverage: HoldingsCoverage = "full"
+    source_dates: list[date] = Field(default_factory=list)
+    contributing_funds: list[FundOverlapContribution] = Field(default_factory=list)
+
+
 CheckStatus = Literal["unset", "unknown", "within_limit", "breached"]
 
 
@@ -568,6 +620,9 @@ class CompanyCapCheck(Contract):
     excess_value: str | None
     reduction_to_cash: str | None
     explanation: str
+    direct_weight: str | None = None
+    indirect_weight: str | None = None
+    policy: str | None = None
 
 
 class ActiveBudgetCheck(Contract):
@@ -602,6 +657,7 @@ class PortfolioReview(Contract):
     positions: list[PositionResult]
     accounts: list[AccountResult]
     direct_companies: list[CompanyExposure]
+    company_overlap: list[CompanyOverlap] = Field(default_factory=list)
     total_value: str | None
     known_value: str
     holdings_value: str | None
@@ -611,7 +667,7 @@ class PortfolioReview(Contract):
     sizing_eligible: Literal[False] = False
     baseline: Baseline | None = None
     guardrails: GuardrailReview | None = None
-    indirect_exposure: Literal["unknown"] = "unknown"
+    indirect_exposure: Literal["none", "full", "partial", "unknown", "stale"] = "unknown"
     qualifications: list[str]
     calculation_basis: str
 
