@@ -8,6 +8,9 @@ from openai.types.responses import FunctionToolParam, ResponseInputParam, ToolCh
 
 from .config import Settings
 from .schemas import (
+    AllocationJudgment,
+    CandidateCasesInput,
+    CandidateResearchInput,
     CompanyJudgments,
     ComparisonJudgments,
     ProposedChanges,
@@ -116,6 +119,13 @@ STOCK_TOOLS: list[FunctionToolParam] = [
 ]
 
 
+ALLOCATION_TOOLS: list[FunctionToolParam] = [
+    {**PORTFOLIO_TOOL, "name": "scan_opportunities", "description": "Read the fresh backend-bound request-local opportunity screen and refreshed prices. No arguments; coverage is explicit."},
+    {"type": "function", "name": "research_candidate", "description": "Read primary SEC and issuer evidence for a scanned US candidate that could change this decision. At most two distinct candidates; give a qualitative decision-changing reason.", "parameters": CandidateResearchInput.model_json_schema(), "strict": True},
+    {"type": "function", "name": "size_allocation", "description": "Propose a justified total post-contribution company or fund exposure range. Python converts it into approximate local-currency new-cash amounts and checks both endpoints against company cap and active budget; never waive limits.", "parameters": AllocationJudgment.model_json_schema(), "strict": True},
+]
+
+
 class OpenAIModel:
     def __init__(self, settings: Settings) -> None:
         if not settings.api_key or not settings.model:
@@ -130,17 +140,24 @@ class OpenAIModel:
 
     async def respond(self, messages: list[dict[str, Any]], *, require_tool: bool) -> ModelTurn:
         choice: ToolChoiceFunctionParam = {"type": "function", "name": "review_portfolio"}
+        request = json.loads(messages[1]["content"])
+        allocation = bool(request.get("new_cash"))
+        schema = (StockRecommendation if request.get("stock") or allocation else Recommendation).model_json_schema()
+        schema["properties"]["amount"] = {"type": "null"}
+        stock_tools: list[FunctionToolParam] = copy.deepcopy(STOCK_TOOLS)
+        if allocation:
+            stock_tools = [{**STOCK_TOOLS[-1], "parameters": CandidateCasesInput.model_json_schema()}]
         response = await self.client.responses.create(
             model=self.settings.model,
             input=cast(ResponseInputParam, messages),
-            tools=[PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL, *STOCK_TOOLS],
+            tools=[PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL, *stock_tools, *(ALLOCATION_TOOLS if allocation else [])],
             tool_choice=choice if require_tool else "auto",
             parallel_tool_calls=False,
             text={
                 "format": {
                     "type": "json_schema",
                     "name": "portfolio_recommendation",
-                    "schema": (StockRecommendation if json.loads(messages[1]["content"]).get("stock") else Recommendation).model_json_schema(),
+                    "schema": schema,
                     "strict": True,
                 }
             },

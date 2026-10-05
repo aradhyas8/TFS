@@ -20,3 +20,5 @@ def no_live_services(monkeypatch):
     monkeypatch.delenv("FINANCIAL_REFERENCE_FILE", raising=False)
 
     monkeypatch.delenv("RESEARCH_REFERENCE_FILE", raising=False)
+
+    monkeypatch.delenv("DISCOVERY_REFERENCE_FILE", raising=False)
