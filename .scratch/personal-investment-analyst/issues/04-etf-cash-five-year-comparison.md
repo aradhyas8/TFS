@@ -4,7 +4,7 @@
 
 **Blocked by:** 02: Quotes, FX, and source freshness.
 
-**Status:** ready-for-agent
+**Status:** implemented — verified locally
 
 **Authority:** [Personal Investment Analyst specification](../../../specs/personal-investment-analyst.md).
 
@@ -33,10 +33,12 @@ Implement within the single shared FastAPI decision pipeline and the authoritati
 
 ## Acceptance criteria
 
-- [ ] The answer compares the selected ETF, cash/short-bill, and no-action alternatives with conditional downside/base/upside cases.
-- [ ] Available costs, income, currency, and reinvestment assumptions are inspectable, and unavailable inputs are identified.
-- [ ] Only the comparison needed by the investment workflow is implemented.
-- [ ] Future stock/allocation/review/theme tickets can reuse these alternatives through the shared pipeline.
+- [x] The answer compares the selected ETF, cash/short-bill, and no-action alternatives with conditional downside/base/upside cases.
+- [x] Available costs, income, currency, and reinvestment assumptions are inspectable, and unavailable inputs are identified.
+- [x] Only the comparison needed by the investment workflow is implemented.
+- [x] Future stock/allocation/review/theme tickets can reuse these alternatives through the shared pipeline.
+
+Verified with 154 backend tests, 19 browser journeys, Python/TypeScript typechecks, Ruff and a production frontend build. Tests use fake model/data providers only. Arithmetic, contract and completed scripted comparison review are documented in [the comparison notes](../../../docs/etf-cash-comparison.md); no live reasoning-quality assessment is claimed. Parallel standards/spec code review found one UI-state issue, fixed and re-reviewed, with no remaining findings.
 
 ## Non-goals
 

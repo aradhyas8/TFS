@@ -7,7 +7,7 @@ from openai import AsyncOpenAI
 from openai.types.responses import FunctionToolParam, ResponseInputParam, ToolChoiceFunctionParam
 
 from .config import Settings
-from .schemas import ProposedChanges, Recommendation, Snapshot
+from .schemas import ComparisonJudgments, ProposedChanges, Recommendation, Snapshot
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,12 @@ PROPOSAL_TOOL: FunctionToolParam = {
     "parameters": ProposedChanges.model_json_schema(), "strict": True,
 }
 
+COMPARISON_TOOL: FunctionToolParam = {
+    "type": "function", "name": "calculate_comparison",
+    "description": "Calculate five-year conditional cases for exactly the request-selected alternatives. Starting capital, instrument identity, fund facts, known costs/tax and dated FX are backend bound. Supply explained future judgments only: one downside/base/upside case per alternative, annual five-element paths. ETF price-only paths use income multipliers against known yield; reinvested total-return paths include income and require null income_multipliers. Gross paths deduct known fund costs; net paths already include them. Cash/short-bill paths use annual_rates only. No action drivers cover every actual scope position; retained stocks stay unquantified. FX multipliers are relative to dated initial FX; same-currency multipliers must all be one. Explanations are qualitative with no probabilities, hurdles, numerical claims or trade instructions. Missing facts stay unknown; never invent allocation amounts.",
+    "parameters": ComparisonJudgments.model_json_schema(), "strict": True,
+}
+
 
 class OpenAIModel:
     def __init__(self, settings: Settings) -> None:
@@ -113,7 +119,7 @@ class OpenAIModel:
         response = await self.client.responses.create(
             model=self.settings.model,
             input=cast(ResponseInputParam, messages),
-            tools=[PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL],
+            tools=[PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL],
             tool_choice=choice if require_tool else "auto",
             parallel_tool_calls=False,
             text={
