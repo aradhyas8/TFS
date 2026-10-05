@@ -14,6 +14,7 @@ from .schemas import (
     ReunderwritingResult,
     ReviewSizingInput,
     Snapshot,
+    ThemeResult,
 )
 
 
@@ -46,15 +47,20 @@ async def bind_holdings(snapshot: Snapshot, current: PortfolioReview,
 
 
 def size_review(request: AnalysisRequest, snapshot: Snapshot, evidence: FinancialEvidence,
-                current: PortfolioReview, result: ReunderwritingResult,
+                current: PortfolioReview, result: ReunderwritingResult | ThemeResult,
                 judgment: ReviewSizingInput) -> None:
     """Translate an explained issuer exposure range into checked local amounts."""
     result.sizing = judgment
     target = next((row for row in current.positions if row.supplied.id == judgment.position_id), None)
     cash = next((row for row in current.positions if row.supplied.id == judgment.cash_position_id and row.supplied.kind == "cash"), None)
-    assessment = next((row for row in result.assessments if row.position_id == judgment.position_id), None)
+    direction = None
+    if isinstance(result, ReunderwritingResult):
+        assessment = next((row for row in result.assessments if row.position_id == judgment.position_id), None)
+        direction = assessment.action if assessment else None
+    elif any(row.position_id == judgment.position_id and row.conclusion == "supports" for row in result.tests):
+        direction = "add"
     missing = result.missing_inputs
-    if assessment is None or assessment.action not in {"add", "reduce", "exit"}:
+    if direction not in {"add", "reduce", "exit"}:
         missing.append("Sizing needs a supported current holding direction.")
     if not result.context.risk_context:
         missing.append("Supply decision-critical loss tolerance and withdrawal context.")
@@ -68,7 +74,7 @@ def size_review(request: AnalysisRequest, snapshot: Snapshot, evidence: Financia
     settings = request.settings
     if settings is None or settings.single_company_cap is None or settings.active_budget is None:
         missing.append("Supply applicable numeric company cap and active budget.")
-    alternative = next((row for row in request.comparison.alternatives if row.position_id == judgment.position_id and row.kind == "stock"), None) if request.comparison else None
+    alternative = next((row for row in request.comparison.alternatives if row.position_id == judgment.position_id and (row.kind == "stock" or isinstance(result, ThemeResult) and row.kind == "etf")), None) if request.comparison else None
     effect = next((row for row in request.comparison.effects if alternative and row.alternative_id == alternative.id and row.as_of == snapshot.as_of), None) if request.comparison else None
     if effect is None or effect.transaction_cost is None or effect.terminal_tax is None:
         missing.append("Known dated cost and tax effects are needed for supported adjustment sizing.")
@@ -76,18 +82,22 @@ def size_review(request: AnalysisRequest, snapshot: Snapshot, evidence: Financia
         missing.append("Nonzero costs/tax effects are shown in comparison; their rebalance funding impact is not modeled, so sizing remains conditional.")
     if missing:
         return
-    assert target and target.quote_used and cash and assessment and current.total_value
+    assert target and target.quote_used and cash and direction and current.total_value
     with localcontext() as arithmetic:
         arithmetic.prec = 60
         fx = target.fx_used.rate if target.fx_used else Decimal(1)
         issuer = target.identity.company_id if target.identity else target.supplied.company_id
         existing = sum((Decimal(row.value or "0") for row in current.positions if row.supplied.kind == "stock" and (row.identity.company_id if row.identity else row.supplied.company_id) == issuer), Decimal(0))
+        if target.supplied.kind == "etf":
+            existing = sum((Decimal(row.value or "0") for row in current.positions
+                            if row.supplied.kind == "etf" and (row.supplied.ticker, row.supplied.listing, row.supplied.currency)
+                            == (target.supplied.ticker, target.supplied.listing, target.supplied.currency)), Decimal(0))
         deltas = [((Decimal(current.total_value) * weight - existing) / fx).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
                   for weight in (judgment.min_weight, judgment.max_weight)]
-        if assessment.action == "add" and any(delta <= 0 for delta in deltas) or assessment.action in {"reduce", "exit"} and any(delta >= 0 for delta in deltas):
+        if direction == "add" and any(delta <= 0 for delta in deltas) or direction in {"reduce", "exit"} and any(delta >= 0 for delta in deltas):
             missing.append("Exposure range must agree with the supported holding direction.")
             return
-        if assessment.action == "exit" and (judgment.min_weight != 0 or judgment.max_weight != 0):
+        if direction == "exit" and (judgment.min_weight != 0 or judgment.max_weight != 0):
             missing.append("An exit range must remove the whole issuer exposure; partial reductions are not exits.")
             return
         actual_amounts = []

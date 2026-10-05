@@ -67,7 +67,7 @@ def create_app(
     async def analysis(request: AnalysisRequest) -> AnalysisResult:
         config = settings or Settings.from_environment()
         provider = model
-        if provider is None:
+        if provider is None and not (request.theme and not request.theme.confirmed):
             if not config.api_key or not config.model:
                 raise HTTPException(
                     503, "Configure the backend OpenAI API key and model to analyze."
@@ -75,7 +75,7 @@ def create_app(
             provider = OpenAIModel(config)
         try:
             financial_source = financial or PersonalFinancialProvider.from_environment()
-            research_source = research or (ReviewedResearchProvider.from_environment() if request.stock or request.new_cash or request.portfolio_review else None)
+            research_source = research or (ReviewedResearchProvider.from_environment() if request.stock or request.new_cash or request.portfolio_review or (request.theme and request.theme.confirmed) else None)
             return await analyze(request, provider, source, secret=config.api_key, financial=financial_source, research=research_source, discovery=discovery)
         except (ValueError, OSError):
             raise HTTPException(503, "Backend financial source configuration is invalid.") from None

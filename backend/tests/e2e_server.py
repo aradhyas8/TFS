@@ -43,6 +43,14 @@ class BrowserTestModel:
             return ModelTurn(calls=[ToolCall("browser_tool", "review_portfolio", "{}")])
         request = json.loads(messages[1]["content"])
         tool = json.loads(messages[-1]["output"])
+        if request.get("theme"):
+            from tests.test_theme import theme_turns
+            scripted = theme_turns(request)
+            called = {item["name"] for item in messages if item.get("type") == "function_call"}
+            for turn in scripted[:-1]:
+                if turn.calls[0].name not in called:
+                    return turn
+            return scripted[-1]
         if request.get("new_cash"):
             called = {item["name"] for item in messages if item.get("type") == "function_call"}
             for name, args in [("scan_opportunities", {}), ("calculate_comparison", comparison_judgments()),

@@ -95,7 +95,7 @@ export type ReunderwritingResult = { context: PortfolioReviewInput; research: Re
     action: string; current_thesis: string; change_reason: string; downside: string; what_could_change: string[]; evidence_ids: string[] }[];
   qualifications: string[] };
 export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation;
-  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null; allocation: AllocationResult | null; reunderwriting: ReunderwritingResult | null };
+  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null; allocation: AllocationResult | null; reunderwriting: ReunderwritingResult | null; theme: ThemeResult | null };
 
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -142,4 +142,25 @@ export function portfolioReviewComparison(snapshot: Snapshot): ComparisonInput {
   if (cash) alternatives.push({ id: "cash", kind: "cash", position_id: cash.id });
   alternatives.push({ id: "keep", kind: "no_action", position_id: null });
   return { scope_position_ids: snapshot.positions.map(row => row.id), alternatives, fund_facts: [], effects: [] };
+}
+
+
+export type ThemeInput = { risk_context?: string | null; name: string | null; mechanism: string | null; shortlist: string[]; max_candidates: number; max_tool_calls: number; confirmed: boolean };
+export type ThemeTest = { position_id: string; conclusion: "supports" | "challenges" | "unknown"; explanation: string; evidence_ids: string[] };
+export type ThemeResult = { context: ThemeInput; status: "awaiting_agreement" | "completed"; researched: string[]; stocks: StockResult[]; tests: ThemeTest[]; tool_calls_used: number; sizing: ReunderwritingResult["sizing"]; amount: AllocationAmount | null; previews: ProposalReview[]; missing_inputs: string[]; qualifications: string[] };
+
+
+export function themeComparison(snapshot: Snapshot, theme: ThemeInput): ComparisonInput {
+  const alternatives: ComparisonAlternative[] = snapshot.positions.filter(row => theme.shortlist.includes(row.id) && row.kind !== "cash").map(row => ({ id: `candidate-${row.id}`, kind: row.kind as "stock" | "etf", position_id: row.id }));
+  const fund = snapshot.positions.find(row => row.kind === "etf" && row.etf_role === "diversified" && !theme.shortlist.includes(row.id));
+  const cash = snapshot.positions.find(row => row.kind === "cash");
+  if (fund) alternatives.push({ id: "fund", kind: "etf", position_id: fund.id });
+  if (cash) alternatives.push({ id: "cash", kind: "cash", position_id: cash.id });
+  alternatives.push({ id: "keep", kind: "no_action", position_id: null });
+  const scope = snapshot.positions.filter(row => Number(row.shares) > 0 || Number(row.cash) > 0).map(row => row.id);
+  return { scope_position_ids: scope.length ? scope : theme.shortlist, alternatives, fund_facts: [], effects: [] };
+}
+
+export function isThemeCandidate(row: Position): boolean {
+  return row.kind === "etf" || row.kind === "stock" && row.currency === "USD" && ["XNAS", "XNYS", "XASE"].includes(row.listing || "");
 }

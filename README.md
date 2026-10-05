@@ -111,3 +111,8 @@ Ticket 06 adds **Analyze new cash** beside the existing question input. Confirm 
 ## Portfolio re-underwriting
 
 Ticket 07 adds **Review holdings and rebalance** to the existing question flow. Supply optional dated prior company theses, risk context, limits and a baseline. The shared backend reviews current evidence and conditional cases, challenges material thesis changes, checks proposed outcomes and provides an approximate adjustment range only when all required inputs are supported. Baseline-free exposure review works; unknown ETF overlap and uncovered company cases remain explicit. See [docs/portfolio-reunderwriting.md](docs/portfolio-reunderwriting.md) for contracts, formulas, setup and limitations.
+
+
+## Theme discovery
+
+Ticket 08 adds **Explore a theme** to the existing question flow. Agree an economic mechanism, supplied US stock/ETF shortlist and tool-call effort before research. The same backend tests the mechanism against dated primary evidence, calculates instrument-appropriate cases, compares ETF/cash/no action and applies portfolio guardrails. A theme can lead to no action; unsupported amounts remain undetermined. See [docs/theme-discovery.md](docs/theme-discovery.md) for agreement, bounds, evidence and verification limits.
