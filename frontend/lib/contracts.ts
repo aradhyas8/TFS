@@ -43,7 +43,7 @@ export type Review = {
   source_inputs_usable: boolean; sizing_eligible: false;
 };
 export type Recommendation = {
-  preferred_action: "review_only" | "wait_for_inputs" | "no_action" | "add" | "hold" | "reduce" | "exit"; amount: null;
+  preferred_action: "review_only" | "wait_for_inputs" | "no_action" | "add" | "hold" | "reduce" | "exit"; amount: AllocationAmount | null;
   evidence_ids?: string[]; reason: string; alternatives: { action: "clarify_inputs" | "keep_snapshot" | "no_action" | "add" | "hold" | "reduce" | "exit"; reason: string }[];
   downside: string; assumptions: string[]; uncertainty: string[]; what_could_change: string[];
 };
@@ -81,8 +81,16 @@ export type StockResult = { position_id: string; as_of: string; reporting_curren
       dilution: string[]; payout: string[]; return_on_equity: string[] | null; fx_multipliers: string[]; discount_rate: string;
       exit_multiple: string; exit_sensitivity: string[]; assumptions: string[]; uncertainty: string[] } }[];
   qualifications: string[]; calculation_basis: string };
+export type NewCashInput = { amount: string | null; cash_position_id: string | null; confirmed: boolean; risk_context: string | null };
+export type AllocationAmount = { minimum: string; maximum: string; currency: string; position_id: string };
+export type AllocationResult = { context: NewCashInput;
+  scan: { source_captured_at: string | null; scanned_at: string; as_of: string; source: string; issues: string[];
+    candidates: { position: Position; as_of: string; source: string; source_url: string | null; signal: string }[] };
+  researched: { position_id: string; reason: string }[]; stocks: StockResult[];
+  judgment: { position_id: string; min_weight: string; max_weight: string; reason: string } | null;
+  amount: AllocationAmount | null; previews: ProposalReview[]; missing_inputs: string[]; qualifications: string[] };
 export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation;
-  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null };
+  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null; allocation: AllocationResult | null };
 
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {

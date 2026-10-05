@@ -4,6 +4,13 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from .allocation import (
+    DiscoveryProvider,
+    ReviewedDiscoveryProvider,
+    bind_scan,
+    comparison_context,
+    size_allocation,
+)
 from .calculations import review_portfolio
 from .financial_data import FinancialProvider, PersonalFinancialProvider, refresh_financial_data
 from .guardrails import apply_guardrails, has_etf_exposure, preview_changes
@@ -11,15 +18,21 @@ from .providers import DataProvider, ModelProvider
 from .research import ResearchProvider, ReviewedResearchProvider
 from .scenarios import calculate_comparison
 from .schemas import (
+    AllocationJudgment,
+    AllocationResult,
     Alternative,
     AnalysisRequest,
     AnalysisResult,
+    CandidateCasesInput,
+    CandidateResearchInput,
     CompanyJudgments,
+    CompanyResearch,
     ComparisonJudgments,
     PortfolioReview,
     ProposalReview,
     ProposedChanges,
     Recommendation,
+    ResearchDocument,
     StockRecommendation,
     StockResult,
 )
@@ -66,6 +79,8 @@ class InvalidReview(Exception):
 
 
 def validate_recommendation(answer: dict[str, Any], *, stock: bool = False) -> Recommendation:
+    if answer.get("amount") is not None:
+        raise InvalidReview("Only Python may supply allocation amounts.")
     recommendation = StockRecommendation.model_validate(answer) if stock else Recommendation.model_validate(answer)
     if not stock and (recommendation.preferred_action in {"add", "hold", "reduce", "exit"} or any(row.action in {"add", "hold", "reduce", "exit"} for row in recommendation.alternatives)):
         raise InvalidReview("Stock actions require completed company research.")
@@ -111,9 +126,16 @@ def validate_prose(prose: str, *, stock: bool = False) -> None:
         re.search(quantitative, prose, re.I)
         or not stock and re.search(rf"\b{execution}\b", qualified, re.I)
         or not stock and re.search(proposed_adjustment, qualified, re.I)
-        or stock and re.search(r"\b(?:executed|placed an order|bought|sold|guaranteed|contribution room|market believes)\b", prose, re.I)
+        or stock and re.search(r"\b(?:executed|placed an order|bought|sold|trade[s]? (?:completed|filled)|orders? (?:was |were |has been |have been )?(?:placed|submitted|filled)|guaranteed|contribution room|market believes)\b", prose, re.I)
     ):
         raise InvalidReview("Unsupported quantitative claims or execution direction.")
+
+
+def validate_company_judgments(judgments: CompanyJudgments) -> None:
+    for case in judgments.cases:
+        validate_prose(" ".join([*case.assumptions, *case.uncertainty]))
+    if judgments.mid_cycle_context:
+        validate_prose(judgments.mid_cycle_context)
 
 
 def enforce_guardrails(
@@ -157,10 +179,18 @@ async def analyze(
     request: AnalysisRequest, model: ModelProvider, data: DataProvider, secret: str = "",
     financial: FinancialProvider | None = None,
     research: ResearchProvider | None = None,
+    discovery: DiscoveryProvider | None = None,
 ) -> AnalysisResult:
     supplied = data.snapshot(request.portfolio)
+    allocation = None
+    if request.new_cash is not None:
+        scan = await (discovery or ReviewedDiscoveryProvider()).scan(supplied)
+        supplied = bind_scan(supplied, scan)
+        allocation = AllocationResult(context=request.new_cash, scan=scan)
+    scan_reviewed = False
+    candidate_research: dict[str, CompanyResearch] = {}
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": INSTRUCTIONS + (STOCK_INSTRUCTIONS if request.stock else "")},
+        {"role": "system", "content": INSTRUCTIONS + (STOCK_INSTRUCTIONS if request.stock else "") + (ALLOCATION_INSTRUCTIONS if allocation else "")},
         {"role": "user", "content": request.model_dump_json()},
     ]
     computed = None
@@ -174,20 +204,22 @@ async def analyze(
     try:
         # One required portfolio tool turn, then a final response. Bound any repeated
         # tool requests to prevent unbounded loops and reject unknown dispatch names.
-        for _ in range(12 if request.stock else 8):
+        for _ in range(18 if allocation else 12 if request.stock else 8):
             turn = await model.respond(messages, require_tool=computed is None)
             if turn.calls:
                 if turn.answer is not None or len(turn.calls) != 1:
                     raise InvalidReview("Invalid mixed or parallel model response.")
                 call = turn.calls[0]
                 if (
-                    call.name not in {"review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes", "calculate_comparison", "get_sec_filings", "get_issuer_material", "calculate_company_cases"}
+                    call.name not in {"review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes", "calculate_comparison", "get_sec_filings", "get_issuer_material", "calculate_company_cases", "scan_opportunities", "research_candidate", "size_allocation"}
                     or not call.call_id
                     or call.call_id in seen_calls
                 ):
                     raise InvalidReview("Unknown tool or invalid call identifier.")
+                if allocation is None and call.name in {"scan_opportunities", "research_candidate", "size_allocation"}:
+                    raise InvalidReview("Allocation tools require a new-cash question.")
                 arguments = json.loads(call.arguments)
-                if call.name not in {"check_proposed_changes", "calculate_comparison", "calculate_company_cases"} and arguments != {}:
+                if call.name not in {"check_proposed_changes", "calculate_comparison", "calculate_company_cases", "research_candidate", "size_allocation"} and arguments != {}:
                     raise InvalidReview(
                         "Portfolio tool accepts no model-supplied financial inputs."
                     )
@@ -201,6 +233,60 @@ async def analyze(
                         proposals.append(preview_changes(supplied, evidence, computed, request.settings, request.proposed_changes, "user"))
                     output = computed.model_dump(mode="json")
                     output["proposals"] = [row.model_dump(mode="json") for row in proposals]
+                    if allocation:
+                        output["new_cash"] = allocation.context.model_dump(mode="json")
+                elif allocation and call.name in {"scan_opportunities", "research_candidate", "calculate_company_cases", "size_allocation"}:
+                    if computed is None:
+                        raise InvalidReview("Review the whole portfolio first.")
+                    if call.name == "scan_opportunities":
+                        if scan_reviewed:
+                            raise InvalidReview("Fresh scan runs once per request.")
+                        scan_reviewed = True
+                        _, selection = comparison_context(request, supplied, evidence, allocation)
+                        output = allocation.scan.model_dump(mode="json")
+                        output["refreshed_positions"] = [row.model_dump(mode="json") for row in computed.positions]
+                        output["comparison_inputs"] = selection.model_dump(mode="json")
+                    elif call.name == "research_candidate":
+                        chosen = CandidateResearchInput.model_validate(arguments)
+                        validate_prose(chosen.reason)
+                        eligible = {row.position.id for row in allocation.scan.candidates if row.position.kind == "stock"}
+                        if not scan_reviewed or comparison is not None or chosen.position_id not in eligible or chosen.position_id in candidate_research or len(candidate_research) >= 2:
+                            raise InvalidReview("Research requires the fresh scan, a decision-changing candidate and a remaining research slot.")
+                        target = next(row.supplied for row in computed.positions if row.supplied.id == chosen.position_id)
+                        record = await (research or ReviewedResearchProvider()).company(target, supplied.as_of)
+                        if record.company_id != (target.company_id or target.id):
+                            raise InvalidReview("Candidate evidence conflicts with the bound issuer.")
+                        # Document identifiers must be unambiguous across the two
+                        # researched issuers; preserve original URLs and fact links.
+                        record = record.model_copy(deep=True)
+                        document_ids = {doc.id: f"candidate-{len(candidate_research) + 1}-document-{index + 1}"
+                                        for index, doc in enumerate(record.documents)}
+                        for doc in record.documents:
+                            doc.id = document_ids[doc.id]
+                        for fact in record.facts:
+                            fact.document_ids = [document_ids[key] for key in fact.document_ids]
+                        candidate_research[chosen.position_id] = record
+                        allocation.researched.append(chosen)
+                        output = record.model_dump(mode="json")
+                    elif call.name == "calculate_company_cases":
+                        chosen_cases = CandidateCasesInput.model_validate(arguments)
+                        if chosen_cases.position_id not in candidate_research or any(row.position_id == chosen_cases.position_id for row in allocation.stocks) or comparison is not None:
+                            raise InvalidReview("Candidate cases require primary research and run once before comparison.")
+                        validate_company_judgments(chosen_cases.judgments)
+                        calculated = calculate_company_cases(chosen_cases.position_id, candidate_research[chosen_cases.position_id], chosen_cases.judgments, computed)
+                        allocation.stocks.append(calculated)
+                        _, selection = comparison_context(request, supplied, evidence, allocation)
+                        output = calculated.model_dump(mode="json")
+                        output["comparison_inputs"] = selection.model_dump(mode="json")
+                    else:
+                        if comparison is None or allocation.judgment is not None:
+                            raise InvalidReview("Sizing runs once after comparing serious alternatives.")
+                        judgment = AllocationJudgment.model_validate(arguments)
+                        validate_prose(judgment.reason)
+                        if judgment.position_id not in {row.selection.position_id for row in comparison.alternatives if row.selection.kind in {"stock", "etf"}}:
+                            raise InvalidReview("Sizing must refer to a compared, researched alternative.")
+                        size_allocation(request, supplied, evidence, computed, allocation, judgment)
+                        output = allocation.model_dump(mode="json")
                 elif call.name in {"get_sec_filings", "get_issuer_material", "calculate_company_cases"}:
                     if request.stock is None or computed is None:
                         raise InvalidReview("Stock tools require a selected US listing and reviewed portfolio.")
@@ -213,10 +299,7 @@ async def analyze(
                         if research_tools != {"get_sec_filings", "get_issuer_material"} or stock_result is not None:
                             raise InvalidReview("Company cases require primary filing and issuer review, and run once.")
                         company_judgments = CompanyJudgments.model_validate(arguments)
-                        for case in company_judgments.cases:
-                            validate_prose(" ".join([*case.assumptions, *case.uncertainty]))
-                        if company_judgments.mid_cycle_context:
-                            validate_prose(company_judgments.mid_cycle_context)
+                        validate_company_judgments(company_judgments)
                         stock_result = calculate_company_cases(request.stock.position_id, company_research, company_judgments, computed)
                         output = stock_result.model_dump(mode="json")
                     else:
@@ -230,17 +313,26 @@ async def analyze(
                                   "facts": [fact.model_dump(mode="json") for fact in company_research.facts],
                                   "issues": company_research.issues}
                 elif call.name == "calculate_comparison":
-                    if computed is None or request.comparison is None or comparison is not None or request.stock is not None and stock_result is None:
+                    if computed is None or not allocation and request.comparison is None or comparison is not None or request.stock is not None and stock_result is None:
                         raise InvalidReview("Comparison requires a reviewed portfolio and selected alternatives, and runs once.")
                     judgments = ComparisonJudgments.model_validate(arguments)
                     for alternative in judgments.alternatives:
                         for comparison_case in alternative.cases:
                             validate_prose(" ".join([*comparison_case.assumptions, comparison_case.downside, *comparison_case.uncertainty]))
-                    comparison = calculate_comparison(request.comparison, judgments, computed, stock_result)
+                    if allocation:
+                        if not scan_reviewed or len(allocation.stocks) != len(candidate_research):
+                            raise InvalidReview("Compare after the fresh scan and completed bounded candidate cases.")
+                        funded, selection = comparison_context(request, supplied, evidence, allocation)
+                        comparison = calculate_comparison(selection, judgments, funded, allocation.stocks)
+                        if not any(row.kind == "etf" for row in selection.alternatives):
+                            allocation.missing_inputs.append("A usable broad-market ETF alternative is unavailable; sizing remains conditional.")
+                    else:
+                        assert request.comparison is not None
+                        comparison = calculate_comparison(request.comparison, judgments, computed, stock_result)
                     output = comparison.model_dump(mode="json")
                 elif call.name == "check_proposed_changes":
-                    if computed is None:
-                        raise InvalidReview("Review the dated portfolio before checking proposed changes.")
+                    if computed is None or allocation:
+                        raise InvalidReview("Review the dated portfolio first; allocation previews are bound by size_allocation.")
                     proposal = ProposedChanges.model_validate(arguments)
                     supplied_cash = request.proposed_changes.new_cash if request.proposed_changes else []
                     if proposal.new_cash != supplied_cash:
@@ -276,10 +368,39 @@ async def analyze(
                 raise InvalidReview("Selected alternatives require calculated conditional cases before answering.")
             if request.stock is not None and stock_result is None:
                 raise InvalidReview("Stock research and company cases are required before answering.")
-            recommendation = validate_recommendation(turn.answer, stock=request.stock is not None)
+            if allocation and (not scan_reviewed or comparison is None):
+                raise InvalidReview("New cash requires a fresh scan and compared ETF, cash and no-action cases.")
+            recommendation = validate_recommendation(turn.answer, stock=request.stock is not None or allocation is not None)
             if stock_result is not None:
                 recommendation = validate_stock_recommendation(recommendation, stock_result, computed, proposals)
-            recommendation = enforce_guardrails(recommendation, computed, proposals)
+            if allocation:
+                assert isinstance(recommendation, StockRecommendation)
+                chosen_stock = next((row for row in allocation.stocks if allocation.judgment and row.position_id == allocation.judgment.position_id), None)
+                available = {doc.id: doc for row in allocation.stocks for doc in row.research.documents if doc.available and doc.published_on <= supplied.as_of and doc.as_of <= supplied.as_of}
+                if any(key not in available for key in recommendation.evidence_ids):
+                    raise InvalidReview("Allocation cannot cite invented or unavailable evidence.")
+                if chosen_stock:
+                    checked_answer = validate_stock_recommendation(recommendation, chosen_stock, computed, [], check_add=False, evidence_scope=available)
+                    if checked_answer.preferred_action == "wait_for_inputs":
+                        allocation.missing_inputs.append("Selected company lacks usable cited primary evidence.")
+                if recommendation.preferred_action in {"hold", "reduce", "exit"}:
+                    raise InvalidReview("New-cash direction must be add, no action or conditional clarification.")
+                if recommendation.preferred_action == "add":
+                    if allocation.amount is None or allocation.missing_inputs:
+                        allocation.amount = None
+                        recommendation = Recommendation(preferred_action="wait_for_inputs", amount=None,
+                            reason="A conditional direction is appropriate while decision-critical allocation inputs or post-allocation checks remain unresolved.",
+                            alternatives=[Alternative(action="no_action", reason="Retain the new cash while unresolved inputs are checked.")],
+                            downside="Equity losses, concentration and falling reinvestment rates may impair wealth.",
+                            assumptions=["The comparison uses the dated whole portfolio and only confirmed new cash."],
+                            uncertainty=allocation.missing_inputs[:8] or ["No justified exposure range was checked."],
+                            what_could_change=["Confirmed context, usable evidence and an exposure range within configured limits could change the direction."])
+                    else:
+                        recommendation.amount = allocation.amount
+                else:
+                    allocation.amount = None
+            else:
+                recommendation = enforce_guardrails(recommendation, computed, proposals)
             result = AnalysisResult(
                 question=request.question,
                 portfolio=computed,
@@ -287,6 +408,7 @@ async def analyze(
                 proposals=proposals,
                 comparison=comparison,
                 stock=stock_result,
+                allocation=allocation,
             )
             if secret and secret in result.model_dump_json():
                 raise InvalidReview("Response contains backend-only configuration.")
@@ -319,9 +441,10 @@ invent probabilities, tax consequences, amounts or claim an executed trade.
 
 
 def validate_stock_recommendation(answer: Recommendation, stock: StockResult,
-                                  current: PortfolioReview, proposals: list[ProposalReview]) -> Recommendation:
+                                  current: PortfolioReview, proposals: list[ProposalReview], *, check_add: bool = True,
+                                  evidence_scope: dict[str, ResearchDocument] | None = None) -> Recommendation:
     assert isinstance(answer, StockRecommendation)
-    available = {doc.id: doc for doc in stock.research.documents if doc.available}
+    available = evidence_scope if evidence_scope is not None else {doc.id: doc for doc in stock.research.documents if doc.available}
     if any(key not in available for key in answer.evidence_ids):
         raise InvalidReview("Material claims cannot cite unavailable primary evidence.")
     cited = [available[key] for key in answer.evidence_ids]
@@ -333,10 +456,10 @@ def validate_stock_recommendation(answer: Recommendation, stock: StockResult,
                 raise InvalidReview("Unavailable transcript Q&A cannot be claimed reviewed.")
     if any(doc.authority == "macro" for doc in cited) and not re.search(r"(?:mechanism|because|through)", prose, re.I):
         raise InvalidReview("Macro evidence requires a named thesis mechanism.")
-    missing = not {"sec", "issuer"}.issubset({doc.authority for doc in cited}) or any(case.terminal_price is None for case in stock.cases)
+    missing = not {"sec", "issuer"}.issubset({doc.authority for doc in cited if doc.company_id == stock.research.company_id}) or any(case.terminal_price is None for case in stock.cases)
     adding = answer.preferred_action == "add" or any(row.action == "add" for row in answer.alternatives)
     checks = current.guardrails
-    unsafe_add = adding and (not current.source_inputs_usable or checks is None
+    unsafe_add = check_add and adding and (not current.source_inputs_usable or checks is None
                             or checks.settings.single_company_cap is None or checks.settings.active_budget is None
                             or checks.active.status != "within_limit"
                             or any(row.status != "within_limit" for row in checks.companies)
@@ -350,3 +473,31 @@ def validate_stock_recommendation(answer: Recommendation, stock: StockResult,
             uncertainty=["Missing or contradictory facts, personal context, costs and taxes remain unknown."],
             what_could_change=["Verified primary facts, appropriate company drivers and explicit portfolio limits could change the conclusion."])
     return answer
+
+
+ALLOCATION_INSTRUCTIONS = """
+For new_cash, extend the shared review: conditional add to a compared stock or
+broad-market ETF is permitted. Never return an amount; Python alone binds it.
+Call scan_opportunities after review_portfolio. This exposes a fresh request-local,
+bounded dated screen and refreshed quotes. Coverage limitations are authoritative;
+never claim a live market-wide scan. Stop with no stock research when no candidate
+could change the decision. Otherwise call research_candidate for at most two US
+stock candidates with a qualitative reason why each could change the choice, then
+calculate_company_cases with {position_id, judgments} for each. Research exposes
+primary SEC and issuer documents together. No deep research on every scan result.
+Use comparison_inputs returned by the scan/latest company cases; call the shared
+calculate_comparison for all serious researched stocks, broad ETF, cash and no action.
+Cash and no action retain only the separately bound __new_cash__ contribution;
+existing portfolio cash is not added to comparison capital. Use position identifiers
+from comparison_inputs for drivers. Return an add only if it is justified against
+these cases and downside; call size_allocation after comparison with the destination,
+justified min_weight/max_weight range and qualitative reason. Weights are total
+post-contribution company exposure across accounts for stocks, or this fund's
+post-contribution weight for ETFs. Only new cash may fund it. Passing limits is not
+optimal sizing. Missing context or checks requires conditional direction, never a
+cap waiver. Cite SEC and issuer document IDs for a preferred stock. ETF overlap stays
+unknown; direct_only can permit sizing, include_known_indirect cannot be silently
+changed. Account type never establishes tax effects or contribution room. Explain
+uncertainty, downside and evidence that would change the view. Orders remain with
+the user. No invented probabilities, confirmed transactions or numeric prose.
+"""

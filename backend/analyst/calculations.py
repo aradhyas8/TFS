@@ -72,6 +72,10 @@ def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
                 issues.append(f"Quote is {quote.status}; indicative valuation only, never an execution quote.")
                 if quote.captured_at is None:
                     issues.append("Quote capture time is unknown; it was not inferred from submission time.")
+        if position.kind != "cash" and position.shares == 0:
+            # An unheld candidate has zero current exposure even if its purchase
+            # evidence is unusable; source_inputs_usable still gates any sizing.
+            local = Decimal(0)
         fx_used = None
         rate: Decimal | None = Decimal(1)
         if position.currency != snapshot.reporting_currency:
@@ -90,12 +94,12 @@ def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
             else:
                 rate = fx_used.rate
                 issues.append(f"FX is {fx_used.status}; indicative, not an execution quote.")
-        value = local * rate if local is not None and rate is not None else None
+        value = Decimal(0) if position.kind != "cash" and position.shares == 0 else local * rate if local is not None and rate is not None else None
         verified_security = position.kind == "cash" or bool(
             identity and identity.status == "verified" and quote
             and quote.status in {"indicative", "delayed"} and quote.captured_at
         )
-        usable_fx = fx_used is None or bool(fx_used.status == "indicative" and fx_used.captured_at)
+        usable_fx = position.currency == snapshot.reporting_currency or bool(rate is not None and fx_used and fx_used.status == "indicative" and fx_used.captured_at)
         values.append(value)
         rows.append(
             PositionResult(

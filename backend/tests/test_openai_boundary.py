@@ -138,3 +138,46 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
         assert response.json()["stock"]["cases"][1]["terminal_price"] == "100"
         assert response.json()["recommendation"]["evidence_ids"] == ["filing", "issuer"]
         assert "evidence_ids" in sent[-1]["text"]["format"]["schema"]["properties"]
+
+
+def test_new_cash_uses_production_sdk_tools_and_backend_only_amounts(monkeypatch):
+    from analyst.financial_data import FakeFinancialProvider
+    from tests.test_allocation import (
+        allocation_answer,
+        allocation_evidence,
+        allocation_request,
+        comparison_judgments,
+    )
+    turns = [("review_portfolio", {}), ("scan_opportunities", {}),
+             ("calculate_comparison", comparison_judgments()),
+             ("size_allocation", {"position_id": "fund", "min_weight": "0.55", "max_weight": "0.65",
+                                  "reason": "Diversification and a retained reserve justify this exposure range."})]
+    sent = []
+    def fake_openai(request):
+        payload = json.loads(request.content)
+        sent.append(payload)
+        assert payload["text"]["format"]["schema"]["properties"]["amount"] == {"type": "null"}
+        names = {tool["name"] for tool in payload["tools"]}
+        assert {"review_portfolio", "scan_opportunities", "research_candidate", "calculate_company_cases", "calculate_comparison", "size_allocation"} <= names
+        assert "get_sec_filings" not in names
+        if len(sent) <= len(turns):
+            name, arguments = turns[len(sent) - 1]
+            output = [{"type": "function_call", "id": f"fc_{len(sent)}", "call_id": f"call_{len(sent)}",
+                       "name": name, "arguments": json.dumps(arguments), "status": "completed"}]
+        else:
+            sizing = json.loads(payload["input"][-1]["output"])
+            assert sizing["amount"]["maximum"] == "2400"
+            output = [{"type": "message", "id": "msg_final", "role": "assistant", "status": "completed",
+                       "content": [{"type": "output_text", "text": json.dumps(allocation_answer()), "annotations": []}]}]
+        return httpx.Response(200, json={"id": f"resp_{len(sent)}", "object": "response", "created_at": 1,
+                                        "model": "test-model", "status": "completed", "output": output,
+                                        "parallel_tool_calls": False, "error": None, "incomplete_details": None})
+    def local_sdk(**kwargs):
+        return AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openai)))
+    monkeypatch.setattr("analyst.providers.AsyncOpenAI", local_sdk)
+    response = TestClient(create_app(settings=Settings("sk-test-backend-only-never-browser", "test-model"),
+                                    financial=FakeFinancialProvider(allocation_evidence()))).post("/api/analyze", json=allocation_request())
+    assert response.status_code == 200, response.text
+    assert response.json()["recommendation"]["amount"]["maximum"] == "2400"
+    assert "sk-test-backend-only-never-browser" not in response.text
+    assert len(sent) == 5

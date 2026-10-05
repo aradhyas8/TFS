@@ -114,7 +114,7 @@ def component(
 
 def calculate_comparison(
     selection: ComparisonInput, judgments: ComparisonJudgments, portfolio: PortfolioReview,
-    stock: StockResult | None = None,
+    stock: StockResult | list[StockResult] | None = None,
 ) -> ComparisonResult:
     with localcontext() as context:
         context.prec = 60
@@ -123,7 +123,7 @@ def calculate_comparison(
 
 def _calculate(
     selection: ComparisonInput, judgments: ComparisonJudgments, portfolio: PortfolioReview,
-    stock: StockResult | None = None,
+    stock: StockResult | list[StockResult] | None = None,
 ) -> ComparisonResult:
     judged = {row.alternative_id: row for row in judgments.alternatives}
     if len(judged) != len(judgments.alternatives) or set(judged) != {row.id for row in selection.alternatives}:
@@ -167,8 +167,9 @@ def _calculate(
                 elif initial is not None and transaction is not None:
                     initial -= transaction
                 computed = component(rows[key], initial, drivers[key], portfolio.reporting_currency, facts.get(key), portfolio.as_of)
-                if stock is not None and key == stock.position_id and rows[key].supplied.kind == "stock":
-                    stock_case = next(row for row in stock.cases if row.name == name)
+                selected_stock = next((row for row in (stock if isinstance(stock, list) else [stock] if stock else []) if row.position_id == key), None)
+                if selected_stock is not None and rows[key].supplied.kind == "stock":
+                    stock_case = next(row for row in selected_stock.cases if row.name == name)
                     driver = drivers[key]
                     if driver.annual_rates is not None or driver.annual_returns is not None or driver.income_multipliers is not None or driver.reinvest or driver.return_basis != "price_only" or driver.cost_basis != "gross":
                         raise ValueError("Stock no-action uses company cases, never an ETF return forecast.")
