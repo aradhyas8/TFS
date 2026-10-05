@@ -126,6 +126,75 @@ export type ReunderwritingResult = { context: PortfolioReviewInput; research: Re
 export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation;
   proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null; allocation: AllocationResult | null; reunderwriting: ReunderwritingResult | null; theme: ThemeResult | null };
 
+export type DecisionAction =
+  | "review_only"
+  | "wait_for_inputs"
+  | "no_action"
+  | "add"
+  | "hold"
+  | "reduce"
+  | "exit"
+  | "clarify_inputs"
+  | "keep_snapshot";
+
+export type EvidenceReference = {
+  id: string;
+  title: string;
+  source: string;
+  as_of: string | null;
+  url: string | null;
+  excerpt: string | null;
+};
+
+export type DecisionAlternative = {
+  action: DecisionAction;
+  reason: string;
+};
+
+export type DecisionReasoning = {
+  reason: string;
+  assumptions: string[];
+  uncertainty: string[];
+  what_could_change: string[];
+  downside: string;
+  alternatives: DecisionAlternative[];
+};
+
+export type DecisionConclusion = {
+  preferred_action: DecisionAction;
+  amount: AllocationAmount | null;
+};
+
+export type UserConfirmedAction = {
+  action: DecisionAction;
+  confirmed_at: string;
+  notes: string | null;
+};
+
+export type SavedDecision = {
+  id: string;
+  saved_at: string;
+  as_of: string;
+  question: string;
+  evidence_references: EvidenceReference[];
+  reasoning: DecisionReasoning;
+  conclusion: DecisionConclusion;
+  confirmed_action: UserConfirmedAction | null;
+};
+
+export async function get<T>(path: string): Promise<T> {
+  const response = await fetch(path, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(30_000),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(typeof data.detail === "string" ? data.detail : "The request could not be completed.");
+  }
+  return data as T;
+}
+
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -138,6 +207,7 @@ export async function post<T>(path: string, body: unknown): Promise<T> {
   }
   return data as T;
 }
+
 
 export const actionLabel = (action: string) => ({
   review_only: "Review current exposure", wait_for_inputs: "Clarify missing inputs", no_action: "No action",

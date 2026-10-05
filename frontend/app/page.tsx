@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent, type SetStateAction } from "react";
+import { useEffect, useState, type FormEvent, type SetStateAction } from "react";
 import ThemeInputs from "../components/ThemeInputs";
 import type { ThemeInput } from "../lib/contracts";
 import PortfolioEditor from "../components/PortfolioEditor";
@@ -9,7 +9,24 @@ import NewCashInputs from "../components/NewCashInputs";
 import ReviewResult from "../components/ReviewResult";
 import GuardrailInputs from "../components/GuardrailInputs";
 import ComparisonInputs from "../components/ComparisonInputs";
-import { post, isThemeCandidate, isSupportedStock, themeComparison, portfolioReviewComparison, type PortfolioReviewInput, type NewCashInput, type Analysis, type Snapshot, type PortfolioSettings, type ProposedChanges, type ComparisonInput } from "../lib/contracts";
+import SavedDecisionView from "../components/SavedDecisionView";
+import SavedDecisionsList from "../components/SavedDecisionsList";
+import {
+  get,
+  post,
+  isThemeCandidate,
+  isSupportedStock,
+  themeComparison,
+  portfolioReviewComparison,
+  type PortfolioReviewInput,
+  type NewCashInput,
+  type Analysis,
+  type Snapshot,
+  type PortfolioSettings,
+  type ProposedChanges,
+  type ComparisonInput,
+  type SavedDecision,
+} from "../lib/contracts";
 
 export default function Page() {
   const [snapshot, setSnapshot] = useState<Snapshot>({ as_of: "", reporting_currency: "CAD",
@@ -26,9 +43,18 @@ export default function Page() {
   const [changes, setChanges] = useState<ProposedChanges>({ new_cash: [], trades: [] });
   const [comparison, setComparison] = useState<ComparisonInput | null>(null);
   const [result, setResult] = useState<Analysis | null>(null);
+  const [decisions, setDecisions] = useState<SavedDecision[]>([]);
+  const [reopenedDecision, setReopenedDecision] = useState<SavedDecision | null>(null);
   const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    get<SavedDecision[]>("/api/decisions")
+      .then(setDecisions)
+      .catch(() => {});
+  }, []);
+
 
   function updateSnapshot(update: SetStateAction<Snapshot>) {
     const next = typeof update === "function" ? update(snapshot) : update;
@@ -108,7 +134,40 @@ export default function Page() {
     </form>
     {error && <div className="error" role="alert">{error}</div>}
     {busy && <p className="loading" role="status">Calculating your portfolio and preparing the review…</p>}
-    {result ? <ReviewResult result={result} /> : !busy && <div className="empty-state"><span>↗</span><p>Your portfolio review will appear here.</p><small>Supplied values, transparent calculations, conditional direction.</small></div>}
+    {reopenedDecision ? (
+      <SavedDecisionView
+        decision={reopenedDecision}
+        onClose={() => setReopenedDecision(null)}
+        onUpdated={(updated) => {
+          setReopenedDecision(updated);
+          setDecisions((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+        }}
+      />
+    ) : (
+      <>
+        {result ? (
+          <ReviewResult
+            result={result}
+            onSaved={(saved) => setDecisions((prev) => [saved, ...prev.filter((d) => d.id !== saved.id)])}
+            onReopen={(saved) => setReopenedDecision(saved)}
+          />
+        ) : (
+          !busy && (
+            <div className="empty-state">
+              <span>↗</span>
+              <p>Your portfolio review will appear here.</p>
+              <small>Supplied values, transparent calculations, conditional direction.</small>
+            </div>
+          )
+        )}
+      </>
+    )}
+    <SavedDecisionsList
+      decisions={decisions}
+      onReopen={(decision) => setReopenedDecision(decision)}
+      busy={busy}
+    />
     <footer>Personal Investment Analyst · Dated snapshot review</footer>
+
   </main>;
 }

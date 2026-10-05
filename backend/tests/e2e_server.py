@@ -3,10 +3,12 @@
 import asyncio
 import json
 import socket
+from pathlib import Path
 from typing import Any
 
 from analyst.api import create_app
 from analyst.config import Settings
+from analyst.decisions import DecisionStore
 from analyst.financial_data import FakeFinancialProvider
 from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
 from analyst.research import ReviewedResearchProvider
@@ -208,6 +210,13 @@ class BrowserTestData(FakeDataProvider):
 
 stock_research = ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())})
 
+e2e_storage_dir = Path(__file__).parent / "data" / "e2e_decisions"
+decision_store = DecisionStore(e2e_storage_dir)
+for _file in decision_store.directory.glob("*.json"):
+    try:
+        _file.unlink()
+    except OSError:
+        pass
 
 app = create_app(
     model=BrowserTestModel(),
@@ -215,4 +224,6 @@ app = create_app(
     financial=financial,
     research=stock_research,
     settings=Settings("sk-test-backend-only-never-browser", "test-model"),
+    store=decision_store,
 )
+

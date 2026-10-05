@@ -945,6 +945,82 @@ class AnalysisResult(Contract):
     reunderwriting: ReunderwritingResult | None = None
     theme: ThemeResult | None = None
 
+
+DecisionAction = Literal[
+    "review_only",
+    "wait_for_inputs",
+    "no_action",
+    "add",
+    "hold",
+    "reduce",
+    "exit",
+    "clarify_inputs",
+    "keep_snapshot",
+]
+
+
+class EvidenceReference(Contract):
+    id: Identifier
+    title: Text
+    source: Identifier
+    as_of: date | None = None
+    url: str | None = None
+    excerpt: Text | None = None
+
+
+DecisionAlternative = Alternative
+
+
+class DecisionReasoning(Contract):
+    reason: Text
+    assumptions: list[Text] = Field(default_factory=list)
+    uncertainty: list[Text] = Field(default_factory=list)
+    what_could_change: list[Text] = Field(default_factory=list)
+    downside: Text
+    alternatives: list[DecisionAlternative] = Field(default_factory=list)
+
+
+class DecisionConclusion(Contract):
+    preferred_action: Literal["review_only", "wait_for_inputs", "no_action", "add", "hold", "reduce", "exit"]
+    amount: AllocationAmount | None = None
+
+
+class UserConfirmedAction(Contract):
+    action: DecisionAction
+    confirmed_at: AwareDatetime
+    notes: Text | None = None
+
+
+class SavedDecision(Contract):
+    id: Identifier
+    saved_at: AwareDatetime
+    as_of: date
+    question: Text
+    evidence_references: list[EvidenceReference] = Field(default_factory=list)
+    reasoning: DecisionReasoning
+    conclusion: DecisionConclusion
+    confirmed_action: UserConfirmedAction | None = None
+
+
+class SaveDecisionRequest(Contract):
+    result: AnalysisResult | None = None
+    decision: SavedDecision | None = None
+    confirmed_action: UserConfirmedAction | None = None
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> Self:
+        if self.result is None and self.decision is None:
+            raise ValueError("Provide either a completed analysis result or a saved decision record.")
+        return self
+
+
+class ConfirmActionRequest(Contract):
+    action: DecisionAction
+    notes: Text | None = None
+
+
 # Resolve forward references used by the shared tool contracts.
 CandidateCasesInput.model_rebuild()
 AnalysisRequest.model_rebuild()
+SaveDecisionRequest.model_rebuild()
+

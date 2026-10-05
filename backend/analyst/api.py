@@ -9,11 +9,20 @@ from openai import OpenAIError
 from .allocation import DiscoveryProvider
 from .config import Settings
 from .csv_input import COLUMNS, load_csv
+from .decisions import DecisionStore, extract_decision
 from .financial_data import FinancialProvider, PersonalFinancialProvider
 from .pipeline import InvalidReview, analyze
 from .providers import DataProvider, ModelProvider, OpenAIModel, SuppliedDataProvider
 from .research import ResearchProvider, ReviewedResearchProvider
-from .schemas import AnalysisRequest, AnalysisResult, CSVRequest, Snapshot
+from .schemas import (
+    AnalysisRequest,
+    AnalysisResult,
+    ConfirmActionRequest,
+    CSVRequest,
+    SavedDecision,
+    SaveDecisionRequest,
+    Snapshot,
+)
 
 
 def create_app(
@@ -24,9 +33,11 @@ def create_app(
     financial: FinancialProvider | None = None,
     research: ResearchProvider | None = None,
     discovery: DiscoveryProvider | None = None,
+    store: DecisionStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Personal Investment Analyst", version="0.1.0")
     source = data or SuppliedDataProvider()
+    decisions = store or DecisionStore()
 
     @app.exception_handler(RequestValidationError)
     async def invalid_input(_request: Request, error: RequestValidationError) -> JSONResponse:
@@ -92,7 +103,38 @@ def create_app(
             if isinstance(provider, OpenAIModel):
                 await provider.client.close()
 
+    @app.get("/api/decisions", response_model=list[SavedDecision])
+    def list_decisions() -> list[SavedDecision]:
+        return decisions.list_decisions()
+
+    @app.post("/api/decisions", response_model=SavedDecision)
+    def save_decision(request: SaveDecisionRequest) -> SavedDecision:
+        if request.result is not None:
+            record = extract_decision(request.result, confirmed_action=request.confirmed_action)
+        elif request.decision is not None:
+            record = request.decision
+            if request.confirmed_action is not None:
+                record = record.model_copy(update={"confirmed_action": request.confirmed_action})
+        else:
+            raise HTTPException(422, "Missing decision content.")
+        return decisions.save(record)
+
+    @app.get("/api/decisions/{decision_id}", response_model=SavedDecision)
+    def get_decision(decision_id: str) -> SavedDecision:
+        record = decisions.get(decision_id)
+        if record is None:
+            raise HTTPException(404, "Decision not found.")
+        return record
+
+    @app.post("/api/decisions/{decision_id}/confirm", response_model=SavedDecision)
+    def confirm_decision_action(decision_id: str, request: ConfirmActionRequest) -> SavedDecision:
+        try:
+            return decisions.confirm_action(decision_id, action=request.action, notes=request.notes)
+        except KeyError:
+            raise HTTPException(404, "Decision not found.")
+
     return app
+
 
 
 app = create_app()
