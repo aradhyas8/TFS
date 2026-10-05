@@ -6,6 +6,7 @@ export default function AllocationResult({ allocation }: { allocation: Result | 
   return <section className="panel" aria-label="New cash analysis"><h2>New cash analysis</h2>
     <p>Fresh scan requested at {allocation.scan.scanned_at}; evidence basis: {allocation.scan.as_of}.</p>
     <p>{allocation.scan.source}</p>
+    <p>Original screening source capture: {allocation.scan.source_captured_at || "Unknown; supplied holdings are screened using their dated evidence"}. Request time does not make screening signals newly published.</p>
     <p>Deep research: {allocation.researched.length} candidates. Research stops when no candidate could change the decision.</p>
     {allocation.scan.issues.map((issue, index) => <p className="qualification" key={index}>{issue}</p>)}
     <details><summary>Bounded opportunity screen</summary><ul>{allocation.scan.candidates.map(candidate => <li key={candidate.position.id}>

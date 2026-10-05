@@ -26,11 +26,13 @@ from .schemas import (
     CandidateCasesInput,
     CandidateResearchInput,
     CompanyJudgments,
+    CompanyResearch,
     ComparisonJudgments,
     PortfolioReview,
     ProposalReview,
     ProposedChanges,
     Recommendation,
+    ResearchDocument,
     StockRecommendation,
     StockResult,
 )
@@ -129,6 +131,13 @@ def validate_prose(prose: str, *, stock: bool = False) -> None:
         raise InvalidReview("Unsupported quantitative claims or execution direction.")
 
 
+def validate_company_judgments(judgments: CompanyJudgments) -> None:
+    for case in judgments.cases:
+        validate_prose(" ".join([*case.assumptions, *case.uncertainty]))
+    if judgments.mid_cycle_context:
+        validate_prose(judgments.mid_cycle_context)
+
+
 def enforce_guardrails(
     answer: Recommendation, current: PortfolioReview, proposals: list[ProposalReview],
 ) -> Recommendation:
@@ -179,7 +188,7 @@ async def analyze(
         supplied = bind_scan(supplied, scan)
         allocation = AllocationResult(context=request.new_cash, scan=scan)
     scan_reviewed = False
-    candidate_research: dict[str, Any] = {}
+    candidate_research: dict[str, CompanyResearch] = {}
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": INSTRUCTIONS + (STOCK_INSTRUCTIONS if request.stock else "") + (ALLOCATION_INSTRUCTIONS if allocation else "")},
         {"role": "user", "content": request.model_dump_json()},
@@ -247,6 +256,15 @@ async def analyze(
                         record = await (research or ReviewedResearchProvider()).company(target, supplied.as_of)
                         if record.company_id != (target.company_id or target.id):
                             raise InvalidReview("Candidate evidence conflicts with the bound issuer.")
+                        # Document identifiers must be unambiguous across the two
+                        # researched issuers; preserve original URLs and fact links.
+                        record = record.model_copy(deep=True)
+                        document_ids = {doc.id: f"candidate-{len(candidate_research) + 1}-document-{index + 1}"
+                                        for index, doc in enumerate(record.documents)}
+                        for doc in record.documents:
+                            doc.id = document_ids[doc.id]
+                        for fact in record.facts:
+                            fact.document_ids = [document_ids[key] for key in fact.document_ids]
                         candidate_research[chosen.position_id] = record
                         allocation.researched.append(chosen)
                         output = record.model_dump(mode="json")
@@ -254,10 +272,7 @@ async def analyze(
                         chosen_cases = CandidateCasesInput.model_validate(arguments)
                         if chosen_cases.position_id not in candidate_research or any(row.position_id == chosen_cases.position_id for row in allocation.stocks) or comparison is not None:
                             raise InvalidReview("Candidate cases require primary research and run once before comparison.")
-                        for case in chosen_cases.judgments.cases:
-                            validate_prose(" ".join([*case.assumptions, *case.uncertainty]))
-                        if chosen_cases.judgments.mid_cycle_context:
-                            validate_prose(chosen_cases.judgments.mid_cycle_context)
+                        validate_company_judgments(chosen_cases.judgments)
                         calculated = calculate_company_cases(chosen_cases.position_id, candidate_research[chosen_cases.position_id], chosen_cases.judgments, computed)
                         allocation.stocks.append(calculated)
                         _, selection = comparison_context(request, supplied, evidence, allocation)
@@ -284,10 +299,7 @@ async def analyze(
                         if research_tools != {"get_sec_filings", "get_issuer_material"} or stock_result is not None:
                             raise InvalidReview("Company cases require primary filing and issuer review, and run once.")
                         company_judgments = CompanyJudgments.model_validate(arguments)
-                        for case in company_judgments.cases:
-                            validate_prose(" ".join([*case.assumptions, *case.uncertainty]))
-                        if company_judgments.mid_cycle_context:
-                            validate_prose(company_judgments.mid_cycle_context)
+                        validate_company_judgments(company_judgments)
                         stock_result = calculate_company_cases(request.stock.position_id, company_research, company_judgments, computed)
                         output = stock_result.model_dump(mode="json")
                     else:
@@ -364,17 +376,18 @@ async def analyze(
             if allocation:
                 assert isinstance(recommendation, StockRecommendation)
                 chosen_stock = next((row for row in allocation.stocks if allocation.judgment and row.position_id == allocation.judgment.position_id), None)
-                available = {doc.id for row in allocation.stocks for doc in row.research.documents if doc.available and doc.published_on <= supplied.as_of and doc.as_of <= supplied.as_of}
+                available = {doc.id: doc for row in allocation.stocks for doc in row.research.documents if doc.available and doc.published_on <= supplied.as_of and doc.as_of <= supplied.as_of}
                 if any(key not in available for key in recommendation.evidence_ids):
                     raise InvalidReview("Allocation cannot cite invented or unavailable evidence.")
                 if chosen_stock:
-                    checked_answer = validate_stock_recommendation(recommendation, chosen_stock, computed, [], check_add=False)
+                    checked_answer = validate_stock_recommendation(recommendation, chosen_stock, computed, [], check_add=False, evidence_scope=available)
                     if checked_answer.preferred_action == "wait_for_inputs":
                         allocation.missing_inputs.append("Selected company lacks usable cited primary evidence.")
                 if recommendation.preferred_action in {"hold", "reduce", "exit"}:
                     raise InvalidReview("New-cash direction must be add, no action or conditional clarification.")
                 if recommendation.preferred_action == "add":
                     if allocation.amount is None or allocation.missing_inputs:
+                        allocation.amount = None
                         recommendation = Recommendation(preferred_action="wait_for_inputs", amount=None,
                             reason="A conditional direction is appropriate while decision-critical allocation inputs or post-allocation checks remain unresolved.",
                             alternatives=[Alternative(action="no_action", reason="Retain the new cash while unresolved inputs are checked.")],
@@ -428,9 +441,10 @@ invent probabilities, tax consequences, amounts or claim an executed trade.
 
 
 def validate_stock_recommendation(answer: Recommendation, stock: StockResult,
-                                  current: PortfolioReview, proposals: list[ProposalReview], *, check_add: bool = True) -> Recommendation:
+                                  current: PortfolioReview, proposals: list[ProposalReview], *, check_add: bool = True,
+                                  evidence_scope: dict[str, ResearchDocument] | None = None) -> Recommendation:
     assert isinstance(answer, StockRecommendation)
-    available = {doc.id: doc for doc in stock.research.documents if doc.available}
+    available = evidence_scope if evidence_scope is not None else {doc.id: doc for doc in stock.research.documents if doc.available}
     if any(key not in available for key in answer.evidence_ids):
         raise InvalidReview("Material claims cannot cite unavailable primary evidence.")
     cited = [available[key] for key in answer.evidence_ids]
@@ -442,7 +456,7 @@ def validate_stock_recommendation(answer: Recommendation, stock: StockResult,
                 raise InvalidReview("Unavailable transcript Q&A cannot be claimed reviewed.")
     if any(doc.authority == "macro" for doc in cited) and not re.search(r"(?:mechanism|because|through)", prose, re.I):
         raise InvalidReview("Macro evidence requires a named thesis mechanism.")
-    missing = not {"sec", "issuer"}.issubset({doc.authority for doc in cited}) or any(case.terminal_price is None for case in stock.cases)
+    missing = not {"sec", "issuer"}.issubset({doc.authority for doc in cited if doc.company_id == stock.research.company_id}) or any(case.terminal_price is None for case in stock.cases)
     adding = answer.preferred_action == "add" or any(row.action == "add" for row in answer.alternatives)
     checks = current.guardrails
     unsafe_add = check_add and adding and (not current.source_inputs_usable or checks is None

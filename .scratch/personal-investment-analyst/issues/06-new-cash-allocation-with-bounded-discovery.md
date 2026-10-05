@@ -4,7 +4,7 @@
 
 **Blocked by:** 05: US stock analysis in portfolio context.
 
-**Status:** ready-for-agent
+**Status:** implemented
 
 **Authority:** [Personal Investment Analyst specification](../../../specs/personal-investment-analyst.md).
 
@@ -34,11 +34,16 @@ Implement within the single shared FastAPI decision pipeline and the authoritati
 
 ## Acceptance criteria
 
-- [ ] The core portfolio-plus-new-cash question produces a completed recommendation in the same application request, displayed in the frontend.
-- [ ] A fresh bounded scan occurs each request, and deep research stops at at most two decision-changing candidates.
-- [ ] Approximate amounts are justified and deterministically checked, or replaced with explicit conditional direction.
-- [ ] Tickets 09–11 are not prerequisites; one shared decision pipeline powers the answer.
+- [x] The core portfolio-plus-new-cash question produces a completed recommendation in the same application request, displayed in the frontend.
+- [x] A fresh bounded scan occurs each request, and deep research stops at at most two decision-changing candidates.
+- [x] Approximate amounts are justified and deterministically checked, or replaced with explicit conditional direction.
+- [x] Tickets 09–11 are not prerequisites; one shared decision pipeline powers the answer.
 
 ## Non-goals
 
 - No unbounded market crawl, deep research on every result, separate discovery platform, automatic orders, saved-decision prerequisite, or ETF-look-through prerequisite.
+
+
+## Implementation record
+
+Implemented in the shared FastAPI/OpenAI decision pipeline and Next.js question/result journey. See [allocation contract and controlled answer review](../../../docs/new-cash-allocation.md) and [standards/spec review](../../../docs/ticket-06-review.md). Every request performs a bounded request-local screen; configured dated signals retain their original source capture alongside request time. Broader live market discovery and live-model answer-quality assessment are not claimed. Research stops at two decision-changing candidates; Python calculates and checks justified ranges, otherwise the result gives conditional direction. Final verification: 222 backend tests, 23 browser journeys, backend/frontend typechecks, lint, and production build passed. All automated verification used fake providers with no live model or market-data calls.

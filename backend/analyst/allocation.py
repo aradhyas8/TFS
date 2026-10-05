@@ -41,6 +41,9 @@ class ReviewedDiscoveryProvider:
         scan = DiscoveryScan.model_validate_json(Path(path).read_text(encoding="utf-8")) if path else DiscoveryScan(
             scanned_at=datetime.now(UTC), as_of=snapshot.as_of,
             source="Request-local screen of current holdings; additional reviewed opportunity universe unavailable.")
+        if path:
+            scan.source_captured_at = scan.source_captured_at or scan.scanned_at
+            scan.issues.append("Screening signals retain their original source capture time; re-reading them is not newly published evidence.")
         scan.scanned_at = datetime.now(UTC)
         if scan.as_of != snapshot.as_of:
             scan.candidates = []

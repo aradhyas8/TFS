@@ -328,6 +328,7 @@ class DiscoveryCandidate(Contract):
 
 
 class DiscoveryScan(Contract):
+    source_captured_at: AwareDatetime | None = None
     scanned_at: AwareDatetime
     as_of: date
     source: Text

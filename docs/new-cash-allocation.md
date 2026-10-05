@@ -19,7 +19,7 @@ Every request calls the backend discovery provider once, then refreshes financia
 
 Without configured discovery records, the dated screen covers eligible supplied holdings and openly reports that additional opportunity coverage is unavailable. This is a newly performed lightweight screen, **not live market-wide discovery**. Missing broad ETF, source evidence or context yields conditional direction. For a wider bounded universe, configure backend-only `DISCOVERY_REFERENCE_FILE` with a `DiscoveryScan` JSON object:
 
-- `scanned_at`: timezone-aware original capture time (the backend separately stamps the current screen request).
+- `scanned_at`: timezone-aware original capture time in the configured file. The response preserves it as `source_captured_at` and separately stamps `scanned_at` with request time. An optional explicit `source_captured_at` is preserved when supplied; rereading older signals is never described as newly published evidence.
 - `as_of`: decision basis date; a different date makes external candidates unavailable.
 - `source`: source and coverage description.
 - `candidates`: at most eight records, each containing a zero-share `position`, `as_of`, `source`, optional `source_url`, and a screening `signal`. Stocks require US listings in USD; fund candidates require diversified classification. Positions must reference a supplied account. Existing identifiers must match submitted listings/issuers.
@@ -28,7 +28,7 @@ Without configured discovery records, the dated screen covers eligible supplied 
 
 The file is re-read each request. These records do not establish verified identity, usable price or current primary evidence by themselves: `FINANCIAL_REFERENCE_FILE` and `RESEARCH_REFERENCE_FILE` remain the existing independent authorities. Old, missing or contradictory facts stay unknown. No arbitrary model URLs, model-supplied screening facts, new subscription or broad crawler is introduced.
 
-After reviewing the scan, the model can stop without stock research or request `research_candidate` for one or two distinct scanned stocks, with a reason each could change the choice. The backend rejects a third candidate, duplicate research, unscanned targets and research after comparison. Each research request exposes original SEC and issuer material together; `calculate_company_cases` uses the same company calculations as ticket 05. All researched serious candidates receive cases before the shared comparison can run. Two stock candidates plus broad ETF, cash and no action fit the five-alternative bound.
+After reviewing the scan, the model can stop without stock research or request `research_candidate` for one or two distinct scanned stocks, with a reason each could change the choice. The backend rejects a third candidate, duplicate research, unscanned targets and research after comparison. Document IDs are namespaced per candidate to keep cross-company citations unambiguous while original URLs and fact references remain intact. Each research request exposes original SEC and issuer material together; `calculate_company_cases` uses the same company calculations as ticket 05. All researched serious candidates receive cases before the shared comparison can run. Two stock candidates plus broad ETF, cash and no action fit the five-alternative bound.
 
 ## Amounts and guardrails
 

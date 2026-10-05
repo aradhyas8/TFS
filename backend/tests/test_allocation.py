@@ -132,7 +132,7 @@ class FakeDiscovery:
                 for i in range(self.count)]})
 
 
-def candidate_journey(count, *, research_count=None, size=False, settings=None, answer=None):
+def candidate_journey(count, *, research_count=None, size=False, settings=None, answer=None, citations=None):
     from analyst.research import ReviewedResearchProvider
     from analyst.schemas import CompanyResearch
     from tests.test_stock import company_judgments, research_fixture
@@ -168,7 +168,7 @@ def candidate_journey(count, *, research_count=None, size=False, settings=None, 
         final.update(reason="A modest conditional company addition balances the operating-case upside against company downside and existing diversified exposure.",
                      alternatives=[{"action": "add", "reason": "A diversified fund offers broader exposure if company-specific downside is uncomfortable."},
                                    {"action": "no_action", "reason": "Retain the new cash if the operating-case judgments do not justify commitment."}],
-                     evidence_ids=["filing", "issuer"])
+                     evidence_ids=["candidate-1-document-1", "candidate-1-document-2"] if citations is None else citations)
     else:
         final.update(preferred_action="no_action", reason="The screened companies do not clearly improve the tradeoff against the diversified fund and retaining cash.",
                      alternatives=[{"action": "add", "reason": "A conditional diversified-fund addition could reduce reliance on individual company outcomes."},
@@ -307,3 +307,31 @@ def test_unused_unpriced_scan_candidate_does_not_prohibit_fund_sizing():
     response = TestClient(create_app(model=model, data=FakeDataProvider(), financial=FakeFinancialProvider(allocation_evidence()), discovery=discovery)).post("/api/analyze", json=allocation_request())
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["amount"]["maximum"] == "2400"
+
+
+def test_missing_stock_citations_suppress_every_rendered_allocation_amount():
+    response, _, _ = candidate_journey(1, size=True, citations=[])
+    assert response.status_code == 200, response.text
+    assert response.json()["recommendation"]["amount"] is None
+    assert response.json()["allocation"]["amount"] is None
+
+
+def test_allocation_can_cite_both_serious_companies_and_size_one():
+    response, _, _ = candidate_journey(2, size=True, citations=[
+        "candidate-1-document-1", "candidate-1-document-2",
+        "candidate-2-document-1", "candidate-2-document-2"])
+    assert response.status_code == 200, response.text
+    assert response.json()["recommendation"]["amount"]["maximum"] == "1600"
+
+
+def test_screen_preserves_source_capture_separately_from_request_time(monkeypatch, tmp_path):
+    captured = "2026-09-30T20:00:00Z"
+    source = tmp_path / "discovery.json"
+    source.write_text(json.dumps({"scanned_at": captured, "as_of": "2026-09-30", "source": "Reviewed fixture", "candidates": []}))
+    monkeypatch.setenv("DISCOVERY_REFERENCE_FILE", str(source))
+    response, _ = run_allocation()
+    assert response.status_code == 200, response.text
+    scan = response.json()["allocation"]["scan"]
+    assert scan["source_captured_at"] == captured
+    assert datetime.fromisoformat(scan["scanned_at"]) > datetime.fromisoformat(captured)
+    assert any("source capture" in issue for issue in scan["issues"])

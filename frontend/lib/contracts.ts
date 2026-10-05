@@ -84,7 +84,7 @@ export type StockResult = { position_id: string; as_of: string; reporting_curren
 export type NewCashInput = { amount: string | null; cash_position_id: string | null; confirmed: boolean; risk_context: string | null };
 export type AllocationAmount = { minimum: string; maximum: string; currency: string; position_id: string };
 export type AllocationResult = { context: NewCashInput;
-  scan: { scanned_at: string; as_of: string; source: string; issues: string[];
+  scan: { source_captured_at: string | null; scanned_at: string; as_of: string; source: string; issues: string[];
     candidates: { position: Position; as_of: string; source: string; source_url: string | null; signal: string }[] };
   researched: { position_id: string; reason: string }[]; stocks: StockResult[];
   judgment: { position_id: string; min_weight: string; max_weight: string; reason: string } | null;
