@@ -51,7 +51,7 @@ def company_judgments():
             "metric_fact_id": None, "mid_cycle_context": "Margins represent a conditional mid-cycle level rather than a peak.",
             "cases": [{"name": name, "growth": ["0"] * 5, "margins": [margin] * 5,
                        "cash_conversion": ["1"] * 5, "reinvestment": ["0"] * 5,
-                       "dilution": ["0"] * 5, "payout": ["0"] * 5,
+                       "dilution": ["0"] * 5, "payout": ["0"] * 5, "return_on_equity": None,
                        "fx_multipliers": ["1"] * 5, "discount_rate": "0.1",
                        "exit_multiple": "10", "exit_sensitivity": ["8", "10", "12"],
                        "assumptions": ["Stable revenue and conditional margins drive the exit value."],
@@ -210,7 +210,7 @@ def stock_comparison_judgments(request):
         drivers = [driver(key, cash=rows[key]["kind"] == "cash") for key in ids]
         for row in drivers:
             if rows[row["position_id"]]["kind"] == "stock":
-                row.update(annual_returns=None, income_multipliers=None)
+                row.update(annual_returns=None, income_multipliers=None, reinvest=False)
         alternatives.append({"alternative_id": alt["id"], "cases": [
             {"name": name, "drivers": copy.deepcopy(drivers), "assumptions": ["Paths are conditional judgments."],
              "downside": "Operating losses or falling rates may impair capital.",
@@ -310,3 +310,37 @@ def test_loss_making_downside_has_zero_equity_exit_and_no_negative_dividend():
     assert case["terminal_price"] == "0"
     assert case["known_terminal_value"] == "0"
     assert case["required_exit_multiple"] is None
+
+
+def test_financial_company_payout_uses_roe_earnings_instead_of_book_capital():
+    source = research_fixture()
+    source["sector"] = "financial"
+    source["facts"][0].update(metric="book_value", value="200")
+    paths = company_judgments()
+    paths.update(method="book_exit", revenue_fact_id=None, metric_fact_id="revenue")
+    for case in paths["cases"]:
+        case.update(margins=["1"] * 5, payout=["0.5"] * 5, exit_multiple="1",
+                    return_on_equity=["0.1"] * 5)
+    response, _ = run_stock(research=source, paths=paths)
+    assert response.status_code == 200, response.text
+    case = response.json()["stock"]["cases"][1]
+    # Book/share = 20; annual earnings/share = 20 * 0.1 = 2.
+    # Annual dividend = 1; exit = 20. Ten shares convert at 1.3 CAD/USD.
+    assert case["terminal_price"] == "20"
+    assert case["known_terminal_value"] == "325"
+
+
+def test_missing_roe_does_not_turn_book_capital_into_dividends():
+    source = research_fixture()
+    source["sector"] = "financial"
+    source["facts"][0].update(metric="book_value", value="200")
+    paths = company_judgments()
+    paths.update(method="book_exit", revenue_fact_id=None, metric_fact_id="revenue")
+    for case in paths["cases"]:
+        case.update(margins=["1"] * 5, payout=["0.5"] * 5)
+    response, _ = run_stock(research=source, paths=paths)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["stock"]["cases"][1]["known_terminal_value"] is None
+    assert "Return on equity is unknown" in str(result["stock"]["cases"][1])
+    assert result["recommendation"]["preferred_action"] == "wait_for_inputs"

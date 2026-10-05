@@ -170,7 +170,7 @@ def _calculate(
                 if stock is not None and key == stock.position_id and rows[key].supplied.kind == "stock":
                     stock_case = next(row for row in stock.cases if row.name == name)
                     driver = drivers[key]
-                    if driver.annual_rates is not None or driver.annual_returns is not None or driver.income_multipliers is not None:
+                    if driver.annual_rates is not None or driver.annual_returns is not None or driver.income_multipliers is not None or driver.reinvest or driver.return_basis != "price_only" or driver.cost_basis != "gross":
                         raise ValueError("Stock no-action uses company cases, never an ETF return forecast.")
                     if driver.fx_multipliers != stock_case.judgment.fx_multipliers:
                         raise ValueError("Retained stock FX must match the calculated company case.")

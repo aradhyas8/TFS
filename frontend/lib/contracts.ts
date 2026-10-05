@@ -78,7 +78,7 @@ export type StockResult = { position_id: string; as_of: string; reporting_curren
     terminal_price: string | null; known_terminal_value: string | null; present_value_per_share: string | null;
     sensitivity_prices: (string | null)[]; required_exit_multiple: string | null; qualifications: string[];
     judgment: { growth: string[]; margins: string[]; cash_conversion: string[]; reinvestment: string[];
-      dilution: string[]; payout: string[]; fx_multipliers: string[]; discount_rate: string;
+      dilution: string[]; payout: string[]; return_on_equity: string[] | null; fx_multipliers: string[]; discount_rate: string;
       exit_multiple: string; exit_sensitivity: string[]; assumptions: string[]; uncertainty: string[] } }[];
   qualifications: string[]; calculation_basis: string };
 export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation;

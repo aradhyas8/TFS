@@ -17,7 +17,9 @@ BASIS = (
     "explicit reinvestment. Book/FFO methods grow the reported total metric directly. "
     "Diluted shares compound each dilution assumption. Exit price equals the terminal "
     "metric times the exit multiple divided by terminal diluted shares. Distributions "
-    "use each year's per-share metric times payout and are held as idle reporting cash; "
+    "use each year's per-share earnings/FCF/FFO times payout; book-value cases use "
+    "opening book value times explicit ROE to estimate earnings for payout. Distributions "
+    "are held as idle reporting cash; "
     "Negative metrics imply zero equity exit value in this multiple method and no payout; an alternative positive recovery value needs a different supported case. They are not reinvested. Initial dated FX times each judged FX factor converts "
     "distributions and terminal price once. Present value discounts per-share distributions "
     "and terminal price in local currency. Reverse valuation solves the exit multiple "
@@ -92,7 +94,13 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
                 raise ValueError("Same-currency company cases require identity FX.")
             if not operating and any(value != 1 for value in [*case.margins, *case.cash_conversion]) or not operating and any(case.reinvestment):
                 raise ValueError("Book/FFO paths grow the reported metric directly; operating transforms must be neutral.")
-            base_metric = initial.value if initial else None
+            case_issues = list(issues)
+            if judgment.method != "book_exit" and case.return_on_equity is not None:
+                raise ValueError("ROE paths apply only to book-value cases.")
+            missing_roe = judgment.method == "book_exit" and any(case.payout) and case.return_on_equity is None
+            if missing_roe:
+                case_issues.append("Return on equity is unknown; book capital cannot be treated as distributable earnings.")
+            base_metric = initial.value if initial and not missing_roe else None
             diluted = shares.value if shares else None
             distributions = Decimal(0)
             discounted_income = Decimal(0)
@@ -104,6 +112,7 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
             sensitivity: list[str | None] = [None] * 3
             if base_metric is not None and diluted is not None and diluted > 0 and fx is not None:
                 for year in range(5):
+                    opening_metric = base_metric
                     base_metric *= 1 + case.growth[year]
                     diluted *= 1 + case.dilution[year]
                     terminal_metric = base_metric * case.margins[year] if operating else base_metric
@@ -111,7 +120,10 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
                         terminal_metric *= case.cash_conversion[year] * (1 - case.reinvestment[year])
                     elif any(value != 1 for value in case.cash_conversion) or any(case.reinvestment):
                         raise ValueError("Cash conversion/reinvestment applies only to the FCF method.")
-                    income = max(terminal_metric, Decimal(0)) / diluted * case.payout[year]
+                    distribution_metric = terminal_metric
+                    if judgment.method == "book_exit":
+                        distribution_metric = opening_metric * (case.return_on_equity[year] if case.return_on_equity else Decimal(0))
+                    income = max(distribution_metric, Decimal(0)) / diluted * case.payout[year]
                     distributions += income * fx * case.fx_multipliers[year]
                     discounted_income += income / (1 + case.discount_rate) ** (year + 1)
                 assert terminal_metric is not None
@@ -130,7 +142,7 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
                 known_terminal_value=money(terminal) if terminal is not None else None,
                 present_value_per_share=money(present) if present is not None else None,
                 sensitivity_prices=sensitivity, required_exit_multiple=required,
-                qualifications=list(dict.fromkeys(issues)),
+                qualifications=list(dict.fromkeys(case_issues)),
             ))
     return StockResult(position_id=position_id, as_of=portfolio.as_of,
                        reporting_currency=portfolio.reporting_currency, research=research,

@@ -18,7 +18,7 @@ export default function ComparisonResult({ comparison }: { comparison: Compariso
         terminal tax {valueLabel(effect.terminal_tax, currency)}. {effect.source} / {effect.as_of} / User supplied</p>)}
     </details>
     {comparison.alternatives.map(alt => <section key={alt.selection.id} aria-label={`Comparison ${alt.selection.kind}`}>
-      <h3>{alt.selection.kind === "no_action" ? "No action" : alt.selection.kind === "short_bill" ? "Short government bills" : alt.selection.kind === "etf" ? "Diversified ETF" : "Cash"}</h3>
+      <h3>{alt.selection.kind === "no_action" ? "No action" : alt.selection.kind === "short_bill" ? "Short government bills" : alt.selection.kind === "etf" ? "Diversified ETF" : alt.selection.kind === "stock" ? "Researched stock" : "Cash"}</h3>
       <p>{alt.selection.kind === "no_action" ? "Retain actual positions" : "Selected destination"}: {alt.position_ids.join(", ")}</p>
       <div className="table-scroll"><table aria-label={`${alt.selection.id} conditional cases`}>
         <thead><tr><th>Conditional case</th><th>Known terminal subtotal ({currency})</th><th>Fully specified conditional value ({currency})</th></tr></thead>

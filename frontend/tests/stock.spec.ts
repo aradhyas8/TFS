@@ -18,7 +18,7 @@ test("named US stock completes research, company cases and cash comparison in th
   await expect(stock).toContainText("Consolidated annual revenue");
   await expect(stock.getByRole("table", { name: "Company conditional cases" })).toContainText("100 USD");
   await expect(stock).toContainText("Required exit multiple");
-  await expect(page.getByRole("region", { name: "Five-year conditional comparison" })).toContainText("company");
+  await expect(page.getByRole("region", { name: "Five-year conditional comparison" }).getByRole("heading", { name: "Researched stock", exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Completed portfolio review" })).toContainText("Hold conditionally");
   await expect(page.getByRole("region", { name: "Completed portfolio review" })).toContainText("Allocation amount: not determined");
   await expect(page.locator("body")).not.toContainText("sk-test-backend-only-never-browser");

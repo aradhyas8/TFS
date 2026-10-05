@@ -558,6 +558,7 @@ class CompanyCase(Contract):
     reinvestment: Annotated[list[Fraction], Field(min_length=5, max_length=5)]
     dilution: FiveReturns
     payout: Annotated[list[Fraction], Field(min_length=5, max_length=5)]
+    return_on_equity: FiveReturns | None
     fx_multipliers: FiveFX
     discount_rate: Fraction
     exit_multiple: Rate

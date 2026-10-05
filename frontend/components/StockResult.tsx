@@ -30,7 +30,7 @@ export default function StockResult({ stock, currency }: { stock: Stock | null; 
     <p className="muted small">Required exit multiples describe performance under each named operating path; they do not uniquely describe market beliefs. Compare alternatives below using their common starting capital.</p>
     {stock.cases.map(row => <details key={row.name}><summary>{row.name}: driver judgments, sensitivity and uncertainty</summary>
       <p>Growth: {row.judgment.growth.join(", ")}. Net margins: {row.judgment.margins.join(", ")}. Cash conversion: {row.judgment.cash_conversion.join(", ")}. Reinvestment: {row.judgment.reinvestment.join(", ")}.</p>
-      <p>Dilution: {row.judgment.dilution.join(", ")}. Payout: {row.judgment.payout.join(", ")}. FX multipliers: {row.judgment.fx_multipliers.join(", ")}. Discount rate: {row.judgment.discount_rate}. Exit multiple: {row.judgment.exit_multiple}.</p>
+      <p>Dilution: {row.judgment.dilution.join(", ")}. Payout: {row.judgment.payout.join(", ")}. Return on equity: {row.judgment.return_on_equity?.join(", ") || "Not modeled"}. FX multipliers: {row.judgment.fx_multipliers.join(", ")}. Discount rate: {row.judgment.discount_rate}. Exit multiple: {row.judgment.exit_multiple}.</p>
       <p>Exit sensitivity: {row.judgment.exit_sensitivity.map((multiple, index) => `${multiple}: ${valueLabel(row.sensitivity_prices[index], currency)}`).join("; ")}</p>
       <ul>{[...row.judgment.assumptions, ...row.judgment.uncertainty, ...row.qualifications].map((item, index) => <li key={index}>{item}</li>)}</ul>
     </details>)}
