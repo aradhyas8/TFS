@@ -1,6 +1,8 @@
 import { actionLabel, valueLabel, weightLabel, type Analysis } from "../lib/contracts";
 import GuardrailResult from "./GuardrailResult";
 import ComparisonResult from "./ComparisonResult";
+import AllocationResult from "./AllocationResult";
+import ReunderwritingResult from "./ReunderwritingResult";
 import StockResult from "./StockResult";
 
 function Points({ title, items }: { title: string; items: string[] }) {
@@ -61,9 +63,11 @@ export default function ReviewResult({ result }: { result: Analysis }) {
         </tr>)}</tbody></table></div> : <p className="muted">No resolved direct-company positions supplied.</p>}
       <GuardrailResult review={portfolio.guardrails} currency={currency} label="Current" />
       <StockResult stock={result.stock} currency={portfolio.positions.find(row => row.supplied.id === result.stock?.position_id)?.supplied.currency || currency} />
-      {answer.evidence_ids && <p>Recommendation evidence: {answer.evidence_ids.map((id, index) => { const doc = result.stock?.research.documents.find(row => row.id === id); return <span key={id}>{index > 0 && "; "}{doc ? <a href={doc.url} target="_blank" rel="noreferrer">{doc.title} ({doc.published_on})</a> : id}</span>; })}</p>}
+      {answer.evidence_ids && <p>Recommendation evidence: {answer.evidence_ids.map((id, index) => { const doc = [result.stock, ...(result.allocation?.stocks || []), ...(result.reunderwriting?.stocks || [])].flatMap(stock => stock?.research.documents || []).find(row => row.id === id); return <span key={id}>{index > 0 && "; "}{doc ? <a href={doc.url} target="_blank" rel="noreferrer">{doc.title} ({doc.published_on})</a> : id}</span>; })}</p>}
+      <ReunderwritingResult review={result.reunderwriting} positions={portfolio.positions.map(row => row.supplied)} />
+      <AllocationResult allocation={result.allocation} />
       <ComparisonResult comparison={result.comparison} />
-      {result.proposals.map((proposal, index) => <section className="panel" aria-label={`Proposed change ${index + 1}`} key={index}>
+      {[...result.proposals, ...(result.allocation?.previews || []), ...(result.reunderwriting?.previews || [])].map((proposal, index) => <section className="panel" aria-label={`Proposed change ${index + 1}`} key={index}>
         <h3>Proposed change {index + 1}: {proposal.status.replaceAll("_", " ")}</h3>
         <p className="muted small">Source: {proposal.source}. Hypothetical preview using the snapshot date; no action has occurred.</p>
         <p>Post-change portfolio total: {valueLabel(proposal.post_total_value, currency)}. Post-change cash: {valueLabel(proposal.post_cash_value, currency)}.</p>
@@ -79,7 +83,7 @@ export default function ReviewResult({ result }: { result: Analysis }) {
         <GuardrailResult review={proposal.guardrails} currency={currency} label={`Proposed change ${index + 1}`} />
         <Points title="Preview qualifications" items={proposal.qualifications} />
       </section>)}
-      <div className="qualification"><strong>Allocation amount: not determined</strong><p>Exposure checks use only supplied settings. A hypothetical preview does not establish justified sizing.</p></div>
+      <div className="qualification"><strong>{answer.amount ? `Approximate ${result.reunderwriting ? "adjustment" : "allocation"} amount: ${valueLabel(answer.amount.minimum, answer.amount.currency)} to ${valueLabel(answer.amount.maximum, answer.amount.currency)} for ${answer.amount.position_id}` : "Allocation amount: not determined"}</strong><p>{answer.amount ? "The judged range passed deterministic post-allocation checks. Costs and execution remain uncertain; place any orders yourself." : "Exposure checks use only supplied settings. A hypothetical preview does not establish justified sizing."}</p></div>
       <Points title="Qualifications" items={portfolio.qualifications} />
       <Points title="Alternatives" items={answer.alternatives.map(option => `${actionLabel(option.action)}: ${option.reason}`)} />
       <Points title="Downside" items={[answer.downside]} />

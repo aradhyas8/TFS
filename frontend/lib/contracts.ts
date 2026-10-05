@@ -43,7 +43,7 @@ export type Review = {
   source_inputs_usable: boolean; sizing_eligible: false;
 };
 export type Recommendation = {
-  preferred_action: "review_only" | "wait_for_inputs" | "no_action" | "add" | "hold" | "reduce" | "exit"; amount: null;
+  preferred_action: "review_only" | "wait_for_inputs" | "no_action" | "add" | "hold" | "reduce" | "exit"; amount: AllocationAmount | null;
   evidence_ids?: string[]; reason: string; alternatives: { action: "clarify_inputs" | "keep_snapshot" | "no_action" | "add" | "hold" | "reduce" | "exit"; reason: string }[];
   downside: string; assumptions: string[]; uncertainty: string[]; what_could_change: string[];
 };
@@ -81,8 +81,21 @@ export type StockResult = { position_id: string; as_of: string; reporting_curren
       dilution: string[]; payout: string[]; return_on_equity: string[] | null; fx_multipliers: string[]; discount_rate: string;
       exit_multiple: string; exit_sensitivity: string[]; assumptions: string[]; uncertainty: string[] } }[];
   qualifications: string[]; calculation_basis: string };
+export type NewCashInput = { amount: string | null; cash_position_id: string | null; confirmed: boolean; risk_context: string | null };
+export type AllocationAmount = { minimum: string; maximum: string; currency: string; position_id: string };
+export type AllocationResult = { context: NewCashInput;
+  scan: { source_captured_at: string | null; scanned_at: string; as_of: string; source: string; issues: string[];
+    candidates: { position: Position; as_of: string; source: string; source_url: string | null; signal: string }[] };
+  researched: { position_id: string; reason: string }[]; stocks: StockResult[];
+  judgment: { position_id: string; min_weight: string; max_weight: string; reason: string } | null;
+  amount: AllocationAmount | null; previews: ProposalReview[]; missing_inputs: string[]; qualifications: string[] };
+export type PortfolioReviewInput = { prior_theses: { company_id: string; as_of: string; thesis: string }[]; risk_context: string | null };
+export type ReunderwritingResult = { context: PortfolioReviewInput; research: Record<string, StockResult["research"]>;
+  stocks: StockResult[]; sizing: { position_id: string; cash_position_id: string; min_weight: string; max_weight: string; reason: string } | null; amount: AllocationAmount | null; previews: ProposalReview[]; missing_inputs: string[]; assessments: { position_id: string; status: "changed" | "unchanged" | "unknown";
+    action: string; current_thesis: string; change_reason: string; downside: string; what_could_change: string[]; evidence_ids: string[] }[];
+  qualifications: string[] };
 export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation;
-  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null };
+  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null; allocation: AllocationResult | null; reunderwriting: ReunderwritingResult | null };
 
 export async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -113,3 +126,20 @@ export const valueLabel = (value: string | null, currency: string) => {
 };
 export const weightLabel = (value: string | null) => value === null ? "Unknown" :
   new Intl.NumberFormat("en-CA", { style: "percent", maximumFractionDigits: 2 }).format(Number(value));
+
+
+export function portfolioReviewComparison(snapshot: Snapshot): ComparisonInput {
+  const seen = new Set<string>();
+  const companies = snapshot.positions.filter(row => {
+    const key = row.company_id || row.id;
+    if (row.kind !== "stock" || !(Number(row.shares) > 0) || row.currency !== "USD" || !["XNAS", "XNYS", "XASE"].includes(row.listing || "") || seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  const alternatives: ComparisonAlternative[] = companies.map(row => ({ id: `company-${row.id}`, kind: "stock", position_id: row.id }));
+  const fund = snapshot.positions.find(row => row.kind === "etf" && row.etf_role === "diversified");
+  const cash = snapshot.positions.find(row => row.kind === "cash");
+  if (fund) alternatives.push({ id: "fund", kind: "etf", position_id: fund.id });
+  if (cash) alternatives.push({ id: "cash", kind: "cash", position_id: cash.id });
+  alternatives.push({ id: "keep", kind: "no_action", position_id: null });
+  return { scope_position_ids: snapshot.positions.map(row => row.id), alternatives, fund_facts: [], effects: [] };
+}

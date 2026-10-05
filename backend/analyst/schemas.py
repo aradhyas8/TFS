@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import date
 from decimal import Decimal
 from typing import Annotated, Literal, Self
@@ -220,10 +222,10 @@ class KnownEffects(Contract):
 
 
 class ComparisonInput(Contract):
-    scope_position_ids: list[Identifier] = Field(min_length=1, max_length=20)
-    alternatives: list[ComparisonAlternative] = Field(min_length=1, max_length=4)
+    scope_position_ids: list[Identifier] = Field(min_length=1, max_length=2000)
+    alternatives: list[ComparisonAlternative] = Field(min_length=1, max_length=2003)
     fund_facts: list[FundFacts] = Field(default_factory=list, max_length=20)
-    effects: list[KnownEffects] = Field(default_factory=list, max_length=4)
+    effects: list[KnownEffects] = Field(default_factory=list, max_length=5)
 
     @model_validator(mode="after")
     def unique_inputs(self) -> Self:
@@ -252,7 +254,7 @@ class ScenarioDriver(Contract):
 
 class ScenarioCase(Contract):
     name: CaseName
-    drivers: list[ScenarioDriver] = Field(min_length=1, max_length=20)
+    drivers: list[ScenarioDriver] = Field(min_length=1, max_length=2000)
     assumptions: list[Text] = Field(min_length=1, max_length=8)
     downside: Text
     uncertainty: list[Text] = Field(min_length=1, max_length=8)
@@ -270,11 +272,87 @@ class AlternativeJudgment(Contract):
 
 
 class ComparisonJudgments(Contract):
-    alternatives: list[AlternativeJudgment] = Field(min_length=1, max_length=4)
+    alternatives: list[AlternativeJudgment] = Field(min_length=1, max_length=2003)
 
 
 class StockInput(Contract):
     position_id: Identifier
+
+
+class NewCashInput(Contract):
+    amount: Quantity | None = None
+    cash_position_id: Identifier | None = None
+    confirmed: bool = False
+    risk_context: Text | None = None
+
+
+class AllocationJudgment(Contract):
+    position_id: Identifier
+    min_weight: Fraction
+    max_weight: Fraction
+    reason: Text
+
+    @model_validator(mode="after")
+    def ordered(self) -> Self:
+        if self.min_weight > self.max_weight:
+            raise ValueError("Exposure range must be ordered.")
+        return self
+
+
+class CandidateResearchInput(Contract):
+    position_id: Identifier
+    reason: Text
+
+
+class CandidateCasesInput(Contract):
+    position_id: Identifier
+    judgments: CompanyJudgments
+
+
+class DiscoveryCandidate(Contract):
+    position: Position
+    as_of: date
+    source: Identifier
+    source_url: str | None = None
+    signal: Text
+
+    @model_validator(mode="after")
+    def prospective(self) -> Self:
+        if self.position.kind == "cash" or self.position.shares != 0:
+            raise ValueError("Discovery records must be zero-share prospective securities.")
+        if self.position.kind == "stock" and (self.position.currency != "USD" or self.position.listing not in {"XNAS", "XNYS", "XASE"}):
+            raise ValueError("Discovery stock research supports US listings only.")
+        if self.position.kind == "etf" and self.position.etf_role != "diversified":
+            raise ValueError("Allocation fund alternatives require diversified exposure.")
+        return self
+
+
+class DiscoveryScan(Contract):
+    source_captured_at: AwareDatetime | None = None
+    scanned_at: AwareDatetime
+    as_of: date
+    source: Text
+    candidates: list[DiscoveryCandidate] = Field(default_factory=list, max_length=8)
+    fund_facts: list[FundFacts] = Field(default_factory=list, max_length=8)
+    issues: list[Text] = Field(default_factory=list, max_length=20)
+
+
+class AllocationAmount(Contract):
+    minimum: str
+    maximum: str
+    currency: Currency
+    position_id: Identifier
+
+
+class PriorThesis(Contract):
+    company_id: Identifier
+    as_of: date
+    thesis: Text
+
+
+class PortfolioReviewInput(Contract):
+    prior_theses: list[PriorThesis] = Field(default_factory=list, max_length=2000)
+    risk_context: Text | None = None
 
 
 class AnalysisRequest(Contract):
@@ -284,9 +362,43 @@ class AnalysisRequest(Contract):
     proposed_changes: ProposedChanges | None = None
     comparison: ComparisonInput | None = None
     stock: StockInput | None = None
+    new_cash: NewCashInput | None = None
+    portfolio_review: PortfolioReviewInput | None = None
 
     @model_validator(mode="after")
     def comparison_references(self) -> Self:
+        import re
+        if self.portfolio_review is not None:
+            if self.new_cash is not None or self.stock is not None:
+                raise ValueError("Choose one decision request type.")
+            priors = self.portfolio_review.prior_theses
+            company_ids = {row.company_id for row in self.portfolio.positions if row.kind == "stock"}
+            if len({row.company_id for row in priors}) != len(priors) or any(row.company_id not in company_ids or row.as_of > self.portfolio.as_of for row in priors):
+                raise ValueError("Prior theses must uniquely reference current companies and cannot be future dated.")
+            if self.comparison is None:
+                representatives: dict[str, Position] = {}
+                for held in self.portfolio.positions:
+                    if held.kind == "stock" and held.shares and held.currency == "USD" and held.listing in {"XNAS", "XNYS", "XASE"}:
+                        representatives.setdefault(held.company_id or held.id, held)
+                alternatives = [ComparisonAlternative(id=f"company-{row.id}", kind="stock", position_id=row.id) for row in representatives.values()]
+                fund = next((row for row in self.portfolio.positions if row.kind == "etf" and row.etf_role == "diversified"), None)
+                cash = next((row for row in self.portfolio.positions if row.kind == "cash"), None)
+                if fund:
+                    alternatives.append(ComparisonAlternative(id="fund", kind="etf", position_id=fund.id))
+                if cash:
+                    alternatives.append(ComparisonAlternative(id="cash", kind="cash", position_id=cash.id))
+                alternatives.append(ComparisonAlternative(id="keep", kind="no_action"))
+                self.comparison = ComparisonInput(scope_position_ids=[row.id for row in self.portfolio.positions], alternatives=alternatives)
+        if self.portfolio_review is None and self.new_cash is None and self.stock is None and self.comparison is None and self.proposed_changes is None and re.search(r"new cash|allocate.*cash|\$[\d,]+.*what should|what.*\$[\d,]+", self.question, re.I):
+            self.new_cash = NewCashInput()
+        if self.new_cash is not None:
+            if self.stock is not None or self.comparison is not None or self.proposed_changes is not None:
+                raise ValueError("New-cash decisions bind their own comparison and previews in the shared pipeline.")
+            if self.new_cash.cash_position_id is not None and not any(row.id == self.new_cash.cash_position_id and row.kind == "cash" for row in self.portfolio.positions):
+                raise ValueError("Confirm an existing account cash balance for the new contribution.")
+            if any(row.id == "__new_cash__" for row in self.portfolio.positions):
+                raise ValueError("Reserved comparison cash identifier.")
+            return self
         if self.stock is not None:
             target = next((row for row in self.portfolio.positions if row.id == self.stock.position_id), None)
             if target is None or target.kind != "stock" or target.listing not in {"XNAS", "XNYS", "XASE"} or target.currency != "USD":
@@ -313,10 +425,18 @@ class AnalysisRequest(Contract):
             if alternative.position_id is None:
                 continue
             row = rows.get(alternative.position_id)
-            if alternative.kind == "stock" and (self.stock is None or alternative.position_id != self.stock.position_id):
+            if alternative.kind == "stock" and self.portfolio_review is None and (self.stock is None or alternative.position_id != self.stock.position_id):
                 raise ValueError("Stock alternatives must use the selected researched US listing.")
             if row is None or (alternative.kind == "etf" and (row.kind != "etf" or row.etf_role != "diversified")) or (alternative.kind in {"cash", "short_bill"} and row.kind != "cash"):
                 raise ValueError("Select a supplied diversified ETF or a cash-currency row for cash/short bills.")
+        if self.portfolio_review:
+            if set(comparison.scope_position_ids) != set(rows) or not any(row.kind == "no_action" for row in comparison.alternatives):
+                raise ValueError("Portfolio review comparison must retain the whole portfolio and include no action.")
+            for alt in comparison.alternatives:
+                if alt.kind == "stock":
+                    row = rows[str(alt.position_id)]
+                    if row.kind != "stock" or row.currency != "USD" or row.listing not in {"XNAS", "XNYS", "XASE"} or not row.shares:
+                        raise ValueError("Review stock alternatives require held US listings.")
         relevant = set(comparison.scope_position_ids) | {row.position_id for row in comparison.alternatives}
         for fact in comparison.fund_facts:
             if fact.position_id not in relevant or fact.position_id not in rows or rows[fact.position_id].kind != "etf":
@@ -337,7 +457,7 @@ class Alternative(Contract):
 
 class Recommendation(Contract):
     preferred_action: Literal["review_only", "wait_for_inputs", "no_action", "add", "hold", "reduce", "exit"]
-    amount: None
+    amount: AllocationAmount | None
     reason: Text
     alternatives: list[Alternative] = Field(min_length=1, max_length=2)
     downside: Text
@@ -613,6 +733,57 @@ class StockResult(Contract):
     qualifications: list[str]
 
 
+class AllocationResult(Contract):
+    context: NewCashInput
+    scan: DiscoveryScan
+    researched: list[CandidateResearchInput] = Field(default_factory=list, max_length=2)
+    stocks: list[StockResult] = Field(default_factory=list, max_length=2)
+    judgment: AllocationJudgment | None = None
+    amount: AllocationAmount | None = None
+    previews: list[ProposalReview] = Field(default_factory=list, max_length=2)
+    missing_inputs: list[str] = Field(default_factory=list)
+    qualifications: list[str] = Field(default_factory=lambda: [
+        "Approximate exposure is an analyst judgment, not an objectively optimal allocation. Amounts and post-allocation limits are calculated in Python.",
+        "New cash is outside the dated snapshot and added once to the whole-portfolio denominator. Only new cash funds this recommendation; existing cash is retained.",
+        "ETF indirect overlap is unknown, never zero. Supplied cap policy is preserved. Costs, tax and execution effects remain unquantified; orders remain with the user."])
+
+
+class ThesisAssessment(Contract):
+    position_id: Identifier
+    status: Literal["changed", "unchanged", "unknown"]
+    action: Literal["add", "hold", "reduce", "exit", "no_action", "wait_for_inputs"]
+    current_thesis: Text
+    change_reason: Text
+    downside: Text
+    what_could_change: list[Text] = Field(min_length=1, max_length=8)
+    evidence_ids: list[Identifier] = Field(max_length=20)
+
+
+class HoldingReviewInput(Contract):
+    position_id: Identifier
+    judgments: CompanyJudgments
+    assessment: ThesisAssessment
+
+
+class ReviewSizingInput(AllocationJudgment):
+    cash_position_id: Identifier
+
+
+class ReunderwritingResult(Contract):
+    context: PortfolioReviewInput
+    sizing: ReviewSizingInput | None = None
+    amount: AllocationAmount | None = None
+    previews: list[ProposalReview] = Field(default_factory=list, max_length=2)
+    missing_inputs: list[str] = Field(default_factory=list)
+    research: dict[str, CompanyResearch] = Field(default_factory=dict)
+    stocks: list[StockResult] = Field(default_factory=list)
+    assessments: list[ThesisAssessment] = Field(default_factory=list)
+    qualifications: list[str] = Field(default_factory=lambda: [
+        "Price movement is context, never proof of thesis failure or a reason to average down. Prior ownership does not protect a weak thesis.",
+        "Target-relative changes use only the supplied baseline. Without it, this is current-exposure and thesis review, without invented targets.",
+        "ETF overlap, missing company coverage, costs and taxes remain unknown. Conditional actions are not orders or justified amounts."])
+
+
 class AnalysisResult(Contract):
     status: Literal["completed"] = "completed"
     question: str
@@ -621,3 +792,9 @@ class AnalysisResult(Contract):
     proposals: list[ProposalReview] = Field(default_factory=list)
     comparison: ComparisonResult | None = None
     stock: StockResult | None = None
+    allocation: AllocationResult | None = None
+    reunderwriting: ReunderwritingResult | None = None
+
+# Resolve forward references used by the shared tool contracts.
+CandidateCasesInput.model_rebuild()
+AnalysisRequest.model_rebuild()
