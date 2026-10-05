@@ -1,17 +1,21 @@
 "use client";
 
 import { useState, type FormEvent, type SetStateAction } from "react";
+import ThemeInputs from "../components/ThemeInputs";
+import type { ThemeInput } from "../lib/contracts";
 import PortfolioEditor from "../components/PortfolioEditor";
 import PortfolioReviewInputs from "../components/PortfolioReviewInputs";
 import NewCashInputs from "../components/NewCashInputs";
 import ReviewResult from "../components/ReviewResult";
 import GuardrailInputs from "../components/GuardrailInputs";
 import ComparisonInputs from "../components/ComparisonInputs";
-import { post, portfolioReviewComparison, type PortfolioReviewInput, type NewCashInput, type Analysis, type Snapshot, type PortfolioSettings, type ProposedChanges, type ComparisonInput } from "../lib/contracts";
+import { post, isThemeCandidate, themeComparison, portfolioReviewComparison, type PortfolioReviewInput, type NewCashInput, type Analysis, type Snapshot, type PortfolioSettings, type ProposedChanges, type ComparisonInput } from "../lib/contracts";
 
 export default function Page() {
   const [snapshot, setSnapshot] = useState<Snapshot>({ as_of: "", reporting_currency: "CAD",
     accounts: [{ id: "account-1", name: "" }], positions: [], fx: [] });
+  const [themeEnabled, setThemeEnabled] = useState(false);
+  const [theme, setTheme] = useState<ThemeInput>({ name: null, mechanism: null, shortlist: [], max_candidates: 2, max_tool_calls: 16, confirmed: false });
   const [newCashEnabled, setNewCashEnabled] = useState(false);
   const [newCash, setNewCash] = useState<NewCashInput>({ amount: null, cash_position_id: null, confirmed: false, risk_context: null });
   const [reviewEnabled, setReviewEnabled] = useState(false);
@@ -29,6 +33,7 @@ export default function Page() {
   function updateSnapshot(update: SetStateAction<Snapshot>) {
     const next = typeof update === "function" ? update(snapshot) : update;
     setSnapshot(next);
+    setTheme(current => ({ ...current, confirmed: false, shortlist: current.shortlist.filter(id => next.positions.some(row => row.id === id && isThemeCandidate(row))) }));
     setReviewContext(current => ({ ...current, prior_theses: current.prior_theses.filter(prior => next.positions.some(row => row.company_id === prior.company_id)) }));
     if (next !== snapshot) setNewCash(current => ({ ...current, confirmed: false,
       cash_position_id: next.positions.some(row => row.kind === "cash" && row.id === current.cash_position_id) ? current.cash_position_id : null }));
@@ -54,15 +59,18 @@ export default function Page() {
     });
   }
 
+  const boundThemeComparison = themeEnabled && theme.shortlist.length ? { ...themeComparison(snapshot, theme), fund_facts: comparison?.fund_facts || [], effects: comparison?.effects || [] } : null;
+
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(""); setResult(null);
     try {
       const answer = await post<Analysis>("/api/analyze", { question, portfolio: snapshot,
+        theme: themeEnabled ? theme : undefined,
         new_cash: newCashEnabled ? newCash : undefined,
         portfolio_review: reviewEnabled ? reviewContext : undefined,
-        stock: !newCashEnabled && !reviewEnabled && stockId ? { position_id: stockId } : undefined,
+        stock: !themeEnabled && !newCashEnabled && !reviewEnabled && stockId ? { position_id: stockId } : undefined,
         settings: Object.values(settings).some(value => value !== undefined) ? settings : undefined,
-        comparison: !newCashEnabled && comparison ? { ...comparison,
+        comparison: themeEnabled ? boundThemeComparison : !newCashEnabled && comparison ? { ...comparison,
           fund_facts: comparison.fund_facts.filter(row => comparison.scope_position_ids.includes(row.position_id) || comparison.alternatives.some(alt => alt.position_id === row.position_id)),
           effects: comparison.effects.filter(row => comparison.alternatives.some(alt => alt.id === row.alternative_id)) } : undefined,
         proposed_changes: !newCashEnabled && (changes.new_cash.length || changes.trades.length) ? changes : undefined });
@@ -81,10 +89,12 @@ export default function Page() {
         importing={importing} setImporting={setImporting} />
       <GuardrailInputs settings={settings} setSettings={setSettings} changes={changes} setChanges={setChanges}
         snapshot={snapshot} busy={busy || importing} />
-      <PortfolioReviewInputs enabled={reviewEnabled} onEnabled={enabled => { setReviewEnabled(enabled); if (enabled) { setNewCashEnabled(false); setStockId(""); setComparison(null); } }} value={reviewContext} onChange={setReviewContext} snapshot={snapshot} busy={busy || importing} />
-      <NewCashInputs enabled={newCashEnabled} onEnabled={enabled => { setNewCashEnabled(enabled); if (enabled) setReviewEnabled(false); }} value={newCash} onChange={setNewCash}
+      <ThemeInputs enabled={themeEnabled} onEnabled={enabled => { setThemeEnabled(enabled); setTheme(current => ({ ...current, confirmed: false })); if (enabled) { setReviewEnabled(false); setNewCashEnabled(false); setStockId(""); setComparison(null); } }} value={theme} onChange={setTheme} snapshot={snapshot} busy={busy || importing} />
+      {themeEnabled && boundThemeComparison && <ComparisonInputs value={boundThemeComparison} onChange={next => { setComparison(next); setTheme(current => ({ ...current, confirmed: false })); }} snapshot={snapshot} themeDiscovery busy={busy || importing} />}
+      <PortfolioReviewInputs enabled={reviewEnabled} onEnabled={enabled => { setReviewEnabled(enabled); if (enabled) { setThemeEnabled(false); setNewCashEnabled(false); setStockId(""); setComparison(null); } }} value={reviewContext} onChange={setReviewContext} snapshot={snapshot} busy={busy || importing} />
+      <NewCashInputs enabled={newCashEnabled} onEnabled={enabled => { setNewCashEnabled(enabled); if (enabled) { setThemeEnabled(false); setReviewEnabled(false); } }} value={newCash} onChange={setNewCash}
         snapshot={snapshot} busy={busy || importing} />
-      {!newCashEnabled && <>{!reviewEnabled && <section className="panel" aria-label="Stock question inputs"><h2>Analyze a US stock</h2>
+      {!newCashEnabled && !themeEnabled && <>{!reviewEnabled && <section className="panel" aria-label="Stock question inputs"><h2>Analyze a US stock</h2>
         <label>US stock to analyze<select value={stockId} disabled={busy || importing} onChange={event => { const id = event.target.value; setStockId(id); setComparison(current => current ? { ...current, alternatives: current.alternatives.flatMap(alt => alt.kind === "stock" ? id ? [{ ...alt, position_id: id }] : [] : [alt]), effects: current.effects.filter(effect => id || effect.alternative_id !== "company") } : null); }}>
           <option value="">Portfolio review only</option>{snapshot.positions.filter(row => row.kind === "stock" && row.currency === "USD" && ["XNAS", "XNYS", "XASE"].includes(row.listing || "")).map(row => <option key={row.id} value={row.id}>{row.ticker} / {row.listing} / {row.id}</option>)}
         </select></label><p className="muted small">Choose the listing and ask your stock question below. Add a candidate with zero shares if needed. Primary research uses available issuer and SEC evidence. Without a custom comparison, the analysis compares the company with available diversified fund and cash rows and retaining the selected scope.</p></section>}

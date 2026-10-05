@@ -1,0 +1,1239 @@
+[
+  {
+    "scenario": "Agreed mechanism challenged; no action",
+    "question": "Should I hold Acme in my portfolio?",
+    "recommendation": {
+      "preferred_action": "no_action",
+      "amount": null,
+      "reason": "The automation mechanism is plausible, but reported revenue does not establish durable margin gains. Diversified fund exposure and retaining cash remain serious alternatives to company concentration.",
+      "alternatives": [
+        {
+          "action": "clarify_inputs",
+          "reason": "Compare diversified fund exposure if its sponsor holdings and costs support a broader way to participate."
+        },
+        {
+          "action": "clarify_inputs",
+          "reason": "Retaining cash while testing issuer demand and competitive pressure avoids an unsupported company commitment."
+        }
+      ],
+      "downside": "Automation demand can disappoint while competition compresses margins; exit valuation and concentrated issuer exposure can compound losses.",
+      "assumptions": [
+        "Revenue growth, sustainable margins and reinvestment needs determine whether the named mechanism benefits shareholders."
+      ],
+      "uncertainty": [
+        "Reported totals do not isolate automation demand; future margins, fund alignment, indirect overlap and personal tax effects remain uncertain."
+      ],
+      "what_could_change": [
+        "Primary segment evidence linking automation demand to durable cash generation, usable sponsor exposure and costs, or changed portfolio limits could distinguish the alternatives."
+      ],
+      "evidence_ids": [
+        "theme-p1-filing",
+        "theme-p1-issuer"
+      ]
+    },
+    "theme": {
+      "context": {
+        "risk_context": null,
+        "name": "Industrial automation",
+        "mechanism": "Automation demand expands issuer revenue while competition may compress margins.",
+        "shortlist": [
+          "p1"
+        ],
+        "max_candidates": 1,
+        "max_tool_calls": 10,
+        "confirmed": true
+      },
+      "status": "completed",
+      "researched": [
+        "p1"
+      ],
+      "tests": [
+        {
+          "position_id": "p1",
+          "conclusion": "challenges",
+          "explanation": "Reported revenue does not establish that automation demand improves margins.",
+          "evidence_ids": [
+            "theme-p1-filing",
+            "theme-p1-issuer"
+          ]
+        }
+      ],
+      "tool_calls_used": 5,
+      "amount": null,
+      "missing_inputs": []
+    },
+    "evidence": [
+      {
+        "position_id": "p1",
+        "documents": [
+          {
+            "id": "theme-p1-filing",
+            "authority": "sec",
+            "company_id": "acme",
+            "url": "https://www.sec.gov/Archives/edgar/data/123/456/acme.htm",
+            "published_on": "2026-02-01",
+            "as_of": "2025-12-31",
+            "title": "Acme annual filing",
+            "excerpt": "Revenue and diluted shares are reported in the consolidated statements.",
+            "available": true,
+            "qa_available": false
+          },
+          {
+            "id": "theme-p1-issuer",
+            "authority": "issuer",
+            "company_id": "acme",
+            "url": "https://investors.example.com/annual",
+            "published_on": "2026-02-01",
+            "as_of": "2025-12-31",
+            "title": "Acme annual release",
+            "excerpt": "Revenue and diluted shares are reported in the consolidated statements.",
+            "available": true,
+            "qa_available": false
+          }
+        ],
+        "method": "earnings_exit",
+        "cases": [
+          {
+            "name": "downside",
+            "terminal_price": "50",
+            "known_terminal_value": "650",
+            "qualifications": [
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          },
+          {
+            "name": "base",
+            "terminal_price": "100",
+            "known_terminal_value": "1300",
+            "qualifications": [
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          },
+          {
+            "name": "upside",
+            "terminal_price": "150",
+            "known_terminal_value": "1950",
+            "qualifications": [
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          }
+        ]
+      }
+    ],
+    "comparison": {
+      "as_of": "2026-09-30",
+      "reporting_currency": "CAD",
+      "starting_value": "1950",
+      "alternatives": [
+        {
+          "selection": {
+            "id": "company",
+            "kind": "stock",
+            "position_id": "p1"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "975",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2925",
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "fund",
+            "kind": "etf",
+            "position_id": "fund"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "cash",
+            "kind": "cash",
+            "position_id": "c1"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "keep",
+            "kind": "no_action",
+            "position_id": null
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "1367.307656",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "2017.307656",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2667.307656",
+              "terminal_value": null
+            }
+          ]
+        }
+      ]
+    },
+    "sizing_previews": [],
+    "guardrails": null
+  },
+  {
+    "scenario": "No action with conditional purchase alternative",
+    "question": "Should I hold Acme in my portfolio?",
+    "recommendation": {
+      "preferred_action": "no_action",
+      "amount": null,
+      "reason": "The automation mechanism is plausible, but reported revenue does not establish durable margin gains. Diversified fund exposure and retaining cash remain serious alternatives to company concentration.",
+      "alternatives": [
+        {
+          "action": "add",
+          "reason": "An addition is conditional on durable automation economics and suitable portfolio exposure. This alternative is conditional; no amount is justified without supported exposure and funding checks."
+        }
+      ],
+      "downside": "Automation demand can disappoint while competition compresses margins; exit valuation and concentrated issuer exposure can compound losses.",
+      "assumptions": [
+        "Revenue growth, sustainable margins and reinvestment needs determine whether the named mechanism benefits shareholders."
+      ],
+      "uncertainty": [
+        "Reported totals do not isolate automation demand; future margins, fund alignment, indirect overlap and personal tax effects remain uncertain."
+      ],
+      "what_could_change": [
+        "Primary segment evidence linking automation demand to durable cash generation, usable sponsor exposure and costs, or changed portfolio limits could distinguish the alternatives."
+      ],
+      "evidence_ids": [
+        "theme-p1-filing",
+        "theme-p1-issuer"
+      ]
+    },
+    "theme": {
+      "context": {
+        "risk_context": null,
+        "name": "Industrial automation",
+        "mechanism": "Automation demand expands issuer revenue while competition may compress margins.",
+        "shortlist": [
+          "p1"
+        ],
+        "max_candidates": 1,
+        "max_tool_calls": 10,
+        "confirmed": true
+      },
+      "status": "completed",
+      "researched": [
+        "p1"
+      ],
+      "tests": [
+        {
+          "position_id": "p1",
+          "conclusion": "challenges",
+          "explanation": "Reported revenue does not establish that automation demand improves margins.",
+          "evidence_ids": [
+            "theme-p1-filing",
+            "theme-p1-issuer"
+          ]
+        }
+      ],
+      "tool_calls_used": 5,
+      "amount": null,
+      "missing_inputs": []
+    },
+    "evidence": [
+      {
+        "position_id": "p1",
+        "documents": [
+          {
+            "id": "theme-p1-filing",
+            "authority": "sec",
+            "company_id": "acme",
+            "url": "https://www.sec.gov/Archives/edgar/data/123/456/acme.htm",
+            "published_on": "2026-02-01",
+            "as_of": "2025-12-31",
+            "title": "Acme annual filing",
+            "excerpt": "Revenue and diluted shares are reported in the consolidated statements.",
+            "available": true,
+            "qa_available": false
+          },
+          {
+            "id": "theme-p1-issuer",
+            "authority": "issuer",
+            "company_id": "acme",
+            "url": "https://investors.example.com/annual",
+            "published_on": "2026-02-01",
+            "as_of": "2025-12-31",
+            "title": "Acme annual release",
+            "excerpt": "Revenue and diluted shares are reported in the consolidated statements.",
+            "available": true,
+            "qa_available": false
+          }
+        ],
+        "method": "earnings_exit",
+        "cases": [
+          {
+            "name": "downside",
+            "terminal_price": "50",
+            "known_terminal_value": "650",
+            "qualifications": [
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          },
+          {
+            "name": "base",
+            "terminal_price": "100",
+            "known_terminal_value": "1300",
+            "qualifications": [
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          },
+          {
+            "name": "upside",
+            "terminal_price": "150",
+            "known_terminal_value": "1950",
+            "qualifications": [
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          }
+        ]
+      }
+    ],
+    "comparison": {
+      "as_of": "2026-09-30",
+      "reporting_currency": "CAD",
+      "starting_value": "1950",
+      "alternatives": [
+        {
+          "selection": {
+            "id": "company",
+            "kind": "stock",
+            "position_id": "p1"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "975",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2925",
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "fund",
+            "kind": "etf",
+            "position_id": "fund"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "cash",
+            "kind": "cash",
+            "position_id": "c1"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "keep",
+            "kind": "no_action",
+            "position_id": null
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "1367.307656",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "2017.307656",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2667.307656",
+              "terminal_value": null
+            }
+          ]
+        }
+      ]
+    },
+    "sizing_previews": [],
+    "guardrails": null
+  },
+  {
+    "scenario": "Agreement unconfirmed; no research",
+    "question": "Should I hold Acme in my portfolio?",
+    "recommendation": {
+      "preferred_action": "wait_for_inputs",
+      "amount": null,
+      "reason": "Agree the economic mechanism, bounded shortlist and candidate/tool-call effort limits before candidate research.",
+      "alternatives": [
+        {
+          "action": "no_action",
+          "reason": "Keep the portfolio while the theme is clarified."
+        }
+      ],
+      "downside": "A plausible theme may fail to produce attractive company economics.",
+      "assumptions": [
+        "No candidate research has been conducted."
+      ],
+      "uncertainty": [
+        "The mechanism and research agreement remain unconfirmed."
+      ],
+      "what_could_change": [
+        "Confirm a named mechanism, supplied shortlist and effort bounds."
+      ]
+    },
+    "theme": {
+      "context": {
+        "risk_context": null,
+        "name": "Industrial automation",
+        "mechanism": "Automation demand expands issuer revenue while competition may compress margins.",
+        "shortlist": [
+          "p1"
+        ],
+        "max_candidates": 1,
+        "max_tool_calls": 10,
+        "confirmed": false
+      },
+      "status": "awaiting_agreement",
+      "researched": [],
+      "tests": [],
+      "tool_calls_used": 0,
+      "amount": null,
+      "missing_inputs": []
+    },
+    "evidence": [],
+    "comparison": null,
+    "sizing_previews": [],
+    "guardrails": null
+  },
+  {
+    "scenario": "Primary evidence missing; conditional",
+    "question": "Should I hold Acme in my portfolio?",
+    "recommendation": {
+      "preferred_action": "wait_for_inputs",
+      "amount": null,
+      "reason": "The theme remains conditional while mechanism evidence, comparative costs or justified exposure inputs are unresolved.",
+      "alternatives": [
+        {
+          "action": "no_action",
+          "reason": "Retain the portfolio while the missing theme inputs are clarified."
+        }
+      ],
+      "downside": "Automation demand can disappoint while competition compresses margins; exit valuation and concentrated issuer exposure can compound losses.",
+      "assumptions": [
+        "Revenue growth, sustainable margins and reinvestment needs determine whether the named mechanism benefits shareholders."
+      ],
+      "uncertainty": [
+        "Reported totals do not isolate automation demand; future margins, fund alignment, indirect overlap and personal tax effects remain uncertain.",
+        "Missing decisive evidence or costs cannot support a purchase or amount."
+      ],
+      "what_could_change": [
+        "Primary segment evidence linking automation demand to durable cash generation, usable sponsor exposure and costs, or changed portfolio limits could distinguish the alternatives."
+      ]
+    },
+    "theme": {
+      "context": {
+        "risk_context": null,
+        "name": "Industrial automation",
+        "mechanism": "Automation demand expands issuer revenue while competition may compress margins.",
+        "shortlist": [
+          "p1"
+        ],
+        "max_candidates": 1,
+        "max_tool_calls": 10,
+        "confirmed": true
+      },
+      "status": "completed",
+      "researched": [
+        "p1"
+      ],
+      "tests": [
+        {
+          "position_id": "p1",
+          "conclusion": "unknown",
+          "explanation": "Primary evidence is unavailable to test the named mechanism.",
+          "evidence_ids": []
+        }
+      ],
+      "tool_calls_used": 5,
+      "amount": null,
+      "missing_inputs": []
+    },
+    "evidence": [
+      {
+        "position_id": "p1",
+        "documents": [],
+        "method": "earnings_exit",
+        "cases": [
+          {
+            "name": "downside",
+            "terminal_price": null,
+            "known_terminal_value": null,
+            "qualifications": [
+              "Primary filing and issuer evidence is unavailable; company facts remain unknown.",
+              "shares: reported fact unavailable; not assumed zero.",
+              "revenue: reported fact unavailable; not assumed zero.",
+              "Sector is unknown; an appropriate valuation method cannot be established.",
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          },
+          {
+            "name": "base",
+            "terminal_price": null,
+            "known_terminal_value": null,
+            "qualifications": [
+              "Primary filing and issuer evidence is unavailable; company facts remain unknown.",
+              "shares: reported fact unavailable; not assumed zero.",
+              "revenue: reported fact unavailable; not assumed zero.",
+              "Sector is unknown; an appropriate valuation method cannot be established.",
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          },
+          {
+            "name": "upside",
+            "terminal_price": null,
+            "known_terminal_value": null,
+            "qualifications": [
+              "Primary filing and issuer evidence is unavailable; company facts remain unknown.",
+              "shares: reported fact unavailable; not assumed zero.",
+              "revenue: reported fact unavailable; not assumed zero.",
+              "Sector is unknown; an appropriate valuation method cannot be established.",
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          }
+        ]
+      }
+    ],
+    "comparison": {
+      "as_of": "2026-09-30",
+      "reporting_currency": "CAD",
+      "starting_value": "1950",
+      "alternatives": [
+        {
+          "selection": {
+            "id": "company",
+            "kind": "stock",
+            "position_id": "p1"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": null,
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": null,
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": null,
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "fund",
+            "kind": "etf",
+            "position_id": "fund"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "cash",
+            "kind": "cash",
+            "position_id": "c1"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "keep",
+            "kind": "no_action",
+            "position_id": null
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": null,
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": null,
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": null,
+              "terminal_value": null
+            }
+          ]
+        }
+      ]
+    },
+    "sizing_previews": [],
+    "guardrails": null
+  },
+  {
+    "scenario": "Current company cap breached; review required",
+    "question": "Should I hold Acme in my portfolio?",
+    "recommendation": {
+      "preferred_action": "review_only",
+      "amount": null,
+      "reason": "Existing exposures breach configured limits and are not approved exceptions. Review the forward reduction path and explicit hypothetical changes shown by the deterministic checks.",
+      "alternatives": [
+        {
+          "action": "clarify_inputs",
+          "reason": "Review the supplied settings and missing inputs, or revise explicit hypothetical changes to meet configured limits."
+        }
+      ],
+      "downside": "Concentrated or deliberate active exposures can amplify losses; configured limits cannot be waived by conviction.",
+      "assumptions": [
+        "Exposure checks use the dated whole-portfolio valuation and only explicitly supplied settings."
+      ],
+      "uncertainty": [
+        "Unknown valuation inputs, ETF overlap, costs and tax effects remain qualified in the deterministic result. Passing supplied checks alone does not establish justified sizing."
+      ],
+      "what_could_change": [
+        "Usable dated evidence or explicit user changes to settings and hypothetical exposures could change the checks."
+      ]
+    },
+    "theme": {
+      "context": {
+        "risk_context": null,
+        "name": "Industrial automation",
+        "mechanism": "Automation demand expands issuer revenue while competition may compress margins.",
+        "shortlist": [
+          "p1"
+        ],
+        "max_candidates": 1,
+        "max_tool_calls": 10,
+        "confirmed": true
+      },
+      "status": "completed",
+      "researched": [
+        "p1"
+      ],
+      "tests": [
+        {
+          "position_id": "p1",
+          "conclusion": "challenges",
+          "explanation": "Reported revenue does not establish that automation demand improves margins.",
+          "evidence_ids": [
+            "theme-p1-filing",
+            "theme-p1-issuer"
+          ]
+        }
+      ],
+      "tool_calls_used": 5,
+      "amount": null,
+      "missing_inputs": []
+    },
+    "evidence": [
+      {
+        "position_id": "p1",
+        "documents": [
+          {
+            "id": "theme-p1-filing",
+            "authority": "sec",
+            "company_id": "acme",
+            "url": "https://www.sec.gov/Archives/edgar/data/123/456/acme.htm",
+            "published_on": "2026-02-01",
+            "as_of": "2025-12-31",
+            "title": "Acme annual filing",
+            "excerpt": "Revenue and diluted shares are reported in the consolidated statements.",
+            "available": true,
+            "qa_available": false
+          },
+          {
+            "id": "theme-p1-issuer",
+            "authority": "issuer",
+            "company_id": "acme",
+            "url": "https://investors.example.com/annual",
+            "published_on": "2026-02-01",
+            "as_of": "2025-12-31",
+            "title": "Acme annual release",
+            "excerpt": "Revenue and diluted shares are reported in the consolidated statements.",
+            "available": true,
+            "qa_available": false
+          }
+        ],
+        "method": "earnings_exit",
+        "cases": [
+          {
+            "name": "downside",
+            "terminal_price": "50",
+            "known_terminal_value": "650",
+            "qualifications": [
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          },
+          {
+            "name": "base",
+            "terminal_price": "100",
+            "known_terminal_value": "1300",
+            "qualifications": [
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          },
+          {
+            "name": "upside",
+            "terminal_price": "150",
+            "known_terminal_value": "1950",
+            "qualifications": [
+              "Starting price/identity/FX is provisional; no confident allocation is justified."
+            ]
+          }
+        ]
+      }
+    ],
+    "comparison": {
+      "as_of": "2026-09-30",
+      "reporting_currency": "CAD",
+      "starting_value": "1950",
+      "alternatives": [
+        {
+          "selection": {
+            "id": "company",
+            "kind": "stock",
+            "position_id": "p1"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "975",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2925",
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "fund",
+            "kind": "etf",
+            "position_id": "fund"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "1950",
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "cash",
+            "kind": "cash",
+            "position_id": "c1"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2151.922968",
+              "terminal_value": null
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "keep",
+            "kind": "no_action",
+            "position_id": null
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "1367.307656",
+              "terminal_value": null
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "2017.307656",
+              "terminal_value": null
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2667.307656",
+              "terminal_value": null
+            }
+          ]
+        }
+      ]
+    },
+    "sizing_previews": [],
+    "guardrails": {
+      "settings": {
+        "single_company_cap": "0.1",
+        "active_budget": "0.9",
+        "baseline": null,
+        "indirect_cap_policy": "direct_only",
+        "cash_is_deliberate_tilt": null
+      },
+      "companies": [
+        {
+          "company_id": "acme",
+          "company_name": "Acme",
+          "current_weight": "0.63888889",
+          "cap": "0.1",
+          "status": "breached",
+          "excess_value": "1940",
+          "reduction_to_cash": "1940",
+          "explanation": "Existing direct exposure exceeds the configured cap; it is not an approved exception. A forward path is to reduce direct exposure to cash retained in the portfolio, or reassess with explicitly supplied new cash. The displayed reduction is a dated minimum, before unknown costs and taxes."
+        }
+      ],
+      "active": {
+        "value": null,
+        "known_value": "2300",
+        "weight": null,
+        "budget": "0.9",
+        "status": "unknown",
+        "contributions": {
+          "stocks": "2300",
+          "sector_theme_etfs": "0",
+          "excess_cash": null
+        },
+        "qualifications": [
+          "Deliberate excess cash needs an explicit cash-tilt classification and cash baseline; its active contribution is unknown."
+        ]
+      },
+      "baseline_comparison": [],
+      "qualifications": [
+        "Baseline is unknown; no target allocation mix is inferred."
+      ]
+    }
+  },
+  {
+    "scenario": "Supported exposure range; checked hypothetical addition",
+    "question": "Should I hold Acme in my portfolio?",
+    "recommendation": {
+      "preferred_action": "add",
+      "amount": {
+        "minimum": "75",
+        "maximum": "160",
+        "currency": "USD",
+        "position_id": "p1"
+      },
+      "reason": "A conditional addition expresses automation upside within supplied portfolio limits while retaining cash. Downside and base company outcomes remain weaker than cash; diversified exposure or no action remains plausible if margin resilience fails.",
+      "alternatives": [
+        {
+          "action": "clarify_inputs",
+          "reason": "Compare diversified fund exposure if its sponsor holdings and costs support a broader way to participate."
+        },
+        {
+          "action": "clarify_inputs",
+          "reason": "Retaining cash while testing issuer demand and competitive pressure avoids an unsupported company commitment."
+        }
+      ],
+      "downside": "Automation demand can disappoint while competition compresses margins; exit valuation and concentrated issuer exposure can compound losses.",
+      "assumptions": [
+        "Revenue growth, sustainable margins and reinvestment needs determine whether the named mechanism benefits shareholders."
+      ],
+      "uncertainty": [
+        "Reported totals do not isolate automation demand; future margins, fund alignment, indirect overlap and personal tax effects remain uncertain."
+      ],
+      "what_could_change": [
+        "Primary segment evidence linking automation demand to durable cash generation, usable sponsor exposure and costs, or changed portfolio limits could distinguish the alternatives."
+      ],
+      "evidence_ids": [
+        "theme-p1-filing",
+        "theme-p1-issuer"
+      ]
+    },
+    "theme": {
+      "context": {
+        "risk_context": "Can tolerate equity losses; no near-term withdrawals.",
+        "name": "Industrial automation",
+        "mechanism": "Automation demand expands issuer revenue while competition may compress margins.",
+        "shortlist": [
+          "p1"
+        ],
+        "max_candidates": 1,
+        "max_tool_calls": 10,
+        "confirmed": true
+      },
+      "status": "completed",
+      "researched": [
+        "p1"
+      ],
+      "tests": [
+        {
+          "position_id": "p1",
+          "conclusion": "supports",
+          "explanation": "Primary automation demand evidence supports conditional revenue resilience while margin durability remains uncertain.",
+          "evidence_ids": [
+            "theme-p1-filing",
+            "theme-p1-issuer"
+          ]
+        }
+      ],
+      "tool_calls_used": 6,
+      "amount": {
+        "minimum": "75",
+        "maximum": "160",
+        "currency": "USD",
+        "position_id": "p1"
+      },
+      "missing_inputs": []
+    },
+    "evidence": [
+      {
+        "position_id": "p1",
+        "documents": [
+          {
+            "id": "theme-p1-filing",
+            "authority": "sec",
+            "company_id": "acme",
+            "url": "https://www.sec.gov/Archives/edgar/data/123/456/acme.htm",
+            "published_on": "2026-02-01",
+            "as_of": "2025-12-31",
+            "title": "Acme annual filing",
+            "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Automation product orders expanded; competitive pressure and reinvestment needs leave future margins uncertain.",
+            "available": true,
+            "qa_available": false
+          },
+          {
+            "id": "theme-p1-issuer",
+            "authority": "issuer",
+            "company_id": "acme",
+            "url": "https://investors.example.com/annual",
+            "published_on": "2026-02-01",
+            "as_of": "2025-12-31",
+            "title": "Acme annual release",
+            "excerpt": "Revenue and diluted shares are reported in the consolidated statements. Automation product orders expanded; competitive pressure and reinvestment needs leave future margins uncertain.",
+            "available": true,
+            "qa_available": false
+          }
+        ],
+        "method": "earnings_exit",
+        "cases": [
+          {
+            "name": "downside",
+            "terminal_price": "50",
+            "known_terminal_value": "500",
+            "qualifications": []
+          },
+          {
+            "name": "base",
+            "terminal_price": "100",
+            "known_terminal_value": "1000",
+            "qualifications": []
+          },
+          {
+            "name": "upside",
+            "terminal_price": "150",
+            "known_terminal_value": "1500",
+            "qualifications": []
+          }
+        ]
+      }
+    ],
+    "comparison": {
+      "as_of": "2026-09-30",
+      "reporting_currency": "USD",
+      "starting_value": "1700",
+      "alternatives": [
+        {
+          "selection": {
+            "id": "company",
+            "kind": "stock",
+            "position_id": "p1"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "708.333333333333333333333333333333333333333333333333333333333",
+              "terminal_value": "708.333333333333333333333333333333333333333333333333333333333"
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "1416.66666666666666666666666666666666666666666666666666666667",
+              "terminal_value": "1416.66666666666666666666666666666666666666666666666666666667"
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2125",
+              "terminal_value": "2125"
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "fund",
+            "kind": "etf",
+            "position_id": "fund"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "1700",
+              "terminal_value": "1700"
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "1700",
+              "terminal_value": "1700"
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "1700",
+              "terminal_value": "1700"
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "cash",
+            "kind": "cash",
+            "position_id": "c2"
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "1876.035408",
+              "terminal_value": "1876.035408"
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "1876.035408",
+              "terminal_value": "1876.035408"
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "1876.035408",
+              "terminal_value": "1876.035408"
+            }
+          ]
+        },
+        {
+          "selection": {
+            "id": "keep",
+            "kind": "no_action",
+            "position_id": null
+          },
+          "cases": [
+            {
+              "name": "downside",
+              "known_terminal_value": "1051.77512",
+              "terminal_value": "1051.77512"
+            },
+            {
+              "name": "base",
+              "known_terminal_value": "1551.77512",
+              "terminal_value": "1551.77512"
+            },
+            {
+              "name": "upside",
+              "known_terminal_value": "2051.77512",
+              "terminal_value": "2051.77512"
+            }
+          ]
+        }
+      ]
+    },
+    "sizing_previews": [
+      {
+        "status": "within_limits",
+        "post_total_value": "1700"
+      },
+      {
+        "status": "within_limits",
+        "post_total_value": "1700"
+      }
+    ],
+    "guardrails": {
+      "settings": {
+        "single_company_cap": "0.9",
+        "active_budget": "0.95",
+        "baseline": null,
+        "indirect_cap_policy": "direct_only",
+        "cash_is_deliberate_tilt": false
+      },
+      "companies": [
+        {
+          "company_id": "acme",
+          "company_name": "Acme",
+          "current_weight": "0.70588235",
+          "cap": "0.9",
+          "status": "within_limit",
+          "excess_value": "0",
+          "reduction_to_cash": "0",
+          "explanation": "Direct exposure is within the configured cap."
+        }
+      ],
+      "active": {
+        "value": "1200",
+        "known_value": "1200",
+        "weight": "0.70588235",
+        "budget": "0.95",
+        "status": "within_limit",
+        "contributions": {
+          "stocks": "1200",
+          "sector_theme_etfs": "0",
+          "excess_cash": "0"
+        },
+        "qualifications": []
+      },
+      "baseline_comparison": [],
+      "qualifications": [
+        "Baseline is unknown; no target allocation mix is inferred."
+      ]
+    }
+  }
+]

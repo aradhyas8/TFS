@@ -355,6 +355,31 @@ class PortfolioReviewInput(Contract):
     risk_context: Text | None = None
 
 
+class ThemeInput(Contract):
+    risk_context: Text | None = None
+    name: Text | None = None
+    mechanism: Text | None = None
+    shortlist: list[Identifier] = Field(default_factory=list, max_length=4)
+    max_candidates: int = Field(default=2, ge=1, le=4)
+    max_tool_calls: int = Field(default=16, ge=1, le=24)
+    confirmed: bool = False
+
+    @model_validator(mode="after")
+    def bounded(self) -> Self:
+        if len(set(self.shortlist)) != len(self.shortlist) or len(self.shortlist) > self.max_candidates:
+            raise ValueError("Shortlist must be unique and within the agreed candidate bound.")
+        if self.confirmed and (not self.name or not self.mechanism or not self.shortlist):
+            raise ValueError("Agreement requires a theme, mechanism and shortlist.")
+        return self
+
+
+class ThemeTestInput(Contract):
+    position_id: Identifier
+    conclusion: Literal["supports", "challenges", "unknown"]
+    explanation: Text
+    evidence_ids: list[Identifier] = Field(max_length=20)
+
+
 class AnalysisRequest(Contract):
     question: Text
     portfolio: Snapshot
@@ -364,10 +389,38 @@ class AnalysisRequest(Contract):
     stock: StockInput | None = None
     new_cash: NewCashInput | None = None
     portfolio_review: PortfolioReviewInput | None = None
+    theme: ThemeInput | None = None
 
     @model_validator(mode="after")
     def comparison_references(self) -> Self:
         import re
+        if self.theme is not None:
+            if self.stock or self.new_cash or self.portfolio_review:
+                raise ValueError("Choose one decision request type.")
+            rows = {row.id: row for row in self.portfolio.positions}
+            for key in self.theme.shortlist:
+                row = rows.get(key)
+                if row is None or row.kind not in {"stock", "etf"}:
+                    raise ValueError("Shortlist must reference supplied securities.")
+                if row.kind == "stock" and (row.currency != "USD" or row.listing not in {"XNAS", "XNYS", "XASE"}):
+                    raise ValueError("Canadian company research awaits the later evidence extension.")
+            if self.comparison is None and self.theme.shortlist:
+                alternatives = [ComparisonAlternative(id=f"candidate-{key}", kind=rows[key].kind, position_id=key) for key in self.theme.shortlist]
+                fund = next((row for row in rows.values() if row.kind == "etf" and row.etf_role == "diversified" and row.id not in self.theme.shortlist), None)
+                cash = next((row for row in rows.values() if row.kind == "cash"), None)
+                if fund:
+                    alternatives.append(ComparisonAlternative(id="fund", kind="etf", position_id=fund.id))
+                if cash:
+                    alternatives.append(ComparisonAlternative(id="cash", kind="cash", position_id=cash.id))
+                alternatives.append(ComparisonAlternative(id="keep", kind="no_action"))
+                scope = [row.id for row in rows.values() if row.shares or row.cash]
+                self.comparison = ComparisonInput(scope_position_ids=scope or self.theme.shortlist, alternatives=alternatives)
+            if self.comparison:
+                selected = {row.position_id for row in self.comparison.alternatives if row.kind in {"stock", "etf"}}
+                if not set(self.theme.shortlist).issubset(selected) or any(key not in self.theme.shortlist and not (rows.get(str(key)) and rows[str(key)].kind == "etf" and rows[str(key)].etf_role == "diversified") for key in selected):
+                    raise ValueError("Comparison must contain the shortlist and only diversified fund alternatives beyond it.")
+                if not {"cash", "no_action"}.issubset({row.kind for row in self.comparison.alternatives}):
+                    raise ValueError("Theme comparison requires cash and no action.")
         if self.portfolio_review is not None:
             if self.new_cash is not None or self.stock is not None:
                 raise ValueError("Choose one decision request type.")
@@ -389,7 +442,7 @@ class AnalysisRequest(Contract):
                     alternatives.append(ComparisonAlternative(id="cash", kind="cash", position_id=cash.id))
                 alternatives.append(ComparisonAlternative(id="keep", kind="no_action"))
                 self.comparison = ComparisonInput(scope_position_ids=[row.id for row in self.portfolio.positions], alternatives=alternatives)
-        if self.portfolio_review is None and self.new_cash is None and self.stock is None and self.comparison is None and self.proposed_changes is None and re.search(r"new cash|allocate.*cash|\$[\d,]+.*what should|what.*\$[\d,]+", self.question, re.I):
+        if self.theme is None and self.portfolio_review is None and self.new_cash is None and self.stock is None and self.comparison is None and self.proposed_changes is None and re.search(r"new cash|allocate.*cash|\$[\d,]+.*what should|what.*\$[\d,]+", self.question, re.I):
             self.new_cash = NewCashInput()
         if self.new_cash is not None:
             if self.stock is not None or self.comparison is not None or self.proposed_changes is not None:
@@ -425,9 +478,9 @@ class AnalysisRequest(Contract):
             if alternative.position_id is None:
                 continue
             row = rows.get(alternative.position_id)
-            if alternative.kind == "stock" and self.portfolio_review is None and (self.stock is None or alternative.position_id != self.stock.position_id):
+            if alternative.kind == "stock" and self.theme is None and self.portfolio_review is None and (self.stock is None or alternative.position_id != self.stock.position_id):
                 raise ValueError("Stock alternatives must use the selected researched US listing.")
-            if row is None or (alternative.kind == "etf" and (row.kind != "etf" or row.etf_role != "diversified")) or (alternative.kind in {"cash", "short_bill"} and row.kind != "cash"):
+            if row is None or (alternative.kind == "etf" and (row.kind != "etf" or row.etf_role != "diversified" and not (self.theme and row.id in self.theme.shortlist))) or (alternative.kind in {"cash", "short_bill"} and row.kind != "cash"):
                 raise ValueError("Select a supplied diversified ETF or a cash-currency row for cash/short bills.")
         if self.portfolio_review:
             if set(comparison.scope_position_ids) != set(rows) or not any(row.kind == "no_action" for row in comparison.alternatives):
@@ -784,6 +837,23 @@ class ReunderwritingResult(Contract):
         "ETF overlap, missing company coverage, costs and taxes remain unknown. Conditional actions are not orders or justified amounts."])
 
 
+class ThemeResult(Contract):
+    context: ThemeInput
+    status: Literal["awaiting_agreement", "completed"]
+    researched: list[Identifier] = Field(default_factory=list)
+    stocks: list[StockResult] = Field(default_factory=list)
+    tests: list[ThemeTestInput] = Field(default_factory=list)
+    tool_calls_used: int = 0
+    sizing: ReviewSizingInput | None = None
+    amount: AllocationAmount | None = None
+    previews: list[ProposalReview] = Field(default_factory=list, max_length=2)
+    missing_inputs: list[str] = Field(default_factory=list)
+    qualifications: list[str] = Field(default_factory=lambda: [
+        "Research is confined to the user-agreed shortlist and tool-call effort bound; there is no market-wide discovery.",
+        "Agency/macro coverage is unavailable in this workflow; a named mechanism without primary support remains unknown.",
+        "Amounts remain undetermined without justified sizing. Costs, taxes and indirect overlap remain qualified; no orders are executed."])
+
+
 class AnalysisResult(Contract):
     status: Literal["completed"] = "completed"
     question: str
@@ -794,6 +864,7 @@ class AnalysisResult(Contract):
     stock: StockResult | None = None
     allocation: AllocationResult | None = None
     reunderwriting: ReunderwritingResult | None = None
+    theme: ThemeResult | None = None
 
 # Resolve forward references used by the shared tool contracts.
 CandidateCasesInput.model_rebuild()

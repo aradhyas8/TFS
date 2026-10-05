@@ -3,6 +3,7 @@ import GuardrailResult from "./GuardrailResult";
 import ComparisonResult from "./ComparisonResult";
 import AllocationResult from "./AllocationResult";
 import ReunderwritingResult from "./ReunderwritingResult";
+import ThemeResult from "./ThemeResult";
 import StockResult from "./StockResult";
 
 function Points({ title, items }: { title: string; items: string[] }) {
@@ -13,6 +14,7 @@ export default function ReviewResult({ result }: { result: Analysis }) {
   const { portfolio: portfolio, recommendation: answer } = result;
   const currency = portfolio.reporting_currency;
   return <section className="review-result" aria-label="Completed portfolio review" aria-live="polite">
+    <ThemeResult theme={result.theme} currency={currency} />
     <div className="question-bubble"><span className="eyebrow">YOUR QUESTION</span><p>{result.question}</p></div>
     <div className="panel answer-panel">
       <div className="section-heading"><div><p className="eyebrow">PORTFOLIO REVIEW / {portfolio.as_of}</p><h2>{actionLabel(answer.preferred_action)}</h2></div>
@@ -67,7 +69,7 @@ export default function ReviewResult({ result }: { result: Analysis }) {
       <ReunderwritingResult review={result.reunderwriting} positions={portfolio.positions.map(row => row.supplied)} />
       <AllocationResult allocation={result.allocation} />
       <ComparisonResult comparison={result.comparison} />
-      {[...result.proposals, ...(result.allocation?.previews || []), ...(result.reunderwriting?.previews || [])].map((proposal, index) => <section className="panel" aria-label={`Proposed change ${index + 1}`} key={index}>
+      {[...result.proposals, ...(result.allocation?.previews || []), ...(result.reunderwriting?.previews || []), ...(result.theme?.previews || [])].map((proposal, index) => <section className="panel" aria-label={`Proposed change ${index + 1}`} key={index}>
         <h3>Proposed change {index + 1}: {proposal.status.replaceAll("_", " ")}</h3>
         <p className="muted small">Source: {proposal.source}. Hypothetical preview using the snapshot date; no action has occurred.</p>
         <p>Post-change portfolio total: {valueLabel(proposal.post_total_value, currency)}. Post-change cash: {valueLabel(proposal.post_cash_value, currency)}.</p>

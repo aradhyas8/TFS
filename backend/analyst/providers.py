@@ -19,6 +19,7 @@ from .schemas import (
     ReviewSizingInput,
     Snapshot,
     StockRecommendation,
+    ThemeTestInput,
 )
 
 
@@ -145,7 +146,8 @@ class OpenAIModel:
         request = json.loads(messages[1]["content"])
         allocation = bool(request.get("new_cash"))
         review = bool(request.get("portfolio_review"))
-        schema = (StockRecommendation if request.get("stock") or allocation or review else Recommendation).model_json_schema()
+        theme = bool(request.get("theme"))
+        schema = (StockRecommendation if request.get("stock") or allocation or review or theme else Recommendation).model_json_schema()
         schema["properties"]["amount"] = {"type": "null"}
         stock_tools: list[FunctionToolParam] = copy.deepcopy(STOCK_TOOLS)
         if review:
@@ -153,6 +155,9 @@ class OpenAIModel:
                            {"type": "function", "name": "size_review", "description": "Translate an explained whole-portfolio issuer exposure range into local adjustment amounts after evidence-backed holding review and comparison. Python checks both endpoints, funding, source inputs, supplied risk context, costs/tax effects and configured cap/budget. Unknown inputs never authorize an amount.", "parameters": ReviewSizingInput.model_json_schema(), "strict": True}]
         if allocation:
             stock_tools = [{**STOCK_TOOLS[-1], "parameters": CandidateCasesInput.model_json_schema()}]
+        if theme:
+            stock_tools = [{"type": "function", "name": "size_review", "description": "After completed agreed theme cases and comparison, propose a justified exposure range for a supported shortlisted addition funded by a supplied same-account/currency cash balance. Shared Python sizing enforces risk context, source inputs, dated costs/tax and cap/budget endpoints; missing inputs leave amounts unknown.", "parameters": ReviewSizingInput.model_json_schema(), "strict": True}, ALLOCATION_TOOLS[1], {**STOCK_TOOLS[-1], "parameters": CandidateCasesInput.model_json_schema()},
+                           {"type": "function", "name": "test_theme_mechanism", "description": "Test the agreed economic mechanism for exactly one shortlisted candidate using its backend-bound evidence IDs. Explain support, challenge or unknown qualitatively; ETF citations use fund-POSITION_ID for dated sponsor facts. No numerical claims, probabilities or new facts.", "parameters": ThemeTestInput.model_json_schema(), "strict": True}]
         response = await self.client.responses.create(
             model=self.settings.model,
             input=cast(ResponseInputParam, messages),

@@ -1,7 +1,7 @@
 import { portfolioReviewComparison, type ComparisonInput, type FundFacts, type KnownEffects, type Snapshot } from "../lib/contracts";
 
-export default function ComparisonInputs({ value, onChange, snapshot, busy, stockId, portfolioReview = false }: {
-  value: ComparisonInput | null; onChange: (value: ComparisonInput | null) => void; snapshot: Snapshot; busy: boolean; stockId?: string; portfolioReview?: boolean;
+export default function ComparisonInputs({ value, onChange, snapshot, busy, stockId, portfolioReview = false, themeDiscovery = false }: {
+  value: ComparisonInput | null; onChange: (value: ComparisonInput | null) => void; snapshot: Snapshot; busy: boolean; stockId?: string; portfolioReview?: boolean; themeDiscovery?: boolean;
 }) {
   const empty: ComparisonInput = portfolioReview ? portfolioReviewComparison(snapshot) : { scope_position_ids: portfolioReview ? snapshot.positions.map(row => row.id) : [], alternatives: [{ id: "keep", kind: "no_action", position_id: null }], fund_facts: [], effects: [] };
   function destination(id: string, kind: "stock" | "etf" | "cash" | "short_bill", position: string) {
@@ -27,27 +27,27 @@ export default function ComparisonInputs({ value, onChange, snapshot, busy, stoc
   return <section className="panel comparison-inputs" aria-label="Comparison inputs">
     <h2>Five-year comparison</h2>
     <p className="muted small">Compare selected alternatives using the value of actual holdings and cash. This is a comparison basis, not an allocation instruction. Add a candidate fund to the snapshot with zero shares if needed.</p>
-    <label><input type="checkbox" checked={value !== null} disabled={busy} onChange={event => onChange(event.target.checked ? empty : null)} /> Include conditional comparison</label>
+    <label><input type="checkbox" checked={value !== null} disabled={busy || themeDiscovery} onChange={event => onChange(event.target.checked ? empty : null)} /> Include conditional comparison</label>
     {value && <fieldset disabled={busy}>
       <legend>Current holdings and cash to compare</legend>
       {value.scope_position_ids.length === 0 && <p className="qualification">Select at least one current holding or cash balance for the comparison basis.</p>}
       {value.alternatives.length === 0 && <p className="qualification">Select at least one comparison alternative.</p>}
-      {snapshot.positions.map(row => <label key={row.id}><input type="checkbox" disabled={portfolioReview} aria-label={`Comparison scope ${row.id}`}
+      {snapshot.positions.map(row => <label key={row.id}><input type="checkbox" disabled={portfolioReview || themeDiscovery} aria-label={`Comparison scope ${row.id}`}
         checked={value.scope_position_ids.includes(row.id)} onChange={event => onChange({ ...value,
           scope_position_ids: event.target.checked ? [...value.scope_position_ids, row.id] : value.scope_position_ids.filter(id => id !== row.id) })} /> {row.ticker || "Cash"} / {row.id} / {row.currency}</label>)}
-      {portfolioReview && value.alternatives.filter(row => row.kind === "stock").map(row => <p key={row.id} className="muted small">Company alternative: {snapshot.positions.find(pos => pos.id === row.position_id)?.ticker} / {row.position_id}</p>)}
+      {(portfolioReview || themeDiscovery) && value.alternatives.filter(row => row.kind === "stock").map(row => <p key={row.id} className="muted small">Company alternative: {snapshot.positions.find(pos => pos.id === row.position_id)?.ticker} / {row.position_id}</p>)}
       {stockId && <label><input type="checkbox" checked={value.alternatives.some(row => row.kind === "stock")}
         onChange={event => destination("company", "stock", event.target.checked ? stockId : "")} /> Compare the researched stock</label>}
       <div className="form-grid">
-        <label>Diversified ETF alternative<select value={value.alternatives.find(row => row.id === "fund")?.position_id || ""}
+        <label>Diversified ETF alternative<select disabled={themeDiscovery} value={value.alternatives.find(row => row.id === "fund")?.position_id || ""}
           onChange={event => destination("fund", "etf", event.target.value)}><option value="">Not selected</option>
           {snapshot.positions.filter(row => row.kind === "etf" && row.etf_role === "diversified").map(row => <option key={row.id} value={row.id}>{row.ticker} / {row.id}</option>)}</select></label>
-        <label>Cash or short-bill currency<select value={cash?.position_id || ""} onChange={event => destination("cash", cash?.kind === "short_bill" ? "short_bill" : "cash", event.target.value)}>
+        <label>Cash or short-bill currency<select disabled={themeDiscovery} value={cash?.position_id || ""} onChange={event => destination("cash", cash?.kind === "short_bill" ? "short_bill" : "cash", event.target.value)}>
           <option value="">Not selected</option>{snapshot.positions.filter(row => row.kind === "cash").map(row => <option key={row.id} value={row.id}>{row.id} / {row.currency}</option>)}</select></label>
-        {cash && <label>Cash alternative type<select value={cash.kind} onChange={event => destination("cash", event.target.value as "cash" | "short_bill", cash.position_id || "")}>
+        {cash && <label>Cash alternative type<select disabled={themeDiscovery} value={cash.kind} onChange={event => destination("cash", event.target.value as "cash" | "short_bill", cash.position_id || "")}>
           <option value="cash">Cash</option><option value="short_bill">Short government bills</option></select></label>}
       </div>
-      <label><input type="checkbox" disabled={portfolioReview} checked={value.alternatives.some(row => row.kind === "no_action")}
+      <label><input type="checkbox" disabled={portfolioReview || themeDiscovery} checked={value.alternatives.some(row => row.kind === "no_action")}
         onChange={event => onChange({ ...value, alternatives: [...value.alternatives.filter(row => row.kind !== "no_action"),
           ...(event.target.checked ? [{ id: "keep", kind: "no_action" as const, position_id: null }] : [])] })} /> Compare no action: retain selected holdings and cash</label>
       {snapshot.positions.filter(row => row.kind === "etf" && relevant.has(row.id)).map(row => {

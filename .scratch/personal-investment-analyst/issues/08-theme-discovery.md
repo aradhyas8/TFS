@@ -4,7 +4,7 @@
 
 **Blocked by:** 05: US stock analysis in portfolio context.
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **Authority:** [Personal Investment Analyst specification](../../../specs/personal-investment-analyst.md).
 
@@ -32,10 +32,10 @@ Implement within the single shared FastAPI decision pipeline and the authoritati
 
 ## Acceptance criteria
 
-- [ ] The theme is clarified and a bounded shortlist/effort agreed before research.
-- [ ] Research and the recommendation remain within the agreed bounds.
-- [ ] The completed answer includes serious alternatives and conditional cases and can recommend no action.
-- [ ] Only ticket 05 directly blocks this workflow; the shared pipeline is retained.
+- [x] The theme is clarified and a bounded shortlist/effort agreed before research.
+- [x] Research and the recommendation remain within the agreed bounds.
+- [x] The completed answer includes serious alternatives and conditional cases and can recommend no action.
+- [x] Only ticket 05 directly blocks this workflow; the shared pipeline is retained.
 
 ## Non-goals
 
