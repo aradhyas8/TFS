@@ -11,6 +11,7 @@ from .csv_input import COLUMNS, load_csv
 from .financial_data import FinancialProvider, PersonalFinancialProvider
 from .pipeline import InvalidReview, analyze
 from .providers import DataProvider, ModelProvider, OpenAIModel, SuppliedDataProvider
+from .research import ResearchProvider, ReviewedResearchProvider
 from .schemas import AnalysisRequest, AnalysisResult, CSVRequest, Snapshot
 
 
@@ -20,6 +21,7 @@ def create_app(
     data: DataProvider | None = None,
     settings: Settings | None = None,
     financial: FinancialProvider | None = None,
+    research: ResearchProvider | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Personal Investment Analyst", version="0.1.0")
     source = data or SuppliedDataProvider()
@@ -71,7 +73,8 @@ def create_app(
             provider = OpenAIModel(config)
         try:
             financial_source = financial or PersonalFinancialProvider.from_environment()
-            return await analyze(request, provider, source, secret=config.api_key, financial=financial_source)
+            research_source = research or (ReviewedResearchProvider.from_environment() if request.stock else None)
+            return await analyze(request, provider, source, secret=config.api_key, financial=financial_source, research=research_source)
         except (ValueError, OSError):
             raise HTTPException(503, "Backend financial source configuration is invalid.") from None
         except InvalidReview:

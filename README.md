@@ -1,6 +1,6 @@
 # Personal Investment Analyst
 
-A standalone Next.js and FastAPI app for tickets 01–04: enter a dated whole-portfolio snapshot, supply optional personal settings, select comparison alternatives, ask a question, and receive calculated exposure, guardrail checks and conditional five-year cases. All code is new.
+A standalone Next.js and FastAPI app for tickets 01–05: enter a dated whole-portfolio snapshot, supply optional personal settings, select comparison alternatives, ask a question, and receive calculated exposure, guardrail checks and conditional five-year cases. All code is new.
 
 ## Run locally
 
@@ -52,7 +52,7 @@ Use `stock`, `etf`, `cash`, `fx`, or `account` row types. An `account` row prese
 
 ## Shared decision boundary
 
-`POST /api/analyze` accepts `{question, portfolio, settings?, proposed_changes?, comparison?}` and returns `{status, question, portfolio, recommendation, proposals, comparison}`. `/docs` on FastAPI exposes the complete typed contract. `POST /api/portfolio/csv` accepts `{csv, as_of, reporting_currency}` and returns the same snapshot shape accepted by analysis.
+`POST /api/analyze` accepts `{question, portfolio, settings?, proposed_changes?, comparison?, stock?}` and returns `{status, question, portfolio, recommendation, proposals, comparison, stock}`. `/docs` on FastAPI exposes the complete typed contract. `POST /api/portfolio/csv` accepts `{csv, as_of, reporting_currency}` and returns the same snapshot shape accepted by analysis.
 
 The backend validates the request, binds the snapshot from the data provider, asks the model to call `review_portfolio`, dispatches the allowlisted Python tool, returns its computed result to the model, validates the final recommendation and preserves the deterministic result in the response. The portfolio tool has no arguments: a model cannot replace the submitted holdings or valuation inputs. The loop is bounded to eight turns. Backend-bound `resolve_identities`, `get_quotes` and `get_fx` tools share one request-local evidence set with `review_portfolio`. All take no financial inputs from the model. When alternatives are selected, the model must call `calculate_comparison` with explained future-driver judgments before answering. Production uses one backend-owned OpenAI Responses integration, without extra orchestration frameworks or a database. [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling) and [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) document the integration pattern.
 
@@ -96,3 +96,8 @@ npm run build
 Browser tests use installed Microsoft Edge in headless mode and start dedicated Next.js and FastAPI test servers on ports 3100 and 8100. On another OS, set `TEST_PYTHON` to the virtualenv executable and change Playwright's browser channel to an installed browser. Every automated journey uses fake model/data providers, with real request handling and Python calculations. An HTTP transport fixture also exercises the production OpenAI SDK request shape. Tests prohibit external network connections and use dummy credentials only; no live model or market-data request occurs. Browser tests check rendered values, question correspondence, failure display, and actual browser-script absence of the dummy key.
 
 Tests are at the two seams approved by the ticket: the public FastAPI request/result boundary and the whole browser input-to-result journey. Fixed scripted answers validate the integration and rendering, not investment reasoning quality. No live answer-quality assessment is claimed.
+
+
+## US stock questions
+
+Ticket 05 adds the US stock selector to the existing question form and returns dated SEC/issuer evidence, company operating-driver cases, exit sensitivity and portfolio-aware conditional actions. Company, fund, cash and no-action alternatives use the shared comparison pipeline. Configure backend-only `RESEARCH_REFERENCE_FILE` with independently reviewed primary excerpts; missing records stay unknown. This adapter does not claim live filing retrieval. Allocation amounts remain undetermined. See [docs/us-stock-analysis.md](docs/us-stock-analysis.md) for provenance, methods, formulas, setup and verification limits.

@@ -4,7 +4,7 @@
 
 **Blocked by:** 03: Simple portfolio guardrails; 04: ETF/cash five-year comparison.
 
-**Status:** ready-for-agent
+**Status:** implemented
 
 **Authority:** [Personal Investment Analyst specification](../../../specs/personal-investment-analyst.md).
 
@@ -32,12 +32,16 @@ Implement within the single shared FastAPI decision pipeline and the authoritati
 
 ## Acceptance criteria
 
-- [ ] A US stock question returns a completed portfolio-aware recommendation in the same application request, displayed in the frontend.
-- [ ] Material claims link to dated primary evidence, and facts, calculations, and judgments are distinguishable.
-- [ ] Serious alternatives use instrument-appropriate five-year cases on a common date/currency basis.
-- [ ] The stock path shares the existing pipeline and can be extended to the other workflows.
+- [x] A US stock question returns a completed portfolio-aware recommendation in the same application request, displayed in the frontend.
+- [x] Material claims link to dated primary evidence, and facts, calculations, and judgments are distinguishable.
+- [x] Serious alternatives use instrument-appropriate five-year cases on a common date/currency basis.
+- [x] The stock path shares the existing pipeline and can be extended to the other workflows.
 
 ## Non-goals
 
 - No separate stock-analysis architecture, automatic trading, background research, unbounded discovery, optimizer, or separate workflow-specific agent/Codex app-server runtime.
 - Canadian evidence rules and sponsor-holdings look-through remain later extensions, not prerequisites.
+
+## Implementation record
+
+Implemented in the shared pipeline and frontend. See [stock analysis contract](../../../docs/us-stock-analysis.md) and [implementation review](../../../docs/us-stock-analysis-review.md). Primary research uses backend-reviewed original SEC/issuer extracts; live retrieval and live-model answer-quality assessment are not claimed. Amounts remain undetermined. Final verification: 188 backend tests, 21 browser journeys (affected stock journeys rerun after review fixes), typechecks, lint, and production build passed.

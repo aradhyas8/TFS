@@ -7,7 +7,14 @@ from openai import AsyncOpenAI
 from openai.types.responses import FunctionToolParam, ResponseInputParam, ToolChoiceFunctionParam
 
 from .config import Settings
-from .schemas import ComparisonJudgments, ProposedChanges, Recommendation, Snapshot
+from .schemas import (
+    CompanyJudgments,
+    ComparisonJudgments,
+    ProposedChanges,
+    Recommendation,
+    Snapshot,
+    StockRecommendation,
+)
 
 
 @dataclass(frozen=True)
@@ -97,9 +104,16 @@ PROPOSAL_TOOL: FunctionToolParam = {
 
 COMPARISON_TOOL: FunctionToolParam = {
     "type": "function", "name": "calculate_comparison",
-    "description": "Calculate five-year conditional cases for exactly the request-selected alternatives. Starting capital, instrument identity, fund facts, known costs/tax and dated FX are backend bound. Supply explained future judgments only: one downside/base/upside case per alternative, annual five-element paths. ETF price-only paths use income multipliers against known yield; reinvested total-return paths include income and require null income_multipliers. Gross paths deduct known fund costs; net paths already include them. Cash/short-bill paths use annual_rates only. No action drivers cover every actual scope position; retained stocks stay unquantified. FX multipliers are relative to dated initial FX; same-currency multipliers must all be one. Explanations are qualitative with no probabilities, hurdles, numerical claims or trade instructions. Missing facts stay unknown; never invent allocation amounts.",
+    "description": "Calculate five-year conditional cases for exactly the request-selected alternatives. Starting capital, instrument identity, fund facts, known costs/tax and dated FX are backend bound. Supply explained future judgments only: one downside/base/upside case per alternative, annual five-element paths. ETF price-only paths use income multipliers against known yield; reinvested total-return paths include income and require null income_multipliers. Gross paths deduct known fund costs; net paths already include them. Cash/short-bill paths use annual_rates only. No action drivers cover every actual scope position; retained unresearched stocks stay unquantified. Researched stock drivers must have null annual_returns, annual_rates and income_multipliers, reinvest false, price_only/gross basis, and FX matching the company case; use its operating outcomes rather than an ETF forecast. FX multipliers are relative to dated initial FX; same-currency multipliers must all be one. Explanations are qualitative with no probabilities, hurdles, numerical claims or trade instructions. Missing facts stay unknown; never invent allocation amounts.",
     "parameters": ComparisonJudgments.model_json_schema(), "strict": True,
 }
+
+
+STOCK_TOOLS: list[FunctionToolParam] = [
+    {**PORTFOLIO_TOOL, "name": "get_sec_filings", "description": "Read backend-bound dated original SEC filing excerpts and checked facts for the selected issuer. No arguments."},
+    {**PORTFOLIO_TOOL, "name": "get_issuer_material", "description": "Read backend-bound issuer investor-relations material with dates and availability. No arguments."},
+    {"type": "function", "name": "calculate_company_cases", "description": "Calculate conditional company cases from bound reported facts and explained operating judgments. All paths have five annual elements. Net margin uses earnings, FCF applies cash conversion then reinvestment; book/FFO grow a reported metric with neutral operating transforms. Dilution changes shares; payout distributions remain idle cash. Book-value payout uses explicit annual return_on_equity earnings on opening book, never book capital itself. Use null return_on_equity for other methods. Exit multiple and sensitivities are explicit. No facts, probabilities or allocations may be supplied.", "parameters": CompanyJudgments.model_json_schema(), "strict": True},
+]
 
 
 class OpenAIModel:
@@ -119,18 +133,18 @@ class OpenAIModel:
         response = await self.client.responses.create(
             model=self.settings.model,
             input=cast(ResponseInputParam, messages),
-            tools=[PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL],
+            tools=[PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL, *STOCK_TOOLS],
             tool_choice=choice if require_tool else "auto",
             parallel_tool_calls=False,
             text={
                 "format": {
                     "type": "json_schema",
                     "name": "portfolio_recommendation",
-                    "schema": Recommendation.model_json_schema(),
+                    "schema": (StockRecommendation if json.loads(messages[1]["content"]).get("stock") else Recommendation).model_json_schema(),
                     "strict": True,
                 }
             },
-            max_output_tokens=4000,
+            max_output_tokens=8000,
             store=False,
             include=["reasoning.encrypted_content"],
         )

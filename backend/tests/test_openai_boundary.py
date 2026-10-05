@@ -8,12 +8,21 @@ from openai import AsyncOpenAI
 from analyst.api import create_app
 from analyst.config import Settings
 from analyst.providers import FakeDataProvider
+from analyst.research import ReviewedResearchProvider
+from analyst.schemas import AnalysisRequest, CompanyResearch
 from tests.test_analysis import recommendation, snapshot
 from tests.test_comparison import comparison_request, judgments
+from tests.test_stock import (
+    company_judgments,
+    research_fixture,
+    stock_answer,
+    stock_comparison_judgments,
+    stock_request,
+)
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "financial_tools", "comparison", "refusal", "incomplete", "service_error", "malformed_json"]
+    "failure", [None, "financial_tools", "comparison", "stock", "refusal", "incomplete", "service_error", "malformed_json"]
 )
 def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failure):
     sent = []
@@ -21,14 +30,17 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
     def fake_openai(request):
         payload = json.loads(request.content)
         sent.append(payload)
-        if len(sent) == 1 or (failure == "financial_tools" and len(sent) <= 4) or (failure == "comparison" and len(sent) == 2):
+        if len(sent) == 1 or (failure == "financial_tools" and len(sent) <= 4) or (failure == "comparison" and len(sent) == 2) or (failure == "stock" and len(sent) <= 5):
             assert request.url == "https://api.openai.com/v1/responses"
             assert request.headers["Authorization"] == "Bearer sk-test-backend-only-never-browser"
             assert payload["tool_choice"] == ({"type": "function", "name": "review_portfolio"} if len(sent) == 1 else "auto")
             assert {tool["name"] for tool in payload["tools"]} == {
-                "review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes", "calculate_comparison"
+                "review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes", "calculate_comparison", "get_sec_filings", "get_issuer_material", "calculate_company_cases"
             }
-            name = ["review_portfolio", "get_quotes", "resolve_identities", "get_fx"][len(sent) - 1]
+            if failure == "stock":
+                name = ["review_portfolio", "get_sec_filings", "get_issuer_material", "calculate_company_cases", "calculate_comparison"][len(sent) - 1]
+            else:
+                name = ["review_portfolio", "get_quotes", "resolve_identities", "get_fx"][len(sent) - 1]
             if failure == "comparison" and len(sent) == 2:
                 name = "calculate_comparison"
             output = [
@@ -37,7 +49,7 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
                     "id": "fc_test",
                     "call_id": f"sdk_tool_{len(sent)}",
                     "name": name,
-                    "arguments": json.dumps(judgments()) if name == "calculate_comparison" else "{}",
+                    "arguments": json.dumps(company_judgments()) if name == "calculate_company_cases" else json.dumps(stock_comparison_judgments(AnalysisRequest.model_validate(stock_request()).model_dump(mode="json"))) if failure == "stock" and name == "calculate_comparison" else json.dumps(judgments()) if name == "calculate_comparison" else "{}",
                     "status": "completed",
                 }
             ]
@@ -69,7 +81,7 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
                     "type": "output_text",
                     "text": "broken"
                     if failure == "malformed_json"
-                    else json.dumps(recommendation()),
+                    else json.dumps(stock_answer() if failure == "stock" else recommendation()),
                     "annotations": [],
                 }
             ]
@@ -110,13 +122,19 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
     app = create_app(
         settings=Settings("sk-test-backend-only-never-browser", "test-model"),
         data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}),
     )
     response = TestClient(app).post(
-        "/api/analyze", json=comparison_request() if failure == "comparison" else {"question": "Review my exposure", "portfolio": snapshot()}
+        "/api/analyze", json=stock_request() if failure == "stock" else comparison_request() if failure == "comparison" else {"question": "Review my exposure", "portfolio": snapshot()}
     )
-    assert response.status_code == (200 if failure in {None, "financial_tools", "comparison"} else 502), response.text
+    assert response.status_code == (200 if failure in {None, "financial_tools", "comparison", "stock"} else 502), response.text
     assert "sk-test-backend-only-never-browser" not in response.text
-    if failure in {None, "financial_tools", "comparison"}:
+    if failure in {None, "financial_tools", "comparison", "stock"}:
         assert response.json()["portfolio"]["total_value"] == "3600"
     else:
         assert "recommendation" not in response.json()
+
+    if failure == "stock":
+        assert response.json()["stock"]["cases"][1]["terminal_price"] == "100"
+        assert response.json()["recommendation"]["evidence_ids"] == ["filing", "issuer"]
+        assert "evidence_ids" in sent[-1]["text"]["format"]["schema"]["properties"]

@@ -15,6 +15,7 @@ from .schemas import (
     PositionResult,
     ScenarioComponent,
     ScenarioDriver,
+    StockResult,
 )
 
 BASIS = (
@@ -29,8 +30,8 @@ BASIS = (
     "cash. Terminal invested local capital converts using the final FX multiplier. "
     "Known transaction costs reduce starting reporting capital; supplied terminal tax "
     "is deducted at the end. Unknown consequences remain unquantified; known terminal "
-    "subtotals exclude them and are not complete forecasts. No company exit valuation, "
-    "probabilities, weighted expected value or modeled inflation."
+    "subtotals exclude them and are not complete forecasts. ETF/cash paths use no company exit valuation, "
+    "probabilities, weighted expected value or modeled inflation. Selected researched stocks use their company operating-driver cases, scaled to the same capital basis."
 )
 
 
@@ -113,14 +114,16 @@ def component(
 
 def calculate_comparison(
     selection: ComparisonInput, judgments: ComparisonJudgments, portfolio: PortfolioReview,
+    stock: StockResult | None = None,
 ) -> ComparisonResult:
     with localcontext() as context:
         context.prec = 60
-        return _calculate(selection, judgments, portfolio)
+        return _calculate(selection, judgments, portfolio, stock)
 
 
 def _calculate(
     selection: ComparisonInput, judgments: ComparisonJudgments, portfolio: PortfolioReview,
+    stock: StockResult | None = None,
 ) -> ComparisonResult:
     judged = {row.alternative_id: row for row in judgments.alternatives}
     if len(judged) != len(judgments.alternatives) or set(judged) != {row.id for row in selection.alternatives}:
@@ -163,7 +166,23 @@ def _calculate(
                     initial = Decimal(rows[key].value or "0") if starting is not None and rows[key].value is not None else None
                 elif initial is not None and transaction is not None:
                     initial -= transaction
-                components.append(component(rows[key], initial, drivers[key], portfolio.reporting_currency, facts.get(key), portfolio.as_of))
+                computed = component(rows[key], initial, drivers[key], portfolio.reporting_currency, facts.get(key), portfolio.as_of)
+                if stock is not None and key == stock.position_id and rows[key].supplied.kind == "stock":
+                    stock_case = next(row for row in stock.cases if row.name == name)
+                    driver = drivers[key]
+                    if driver.annual_rates is not None or driver.annual_returns is not None or driver.income_multipliers is not None or driver.reinvest or driver.return_basis != "price_only" or driver.cost_basis != "gross":
+                        raise ValueError("Stock no-action uses company cases, never an ETF return forecast.")
+                    if driver.fx_multipliers != stock_case.judgment.fx_multipliers:
+                        raise ValueError("Retained stock FX must match the calculated company case.")
+                    quote = rows[key].quote_used
+                    stock_fx = rows[key].fx_used
+                    initial_fx = Decimal(1) if rows[key].supplied.currency == portfolio.reporting_currency else stock_fx.rate if stock_fx else None
+                    if quote is not None and quote.value > 0 and initial_fx is not None and initial is not None and stock_case.terminal_reporting_per_share is not None:
+                        computed.known_terminal_value = money(Decimal(stock_case.terminal_reporting_per_share) * initial / (quote.value * initial_fx))
+                        computed.terminal_local_value = None
+                        computed.fully_specified = True
+                        computed.qualifications = ["Retained stock uses its operating-driver company case, including idle distributions; costs/taxes stay unknown.", *stock_case.qualifications]
+                components.append(computed)
             complete = all(row.known_terminal_value is not None for row in components)
             terminal = sum((Decimal(row.known_terminal_value or "0") for row in components), Decimal(0)) - (tax or Decimal(0)) if complete else None
             issues.extend(issue for row in components for issue in row.qualifications)

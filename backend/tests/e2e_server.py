@@ -9,9 +9,16 @@ from analyst.api import create_app
 from analyst.config import Settings
 from analyst.financial_data import FakeFinancialProvider
 from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
-from analyst.schemas import FinancialEvidence, Snapshot
+from analyst.research import ReviewedResearchProvider
+from analyst.schemas import CompanyResearch, FinancialEvidence, Snapshot
 from tests.test_comparison import case_drivers, driver, judgments
 from tests.test_freshness import evidence_fixture
+from tests.test_stock import (
+    company_judgments,
+    research_fixture,
+    stock_answer,
+    stock_comparison_judgments,
+)
 
 # No network outside the local test servers, even if a provider is changed accidentally.
 original_connect = socket.socket.connect
@@ -34,6 +41,17 @@ class BrowserTestModel:
             return ModelTurn(calls=[ToolCall("browser_tool", "review_portfolio", "{}")])
         request = json.loads(messages[1]["content"])
         tool = json.loads(messages[-1]["output"])
+        if request.get("stock"):
+            called = {item["name"] for item in messages if item.get("type") == "function_call"}
+            for name, args in [("get_sec_filings", {}), ("get_issuer_material", {}),
+                               ("calculate_company_cases", company_judgments()),
+                               ("calculate_comparison", stock_comparison_judgments(request))]:
+                if name not in called:
+                    return ModelTurn(calls=[ToolCall(name, name, json.dumps(args))])
+            answer = stock_answer()
+            if request["question"] == "Review unavailable primary facts":
+                answer["evidence_ids"] = []
+            return ModelTurn(answer=answer)
         if request.get("comparison") and "total_value" in tool:
             template = judgments()["alternatives"][0]["cases"]
             positions = {row["id"]: row for row in request["portfolio"]["positions"]}
@@ -94,10 +112,14 @@ class BrowserTestData(FakeDataProvider):
         # Browser journeys run serially. Bind the external source fixture to the
         # submitted listing; every request resets it, including ordinary broker marks.
         financial.reference = FinancialEvidence()
+        stock_research.records = {"acme": CompanyResearch.model_validate(research_fixture())}
         for position in supplied.positions:
             if position.id == "p1" and position.mark and position.mark.source.startswith("Fixture "):
                 fixture = evidence_fixture()
                 scenario = position.mark.source.removeprefix("Fixture ")
+                if scenario == "missing_research":
+                    stock_research.records = {}
+                    continue
                 if scenario == "ambiguous":
                     fixture["identities"]["p1"]["status"] = "ambiguous"
                 else:
@@ -106,9 +128,13 @@ class BrowserTestData(FakeDataProvider):
         return super().snapshot(supplied)
 
 
+stock_research = ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())})
+
+
 app = create_app(
     model=BrowserTestModel(),
     data=BrowserTestData(),
     financial=financial,
+    research=stock_research,
     settings=Settings("sk-test-backend-only-never-browser", "test-model"),
 )
