@@ -4,7 +4,7 @@
 
 **Blocked by:** 03: Simple portfolio guardrails.
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Authority:** [Personal Investment Analyst specification](../../../specs/personal-investment-analyst.md).
 
@@ -33,10 +33,10 @@ Implement within the single shared FastAPI decision pipeline and the authoritati
 
 ## Acceptance criteria
 
-- [ ] Known company overlap and its source dates appear in the existing reviews and recommendations.
-- [ ] Partial, unknown, nested, and stale coverage is represented honestly.
-- [ ] Known indirect exposure affects configured cap checks only according to the user's explicit policy.
-- [ ] Direct blocker remains ticket 03, and no core workflow gains a look-through dependency.
+- [x] Known company overlap and its source dates appear in the existing reviews and recommendations.
+- [x] Partial, unknown, nested, and stale coverage is represented honestly.
+- [x] Known indirect exposure affects configured cap checks only according to the user's explicit policy.
+- [x] Direct blocker remains ticket 03, and no core workflow gains a look-through dependency.
 
 ## Non-goals
 

@@ -56,13 +56,37 @@ export default function ReviewResult({ result }: { result: Analysis }) {
         </tr>)}</tbody>
       </table></div>
       <h3>Direct company exposure</h3>
-      <p className="muted small">Aggregated by company identity across all accounts; supplied identities remain provisional. ETF look-through is unknown.</p>
+      <p className="muted small">Aggregated by company identity across all accounts; supplied identities remain provisional.</p>
       {portfolio.direct_companies.length ? <div className="table-scroll"><table aria-label="Direct company exposure">
         <thead><tr><th>Company</th><th>Value ({currency})</th><th>Portfolio weight</th></tr></thead>
         <tbody>{portfolio.direct_companies.map(company => <tr key={company.company_id}>
           <td>{company.company_name}<small>{company.company_id}</small></td><td>{valueLabel(company.value, currency)}
             {company.value === null && <small>Known subtotal: {valueLabel(company.known_value, currency)}</small>}</td><td>{weightLabel(company.weight)}</td>
         </tr>)}</tbody></table></div> : <p className="muted">No resolved direct-company positions supplied.</p>}
+      <h3>ETF indirect overlap &amp; look-through</h3>
+      <p className="muted small">
+        Indirect look-through status: <span className="badge" data-testid="indirect-exposure-badge">{portfolio.indirect_exposure}</span>.
+        {portfolio.indirect_exposure === "full" && " Full look-through from dated sponsor holdings."}
+        {portfolio.indirect_exposure === "partial" && " Partial look-through; some funds provide top holdings only. Incomplete look-through is not assumed zero."}
+        {portfolio.indirect_exposure === "stale" && " ETF sponsor holdings are dated differently from snapshot; coverage is stale."}
+        {portfolio.indirect_exposure === "unknown" && " Sponsor holdings unavailable or unverified."}
+        {portfolio.indirect_exposure === "none" && " No ETF positions held."}
+      </p>
+      {portfolio.company_overlap && portfolio.company_overlap.length > 0 ? (
+        <div className="table-scroll"><table aria-label="ETF company overlap and look-through">
+          <thead><tr><th>Company</th><th>Direct ({currency})</th><th>Indirect ({currency})</th><th>Total ({currency})</th><th>Total weight</th><th>Coverage</th><th>Contributing funds / dates</th></tr></thead>
+          <tbody>{portfolio.company_overlap.map(item => <tr key={item.company_id} data-testid={`overlap-row-${item.company_id}`}>
+            <td><strong>{item.company_name}</strong><small>{item.company_id}</small></td>
+            <td>{valueLabel(item.direct_value, currency)}{item.direct_weight && <small>{weightLabel(item.direct_weight)}</small>}</td>
+            <td>{valueLabel(item.indirect_value, currency)}{item.indirect_weight && <small>{weightLabel(item.indirect_weight)}</small>}</td>
+            <td>{valueLabel(item.total_value, currency)}</td>
+            <td>{weightLabel(item.total_weight)}</td>
+            <td><span className="badge">{item.coverage}</span></td>
+            <td>{item.contributing_funds.map((fund, idx) => <div key={idx}><small>{fund.fund_name || fund.ticker || fund.position_id} ({fund.position_id}): {weightLabel(fund.weight_in_fund)} · {valueLabel(fund.indirect_value, currency)} ({fund.source} · {fund.as_of})</small></div>)}
+              {item.source_dates && item.source_dates.length > 0 && <small className="muted">Source dates: {item.source_dates.join(", ")}</small>}</td>
+          </tr>)}</tbody>
+        </table></div>
+      ) : <p className="muted">No indirect company overlap identified across held funds.</p>}
       <GuardrailResult review={portfolio.guardrails} currency={currency} label="Current" />
       <StockResult stock={result.stock} currency={portfolio.positions.find(row => row.supplied.id === result.stock?.position_id)?.supplied.currency || currency} />
       {answer.evidence_ids && <p>Recommendation evidence: {answer.evidence_ids.map((id, index) => { const doc = [result.stock, ...(result.allocation?.stocks || []), ...(result.reunderwriting?.stocks || [])].flatMap(stock => stock?.research.documents || []).find(row => row.id === id); return <span key={id}>{index > 0 && "; "}{doc ? <a href={doc.url} target="_blank" rel="noreferrer">{doc.title} ({doc.published_on})</a> : id}</span>; })}</p>}

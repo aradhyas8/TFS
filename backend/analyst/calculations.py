@@ -1,5 +1,6 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, localcontext
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -7,10 +8,16 @@ import pandas as pd
 from .schemas import (
     AccountResult,
     CompanyExposure,
+    CompanyOverlap,
     FinancialEvidence,
+    FundOverlapContribution,
+    HoldingConstituent,
+    HoldingsCoverage,
     PortfolioReview,
+    Position,
     PositionResult,
     Snapshot,
+    SponsorHoldings,
 )
 
 
@@ -28,6 +35,52 @@ def sum_values(values: list[Decimal | None]) -> tuple[Decimal, Decimal | None]:
     known = sum((value for value in values if value is not None), Decimal(0))
     complete = bool(np.all([value is not None for value in values]))
     return known, known if complete else None
+
+
+def _get_holdings_for_etf(pos: Position, evidence: FinancialEvidence) -> SponsorHoldings | None:
+    if pos.id in evidence.sponsor_holdings and evidence.sponsor_holdings[pos.id] is not None:
+        return evidence.sponsor_holdings[pos.id]
+    if pos.ticker and pos.listing:
+        key = f"{pos.ticker}:{pos.listing}"
+        if key in evidence.sponsor_holdings and evidence.sponsor_holdings[key] is not None:
+            return evidence.sponsor_holdings[key]
+    if pos.ticker and pos.ticker in evidence.sponsor_holdings and evidence.sponsor_holdings[pos.ticker] is not None:
+        return evidence.sponsor_holdings[pos.ticker]
+    return None
+
+
+def _resolve_constituents(
+    holdings: SponsorHoldings,
+    parent_weight: Decimal,
+    evidence: FinancialEvidence,
+    snapshot_as_of: date,
+    visited: set[str],
+) -> tuple[list[tuple[HoldingConstituent, Decimal, date, str, HoldingsCoverage]], HoldingsCoverage]:
+    items: list[tuple[HoldingConstituent, Decimal, date, str, HoldingsCoverage]] = []
+    fund_coverage: HoldingsCoverage = holdings.coverage
+    if holdings.as_of != snapshot_as_of or holdings.coverage == "stale" or holdings.status == "stale":
+        fund_coverage = "stale"
+    for c in holdings.holdings:
+        effective_w = parent_weight * c.weight
+        if c.kind == "etf":
+            sub_key = c.ticker or c.company_id or ""
+            sub_holdings = None
+            if sub_key:
+                sub_holdings = evidence.sponsor_holdings.get(sub_key)
+                if sub_holdings is None and c.ticker and c.listing:
+                    sub_holdings = evidence.sponsor_holdings.get(f"{c.ticker}:{c.listing}")
+            if sub_holdings is not None and sub_key not in visited:
+                visited_next = set(visited)
+                visited_next.add(sub_key)
+                sub_items, sub_cov = _resolve_constituents(sub_holdings, effective_w, evidence, snapshot_as_of, visited_next)
+                items.extend(sub_items)
+                if sub_cov in {"partial", "unknown", "stale"}:
+                    fund_coverage = "partial" if fund_coverage != "stale" else "stale"
+            else:
+                fund_coverage = "partial" if fund_coverage != "stale" else "stale"
+        else:
+            items.append((c, effective_w, holdings.as_of, holdings.source, holdings.coverage))
+    return items, fund_coverage
 
 
 def review_portfolio(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
@@ -167,16 +220,143 @@ def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
                     position_ids=[rows[index].supplied.id for index in indices],
                 )
             )
+
+    etf_rows = [
+        (index, row, values[index])
+        for index, row in enumerate(rows)
+        if row.supplied.kind == "etf" and (row.supplied.shares is None or row.supplied.shares != 0)
+    ]
+    etf_coverages: list[HoldingsCoverage] = []
+    contributions_by_company: dict[str, list[FundOverlapContribution]] = {}
+    names_by_company: dict[str, str] = {}
+    dates_by_company: dict[str, set[date]] = {}
+
+    for index, row, fund_val in etf_rows:
+        h = _get_holdings_for_etf(row.supplied, evidence)
+        if h is None:
+            etf_coverages.append("unknown")
+            continue
+        if h.as_of != snapshot.as_of or h.coverage == "stale" or h.status == "stale":
+            etf_coverages.append("stale")
+            continue
+        resolved_items, fund_cov = _resolve_constituents(
+            h, Decimal(1), evidence, snapshot.as_of, {row.supplied.ticker or row.supplied.id}
+        )
+        etf_coverages.append(fund_cov)
+        if fund_val is not None and fund_val > 0:
+            for constituent, weight_in_fund, as_of_date, source_str, item_cov in resolved_items:
+                comp_id = constituent.company_id or constituent.ticker
+                if not comp_id:
+                    continue
+                comp_name = constituent.company_name or constituent.ticker or "Unresolved company name"
+                names_by_company[comp_id] = comp_name
+                dates_by_company.setdefault(comp_id, set()).add(as_of_date)
+                ind_val = (fund_val * weight_in_fund).quantize(Decimal("0.0000000001"))
+                contrib = FundOverlapContribution(
+                    position_id=row.supplied.id,
+                    ticker=row.supplied.ticker,
+                    listing=row.supplied.listing,
+                    fund_name=row.supplied.ticker,
+                    fund_weight=weight(fund_val, total),
+                    weight_in_fund=money(weight_in_fund.quantize(Decimal("0.00000001")) if isinstance(weight_in_fund, Decimal) else Decimal(str(weight_in_fund))),
+                    indirect_value=money(ind_val),
+                    indirect_weight=weight(ind_val, total),
+                    as_of=as_of_date,
+                    source=source_str,
+                    coverage=item_cov,
+                )
+                contributions_by_company.setdefault(comp_id, []).append(contrib)
+
+    portfolio_indirect_exposure: Literal["none", "full", "partial", "unknown", "stale"]
+    if not etf_rows:
+        portfolio_indirect_exposure = "none"
+    elif not etf_coverages:
+        portfolio_indirect_exposure = "none"
+    elif all(c == "full" for c in etf_coverages):
+        portfolio_indirect_exposure = "full"
+    elif all(c == "stale" for c in etf_coverages):
+        portfolio_indirect_exposure = "stale"
+    elif all(c == "unknown" for c in etf_coverages):
+        portfolio_indirect_exposure = "unknown"
+    else:
+        portfolio_indirect_exposure = "partial"
+
+    direct_by_company: dict[str, tuple[str, Decimal | None, list[str]]] = {}
+    for comp in companies:
+        direct_by_company[comp.company_id] = (
+            comp.company_name,
+            Decimal(comp.value) if comp.value is not None else None,
+            comp.position_ids,
+        )
+
+    all_overlap_company_ids = set(contributions_by_company.keys())
+    company_overlap: list[CompanyOverlap] = []
+
+    for comp_id in all_overlap_company_ids:
+        direct_info = direct_by_company.get(comp_id)
+        direct_val = direct_info[1] if direct_info else None
+        comp_name = direct_info[0] if direct_info else names_by_company.get(comp_id, "Unresolved company name")
+        contribs = contributions_by_company.get(comp_id, [])
+        indirect_sum = sum((Decimal(c.indirect_value) for c in contribs if c.indirect_value is not None), Decimal(0))
+        total_val = ((direct_val or Decimal(0)) + indirect_sum) if (direct_val is not None or indirect_sum > 0) else None
+
+        comp_cov: HoldingsCoverage
+        if any(c.coverage == "partial" for c in contribs) or portfolio_indirect_exposure == "partial":
+            comp_cov = "partial"
+        elif any(c.coverage == "stale" for c in contribs) or portfolio_indirect_exposure == "stale":
+            comp_cov = "stale"
+        elif all(c.coverage == "full" for c in contribs) and portfolio_indirect_exposure == "full":
+            comp_cov = "full"
+        else:
+            comp_cov = "unknown"
+
+        source_dates = sorted(list(dates_by_company.get(comp_id, set())))
+
+        company_overlap.append(
+            CompanyOverlap(
+                company_id=comp_id,
+                company_name=comp_name,
+                direct_value=money(direct_val) if direct_val is not None else "0",
+                direct_weight=weight(direct_val, total) if direct_val is not None else "0.00000000",
+                indirect_value=money(indirect_sum),
+                indirect_weight=weight(indirect_sum, total),
+                total_value=money(total_val) if total_val is not None else None,
+                total_weight=weight(total_val, total),
+                coverage=comp_cov,
+                source_dates=source_dates,
+                contributing_funds=contribs,
+            )
+        )
+
+    company_overlap.sort(
+        key=lambda item: (
+            -(Decimal(item.total_value) if item.total_value is not None else Decimal("-1")),
+            item.company_id,
+        )
+    )
+
     _, holdings = sum_values(
         [value for value, row in zip(values, rows, strict=True) if row.supplied.kind != "cash"]
     )
     _, cash = sum_values(
         [value for value, row in zip(values, rows, strict=True) if row.supplied.kind == "cash"]
     )
+
+    if portfolio_indirect_exposure == "full":
+        overlap_note = "ETF company overlap is calculated from dated sponsor holdings; look-through coverage is full."
+    elif portfolio_indirect_exposure == "partial":
+        overlap_note = "ETF look-through is partial; known indirect overlap is included, but unreported fund holdings could contain additional exposure."
+    elif portfolio_indirect_exposure == "stale":
+        overlap_note = "ETF sponsor holdings dates differ from the snapshot date; indirect exposure is stale."
+    elif portfolio_indirect_exposure == "none":
+        overlap_note = "No ETF positions in portfolio; indirect exposure is not applicable."
+    else:
+        overlap_note = "Indirect ETF exposure, current evidence, tax effects and transaction costs are unknown."
+
     qualifications = [
         "Source dates are compared with the requested snapshot date, without an invented freshness threshold. Older or future inputs remain unusable; historical snapshots are not current prices.",
         "Baseline, company cap, active budget and personal risk context are unknown; no allocation amount is justified.",
-        "Indirect ETF exposure, current evidence, tax effects and transaction costs are unknown.",
+        overlap_note,
     ]
     qualifications.extend(evidence.issues)
     qualifications.extend(f"{row.supplied.id}: {issue}" for row in rows for issue in row.issues)
@@ -193,12 +373,14 @@ def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
         positions=rows,
         accounts=accounts,
         direct_companies=companies,
+        company_overlap=company_overlap,
         total_value=money(total) if total is not None else None,
         known_value=money(known),
         holdings_value=money(holdings) if holdings is not None else None,
         cash_value=money(cash) if cash is not None else None,
         complete=total is not None,
         source_inputs_usable=total is not None and all(row.source_inputs_usable for row in rows),
+        indirect_exposure=portfolio_indirect_exposure,
         qualifications=qualifications,
         calculation_basis="Snapshot-date shares multiplied by an unadjusted quote on the same date; cash at supplied balance; local value multiplied by dated directed FX. Shares must already reflect splits as of the snapshot date; no split factor is applied again. Adjusted prices are rejected. No dividends are added to prices or separately credited to cash; cash is the supplied balance. No historical or total returns are inferred, so adjusted-price returns and dividends cannot double count. Taxes and costs are unknown. Weights use the complete whole-portfolio total.",
     )

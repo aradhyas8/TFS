@@ -145,6 +145,10 @@ def size_allocation(request: AnalysisRequest, snapshot: Snapshot, evidence: Fina
         if target.supplied.kind == "stock":
             issuer = target.identity.company_id if target.identity else target.supplied.company_id
             existing = sum((Decimal(row.value or "0") for row in current.positions if row.supplied.kind == "stock" and (row.identity.company_id if row.identity else row.supplied.company_id) == issuer), Decimal(0))
+            if settings and settings.indirect_cap_policy == "include_known_indirect":
+                overlap = next((row for row in current.company_overlap if row.company_id == issuer), None)
+                if overlap and overlap.indirect_value:
+                    existing += Decimal(overlap.indirect_value)
         else:
             existing = Decimal(target.value or "0")
         amounts = [((total * fraction - existing) / fx).quantize(Decimal("0.01"), rounding=ROUND_DOWN)

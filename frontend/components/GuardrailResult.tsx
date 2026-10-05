@@ -9,12 +9,15 @@ export default function GuardrailResult({ review, currency, label }: { review: G
   return <div>
     <h3>{label} portfolio guardrails</h3>
     <p className="muted small">Company cap: {weightLabel(settings.single_company_cap ?? null)}. Active budget: {weightLabel(settings.active_budget ?? null)}.
-      Indirect cap policy: {settings.indirect_cap_policy?.replaceAll("_", " ") || "Unknown"}. ETF look-through remains unknown.</p>
+      Indirect cap policy: {settings.indirect_cap_policy === "include_known_indirect" ? "Include known indirect ETF overlap" : settings.indirect_cap_policy === "direct_only" ? "Direct stock only (indirect overlap noted)" : "Unknown"}.</p>
     {review.companies.length > 0 && <div className="table-scroll"><table aria-label={`${label} company cap checks`}>
       <thead><tr><th>Company</th><th>Weight / cap</th><th>Check</th><th>Excess / reduction to retained cash ({currency})</th></tr></thead>
       <tbody>{review.companies.map(company => <tr key={company.company_id}>
         <td>{company.company_name}<small>{company.explanation}</small></td>
-        <td>{weightLabel(company.current_weight)} / {weightLabel(company.cap)}</td><td>{company.status.replaceAll("_", " ")}</td>
+        <td>{weightLabel(company.current_weight)} / {weightLabel(company.cap)}
+          {company.indirect_weight && company.indirect_weight !== "0.00000000" && (
+            <small>Direct: {weightLabel(company.direct_weight ?? null)} | Indirect: {weightLabel(company.indirect_weight ?? null)}</small>
+          )}</td><td>{company.status.replaceAll("_", " ")}</td>
         <td>{valueLabel(company.excess_value, currency)}<small>Reduction to retained cash: {valueLabel(company.reduction_to_cash, currency)}</small></td>
       </tr>)}</tbody>
     </table></div>}

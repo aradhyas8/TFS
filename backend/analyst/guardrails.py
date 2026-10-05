@@ -53,16 +53,43 @@ def apply_guardrails(review: PortfolioReview, settings: PortfolioSettings | None
 def _checks(review: PortfolioReview, settings: PortfolioSettings) -> GuardrailReview:
     total = Decimal(review.total_value) if review.total_value is not None else None
     cap = settings.single_company_cap
-    overlap_unknown = has_etf_exposure(review) and settings.indirect_cap_policy != "direct_only"
+    policy = settings.indirect_cap_policy
+    overlap_unknown = has_etf_exposure(review) and (
+        policy != "direct_only" and review.indirect_exposure in {"unknown", "stale"}
+    )
+    overlap_partial = has_etf_exposure(review) and (
+        policy == "include_known_indirect" and review.indirect_exposure == "partial"
+    )
+
+    companies_to_check: list[tuple[str, str, Decimal | None, str | None]] = [
+        (c.company_id, c.company_name, Decimal(c.value) if c.value is not None else None, c.weight)
+        for c in review.direct_companies
+    ]
+    if policy == "include_known_indirect":
+        existing_ids = {c[0] for c in companies_to_check}
+        for o in review.company_overlap:
+            if o.company_id not in existing_ids:
+                companies_to_check.append((o.company_id, o.company_name, Decimal(o.direct_value) if o.direct_value and o.direct_value != "0" else None, o.direct_weight))
+
     companies = []
-    for company in review.direct_companies:
-        value = Decimal(company.value) if company.value is not None else None
-        status = check_limit(value, total, cap)
+    for company_id, company_name, direct_val, direct_weight_str in companies_to_check:
+        overlap_entry = next((row for row in review.company_overlap if row.company_id == company_id), None)
+        indirect_val = Decimal(overlap_entry.indirect_value) if overlap_entry and overlap_entry.indirect_value is not None else Decimal(0)
+
+        if policy == "include_known_indirect":
+            check_val = (direct_val or Decimal(0)) + indirect_val if (direct_val is not None or indirect_val > 0) else None
+            current_weight = weight(check_val, total)
+        else:
+            check_val = direct_val
+            current_weight = direct_weight_str
+
+        status = check_limit(check_val, total, cap)
         if overlap_unknown and status == "within_limit":
             status = "unknown"
+
         excess = (
-            max(value - cap * total, Decimal(0))
-            if value is not None and total is not None and total > 0 and cap is not None
+            max(check_val - cap * total, Decimal(0))
+            if check_val is not None and total is not None and total > 0 and cap is not None
             else None
         )
         explanation = (
@@ -71,21 +98,36 @@ def _checks(review: PortfolioReview, settings: PortfolioSettings) -> GuardrailRe
             else "Direct exposure is within the configured cap."
         )
         if status == "breached":
-            explanation = "Existing direct exposure exceeds the configured cap; it is not an approved exception. A forward path is to reduce direct exposure to cash retained in the portfolio, or reassess with explicitly supplied new cash. The displayed reduction is a dated minimum, before unknown costs and taxes."
+            if policy == "include_known_indirect" and indirect_val > 0:
+                explanation = "Existing exposure including known indirect ETF overlap exceeds the configured cap; it is not an approved exception. A forward path is to reduce direct exposure to cash retained in the portfolio, or reassess with explicitly supplied new cash. The displayed reduction is a dated minimum, before unknown costs and taxes."
+            else:
+                explanation = "Existing direct exposure exceeds the configured cap; it is not an approved exception. A forward path is to reduce direct exposure to cash retained in the portfolio, or reassess with explicitly supplied new cash. The displayed reduction is a dated minimum, before unknown costs and taxes."
         elif status == "unknown":
             explanation = "A cap conclusion requires a complete usable valuation and the applicable indirect-exposure policy and evidence."
-        if overlap_unknown:
-            explanation += " ETF overlap is unknown; any direct reduction is only a lower bound for a cap that includes indirect exposure."
+            if overlap_unknown:
+                explanation += " ETF overlap is unknown; any direct reduction is only a lower bound for a cap that includes indirect exposure."
+        elif status == "within_limit":
+            if policy == "include_known_indirect" and indirect_val > 0:
+                if overlap_partial:
+                    explanation = "Total known exposure including indirect ETF overlap is within the configured cap. Incomplete ETF look-through qualifies this check; unlisted fund holdings remain unknown."
+                else:
+                    explanation = "Total exposure including dated sponsor-holdings look-through is within the configured cap."
+            elif policy == "direct_only" and indirect_val > 0:
+                explanation = f"Direct exposure is within the configured cap. Known indirect exposure of {money(indirect_val)} {review.reporting_currency} is excluded by the direct-only policy."
+
         companies.append(
             CompanyCapCheck(
-                company_id=company.company_id,
-                company_name=company.company_name,
-                current_weight=company.weight,
+                company_id=company_id,
+                company_name=company_name,
+                current_weight=current_weight,
                 cap=money(cap) if cap is not None else None,
                 status=status,
                 excess_value=money(excess) if excess is not None else None,
                 reduction_to_cash=money(excess) if excess is not None else None,
                 explanation=explanation,
+                direct_weight=direct_weight_str,
+                indirect_weight=weight(indirect_val, total) if indirect_val > 0 else None,
+                policy=policy,
             )
         )
 
@@ -173,6 +215,10 @@ def _checks(review: PortfolioReview, settings: PortfolioSettings) -> GuardrailRe
     if overlap_unknown:
         qualifications.append(
             "Indirect exposure is unknown. The supplied cap policy is preserved; missing overlap is not zero. Supply a cap policy if unset, and look-through evidence when required."
+        )
+    elif overlap_partial:
+        qualifications.append(
+            "ETF look-through is partial; known indirect overlap is included, but unreported fund holdings could contain additional exposure."
         )
     return GuardrailReview(
         settings=settings,
@@ -288,7 +334,11 @@ def _preview(
             and all(check == "within_limit" for check in checks)
         ):
             # Unknown ETF-only overlap still prevents clearing the company cap.
-            if not has_etf_exposure(post) or settings.indirect_cap_policy == "direct_only":
+            if (
+                not has_etf_exposure(post)
+                or settings.indirect_cap_policy == "direct_only"
+                or post.indirect_exposure in {"full", "partial"}
+            ):
                 status = "within_limits"
     notes = [
         "Hypothetical preview only; no order or executed action. Uses the original dated marks and FX, including whole-portfolio cash and explicit new cash. Costs, taxes and execution prices are unknown. Passing supplied limits does not establish justified sizing."

@@ -10,7 +10,7 @@ from analyst.config import Settings
 from analyst.financial_data import FakeFinancialProvider
 from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
 from analyst.research import ReviewedResearchProvider
-from analyst.schemas import CompanyResearch, FinancialEvidence, Snapshot
+from analyst.schemas import CompanyResearch, FinancialEvidence, Snapshot, SponsorHoldings
 from tests.test_allocation import allocation_answer, allocation_evidence, comparison_judgments
 from tests.test_comparison import case_drivers, driver, judgments
 from tests.test_freshness import evidence_fixture
@@ -161,6 +161,26 @@ class BrowserTestData(FakeDataProvider):
                 else:
                     fixture["quotes"]["p1"]["status"] = scenario
                 financial.reference = FinancialEvidence.model_validate(fixture)
+            if position.kind == "etf" and position.mark and position.mark.source.startswith("Fixture sponsor "):
+                scenario = position.mark.source.removeprefix("Fixture sponsor ")
+                as_of = "2025-12-31" if scenario == "stale" else supplied.as_of
+                coverage = "stale" if scenario == "stale" else "partial" if scenario == "partial" else "full"
+                holdings_obj = SponsorHoldings.model_validate({
+                    "as_of": as_of,
+                    "source": "Top 10 holdings" if scenario == "partial" else "Full holdings file",
+                    "coverage": coverage,
+                    "holdings": [
+                        {
+                            "company_id": "acme",
+                            "company_name": "Acme Corp",
+                            "ticker": "ACME",
+                            "listing": "XNAS",
+                            "kind": "stock",
+                            "weight": "0.10",
+                        }
+                    ],
+                })
+                financial.reference.sponsor_holdings[position.id] = holdings_obj
         return super().snapshot(supplied)
 
 

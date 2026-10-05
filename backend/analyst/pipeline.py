@@ -60,7 +60,9 @@ Prices and FX are indicative, delayed, cached or manual, never live or execution
 Only explicitly supplied baseline and personal guardrails may be used. Configured limits
 cannot be waived by conviction. The tool's cap and active-budget checks are authoritative.
 Existing above-cap positions are not approved exceptions; the tool describes a conditional
-reduction path. Tax context and indirect exposure remain unavailable.
+reduction path. Tax context remains unavailable. Dated ETF sponsor holdings and
+look-through are incorporated where available; partial, unknown or stale coverage
+is qualified honestly, and the user's explicit indirect cap policy is strictly honored.
 Use check_proposed_changes only to check explicit hypothetical changes to submitted
 positions, never to invent an amount or imply execution. That tool can accept share
 changes and new cash, but cannot change settings, marks, identities or FX. Check results
@@ -184,9 +186,12 @@ def enforce_guardrails(
     elif checks is not None and (
         checks.active.status == "unknown"
         or any(row.status == "unknown" for row in checks.companies)
-        or checks.settings.single_company_cap is not None
-        and has_etf_exposure(current)
-        and checks.settings.indirect_cap_policy != "direct_only"
+        or (
+            checks.settings.single_company_cap is not None
+            and has_etf_exposure(current)
+            and checks.settings.indirect_cap_policy != "direct_only"
+            and current.indirect_exposure in {"unknown", "stale"}
+        )
     ):
         reason = "Current exposures cannot be cleared against configured limits while relevant valuation, classification or indirect-exposure evidence is unknown. Review the authoritative checks and missing inputs."
     if reason is None:
@@ -259,7 +264,7 @@ async def analyze(
                     raise InvalidReview("Invalid mixed or parallel model response.")
                 call = turn.calls[0]
                 if (
-                    call.name not in {"review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes", "calculate_comparison", "get_sec_filings", "get_issuer_material", "calculate_company_cases", "scan_opportunities", "research_candidate", "size_allocation", "reunderwrite_holding", "size_review", "test_theme_mechanism"}
+                    call.name not in {"review_portfolio", "resolve_identities", "get_quotes", "get_fx", "get_sponsor_holdings", "check_proposed_changes", "calculate_comparison", "get_sec_filings", "get_issuer_material", "calculate_company_cases", "scan_opportunities", "research_candidate", "size_allocation", "reunderwrite_holding", "size_review", "test_theme_mechanism"}
                     or not call.call_id
                     or call.call_id in seen_calls
                 ):
@@ -526,7 +531,7 @@ async def analyze(
                     proposals.append(checked)
                     output = checked.model_dump(mode="json")
                 else:
-                    field = {"resolve_identities": "identities", "get_quotes": "quotes", "get_fx": "fx"}[call.name]
+                    field = {"resolve_identities": "identities", "get_quotes": "quotes", "get_fx": "fx", "get_sponsor_holdings": "sponsor_holdings"}[call.name]
                     output = {field: evidence.model_dump(mode="json")[field], "issues": evidence.issues}
                 messages.extend(
                     turn.continuation
@@ -753,9 +758,11 @@ justified min_weight/max_weight range and qualitative reason. Weights are total
 post-contribution company exposure across accounts for stocks, or this fund's
 post-contribution weight for ETFs. Only new cash may fund it. Passing limits is not
 optimal sizing. Missing context or checks requires conditional direction, never a
-cap waiver. Cite SEC and issuer document IDs for a preferred stock. ETF overlap stays
-unknown; direct_only can permit sizing, include_known_indirect cannot be silently
-changed. Account type never establishes tax effects or contribution room. Explain
+cap waiver. Cite SEC and issuer document IDs for a preferred stock. Dated ETF sponsor holdings and
+look-through are incorporated where available; direct_only evaluates direct exposure while
+noting indirect overlap; include_known_indirect counts known indirect exposure toward the
+cap and cannot be silently changed. Partial coverage qualifies conclusions but does not
+block sizing when within limits. Account type never establishes tax effects or contribution room. Explain
 uncertainty, downside and evidence that would change the view. Orders remain with
 the user. No invented probabilities, confirmed transactions or numeric prose.
 """
@@ -783,7 +790,7 @@ Existing above-cap holdings need forward reduction paths; they are not exception
 Use only supplied baseline weights for target-relative discussion. Without a baseline,
 review exposure and evidence-based actions without inventing a mix. Compare all actual
 holdings/cash with the shared instrument-specific cases and keep uncovered outcomes,
-ETF indirect overlap, costs and tax effects explicitly unknown. Prior thesis prose
+unverified indirect overlap, costs and tax effects explicitly qualified or unknown. Prior thesis prose
 must not invent prior prices, performance or history. Return the shared recommendation
 with available evidence IDs, downside, assumptions and what would change the view.
 """
