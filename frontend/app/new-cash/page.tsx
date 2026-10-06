@@ -1,17 +1,22 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { get, post, type Analysis, type DecisionAction, type NewCashInput, type PortfolioSettings, type SavedDecision, type Snapshot } from "../../lib/contracts";
+import { get, post, put, type Analysis, type DecisionAction, type NewCashInput, type PortfolioSettings, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import Rail from "../../components/desk/Rail";
 import Composer from "../../components/desk/Composer";
 import Panel, { evidenceFor, ImportCsv } from "../../components/desk/Panel";
 import { Answer, Echo, Failure, Historical, Waiting, type Tab } from "../../components/desk/Memo";
-import { accountName, clock, money, pct, shortDate } from "../../components/desk/format";
+import { clock, fullDate, newCashLabel, pct, shortDate } from "../../components/desk/format";
 
 type Sent = { question: string; newCash: NewCashInput };
-const EMPTY_CASH: NewCashInput = { amount: null, cash_position_id: null, confirmed: false, risk_context: null };
+const EMPTY_CASH: NewCashInput = { amount: null, cash_position_id: null, account_id: null, currency: null, confirmed: false, risk_context: null };
 const DURATIONS_KEY = "desk.newCashDurations";
 const TITLE = "New cash · Analyst";
+
+/** Only rules the user actually set; an all-unset rule set is sent and saved as none. */
+function storedSettings(settings: PortfolioSettings): PortfolioSettings | null {
+  return Object.values(settings).some(value => value !== undefined && value !== null) ? settings : null;
+}
 
 function pastDurations(): number[] {
   try { return JSON.parse(localStorage.getItem(DURATIONS_KEY) || "[]").filter((n: unknown) => typeof n === "number").slice(-3); } catch { return []; }
@@ -19,9 +24,12 @@ function pastDurations(): number[] {
 
 export default function NewCashPage() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [setupAsOf, setSetupAsOf] = useState("");
-  const [setupCurrency, setSetupCurrency] = useState("CAD");
+  const [averageCosts, setAverageCosts] = useState<Record<string, string>>({});
+  const [unresolved, setUnresolved] = useState<UnresolvedHolding[]>([]);
+  const [restoring, setRestoring] = useState(true);
   const [settings, setSettings] = useState<PortfolioSettings>({});
+  // The holdings and rules last read from or written to the saved portfolio; anything else is a user edit to save.
+  const persisted = useRef("");
   const [workflow, setWorkflow] = useState<"new-cash" | null>(null);
   const [question, setQuestion] = useState("");
   const [newCash, setNewCash] = useState<NewCashInput>(EMPTY_CASH);
@@ -42,12 +50,33 @@ export default function NewCashPage() {
   const [notice, setNotice] = useState("");
   const runId = useRef(0);
 
-  useEffect(() => { get<SavedDecision[]>("/api/decisions").then(setDecisions).catch(() => setNotice("Saved decisions couldn't be loaded.")); setPast(pastDurations()); }, []);
+  useEffect(() => {
+    get<SavedPortfolio | null>("/api/portfolio").then(saved => { if (saved) adopt(saved); })
+      .catch(() => setNotice("Your saved portfolio couldn't be loaded.")).finally(() => setRestoring(false));
+    get<SavedDecision[]>("/api/decisions").then(setDecisions).catch(() => setNotice("Saved decisions couldn't be loaded.")); setPast(pastDurations());
+  }, []);
+  useEffect(() => {
+    const current = JSON.stringify({ snapshot, settings });
+    if (!snapshot || current === persisted.current) return;
+    // Rules are typed a character at a time; save once typing pauses.
+    const timer = setTimeout(() => {
+      persisted.current = current;
+      put<SavedPortfolio>("/api/portfolio", { snapshot, average_costs: averageCosts, settings: storedSettings(settings), unresolved })
+        .catch(error => setNotice(error instanceof Error ? `Your change wasn't saved: ${error.message}` : "Your change wasn't saved."));
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [snapshot, settings, averageCosts, unresolved]);
   useEffect(() => { if (!run) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [run]);
   useEffect(() => { const reset = () => { if (!document.hidden) document.title = TITLE; }; document.addEventListener("visibilitychange", reset); return () => document.removeEventListener("visibilitychange", reset); }, []);
-  // A changed snapshot invalidates the destination and the "this is new money" confirmation, as in the classic view.
-  useEffect(() => { setNewCash(current => ({ ...current, confirmed: false,
-    cash_position_id: snapshot?.positions.some(row => row.kind === "cash" && row.id === current.cash_position_id) ? current.cash_position_id : null })); }, [snapshot]);
+  // A changed portfolio invalidates the destination and the "this is new money" confirmation, as in the classic view.
+  useEffect(() => { setNewCash(current => ({ ...current, confirmed: false, currency: current.currency || snapshot?.reporting_currency || null,
+    account_id: snapshot?.accounts.some(account => account.id === current.account_id) ? current.account_id : snapshot?.accounts.length === 1 ? snapshot.accounts[0].id : null })); }, [snapshot]);
+
+  function adopt(saved: SavedPortfolio) {
+    const restored = saved.settings || {};
+    persisted.current = JSON.stringify({ snapshot: saved.snapshot, settings: restored });
+    setSnapshot(saved.snapshot); setAverageCosts(saved.average_costs); setUnresolved(saved.unresolved); setSettings(restored);
+  }
 
   const result = answer?.analysis ?? null;
   const evidence = evidenceFor(reopened ? null : result, reopened);
@@ -61,7 +90,7 @@ export default function NewCashPage() {
     setRun({ ...sent, id, startedAt }); setNow(startedAt); setFailure(null); setSaved(null); setReopened(null); setCollapsed(true); setNotice("");
     try {
       const analysis = await post<Analysis>("/api/analyze", { question: sent.question, portfolio: snapshot, new_cash: sent.newCash,
-        settings: Object.values(settings).some(value => value !== undefined && value !== null) ? settings : undefined });
+        settings: storedSettings(settings) ?? undefined });
       if (runId.current !== id) return;
       if (analysis.status !== "completed") throw new Error("The analysis was not completed.");
       setAnswer({ ...sent, analysis }); setTab("evidence"); setFocus(null);
@@ -98,14 +127,13 @@ export default function NewCashPage() {
     setWorkflow(null); setQuestion(""); setCollapsed(false); setTab("holdings"); setRailOpen(false);
   }
 
-  const cashRow = snapshot?.positions.find(row => row.id === (run ?? answer ?? failure)?.newCash.cash_position_id);
   const sentCash = (run ?? answer ?? failure)?.newCash;
-  const ctxLabel = reopened ? `Decision · ${shortDate(reopened.saved_at)}` : sentCash?.amount && cashRow
-    ? `New cash · ${money(sentCash.amount, cashRow.currency)} → ${accountName(snapshot, cashRow.account_id)}` : workflow ? "New cash" : "New analysis";
+  const sentLabel = sentCash && newCashLabel(sentCash, snapshot);
+  const ctxLabel = reopened ? `Decision · ${shortDate(reopened.saved_at)}` : sentLabel ? `New cash · ${sentLabel}` : workflow ? "New cash" : "New analysis";
   const holdingsCount = snapshot?.positions.filter(row => row.kind !== "cash").length ?? 0;
   const hasFund = snapshot?.positions.some(row => row.kind === "etf" && row.etf_role === "diversified");
   const scope = snapshot ? [
-    `${holdingsCount} holding${holdingsCount === 1 ? "" : "s"} and ${snapshot.positions.length - holdingsCount} cash balance${snapshot.positions.length - holdingsCount === 1 ? "" : "s"} in ${snapshot.accounts.length} account${snapshot.accounts.length === 1 ? "" : "s"}, snapshot ${shortDate(snapshot.as_of)}`,
+    `${holdingsCount} holding${holdingsCount === 1 ? "" : "s"}${snapshot.positions.length > holdingsCount ? ` and ${snapshot.positions.length - holdingsCount} cash balance${snapshot.positions.length - holdingsCount === 1 ? "" : "s"}` : ""} in ${snapshot.accounts.length} account${snapshot.accounts.length === 1 ? "" : "s"}, your portfolio as of ${fullDate(snapshot.as_of)}, plus the new cash`,
     settings.single_company_cap || settings.active_budget ? `Your rules: ${settings.single_company_cap ? `${pct(settings.single_company_cap)} per company` : "no company cap"}, ${settings.active_budget ? `${pct(settings.active_budget)} in active picks` : "no active budget"}` : "No rules set, so no limits are checked",
     "A bounded screen of what you could add to, then filings for candidates that could change the answer",
     `Against ${hasFund ? "a diversified fund, " : ""}keeping cash and doing nothing`,
@@ -119,15 +147,11 @@ export default function NewCashPage() {
   else if (answer) center = <Answer key={answer.analysis.portfolio.reviewed_at} result={answer.analysis} sent={answer} snapshot={snapshot} cite={cite} saved={saved} onTab={openTab}
     onConfirm={(action, notes) => saved ? confirm(saved, action, notes) : Promise.resolve()}
     onRerun={risk => { const next = { ...answer.newCash, risk_context: risk }; setNewCash(next); void analyze({ question: answer.question, newCash: next }); }} />;
+  else if (restoring) center = <p className="cap" role="status">Loading your saved portfolio…</p>;
   else if (!snapshot) center = <div className="hero">
     <h1>Start with what you own.</h1>
-    <p className="body" style={{ maxWidth: 520 }}>Import your portfolio CSV. Values, weights and rules are checked by the analysis; nothing is invented here.</p>
-    <div className="setup">
-      <label className="field"><span className="cap">Snapshot date</span><input className="in" type="date" aria-label="As-of date" value={setupAsOf} onChange={event => setSetupAsOf(event.target.value)} /></label>
-      <label className="field"><span className="cap">Reporting currency</span><input className="in" aria-label="Reporting currency" value={setupCurrency} maxLength={3} onChange={event => setSetupCurrency(event.target.value.toUpperCase())} /></label>
-    </div>
-    <ImportCsv snapshot={null} setSnapshot={setSnapshot} onError={setNotice} label="Choose a portfolio CSV" asOf={setupAsOf} currency={setupCurrency} />
-    <p className="cap"><a href="/api/portfolio/template" download>Download the CSV template</a></p>
+    <p className="body" style={{ maxWidth: 520 }}>Import your holdings once. They&apos;re saved on this computer and loaded every time. Prices, values and weights come from the analysis, not from your cost.</p>
+    <ImportCsv snapshot={null} onImported={adopt} onError={setNotice} label="Choose a holdings CSV" />
   </div>;
   else center = <div className="hero">
     <h1>{workflow ? "Where should new money go?" : "What should we look at?"}</h1>
@@ -141,7 +165,7 @@ export default function NewCashPage() {
 
   return <div className={`desk${panelOpen ? " panel-open" : ""}${railOpen ? " rail-open" : ""}`}>
     <a className="skip" href="#details">Skip to details</a>
-    <Rail snapshot={snapshot} settings={settings} result={result} decisions={decisions} currentId={reopened?.id ?? saved?.id ?? null} running={!!run}
+    <Rail snapshot={snapshot} unresolved={unresolved} settings={settings} result={result} decisions={decisions} currentId={reopened?.id ?? saved?.id ?? null} running={!!run}
       onNew={startOver} onHoldings={() => { openTab("holdings"); setRailOpen(false); }} onOpen={decision => { setReopened(decision); setTab("evidence"); setFocus(null); setRailOpen(false); }} />
     <main className="center">
       <header className="ctx">
@@ -151,7 +175,7 @@ export default function NewCashPage() {
           <span>{ctxLabel}</span>
         </div>
         <div className="ctx-right">
-          <span className="cap hide-sm">{reopened ? "Read-only" : snapshot ? `Snapshot ${shortDate(snapshot.as_of)}${result && !run ? ` · answered ${clock(result.portfolio.reviewed_at)}` : ""}` : ""}</span>
+          <span className="cap hide-sm">{reopened ? "Read-only" : snapshot ? `Portfolio as of ${fullDate(snapshot.as_of)}${result && !run ? ` · answered ${clock(result.portfolio.reviewed_at)}` : ""}` : ""}</span>
           {result && !run && !reopened && !failure && (saved ? <span className="cap" style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--sage)" strokeWidth="2" aria-hidden="true"><path d="m5 12 5 5 9-10" /></svg>Saved {clock(saved.saved_at)}</span>
             : <button type="button" className="btn primary small" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save decision"}</button>)}
@@ -164,11 +188,11 @@ export default function NewCashPage() {
         {center}
         <p className="sr-only" aria-live="polite">{result && !run ? "Answer ready." : ""}</p>
       </div></div>
-      {!reopened && <Composer snapshot={snapshot} workflow={workflow} onWorkflow={setWorkflow} question={question} onQuestion={setQuestion}
+      {!reopened && <Composer snapshot={snapshot} unresolved={unresolved.length} workflow={workflow} onWorkflow={setWorkflow} question={question} onQuestion={setQuestion}
         newCash={newCash} onNewCash={setNewCash} running={!!run} collapsed={collapsed && !!(answer || failure || run)} onExpand={() => setCollapsed(false)}
         onSubmit={() => void analyze({ question, newCash })} />}
     </main>
-    <Panel tab={tab} onTab={openTab} onClose={() => setPanelOpen(false)} focus={focus} snapshot={snapshot} setSnapshot={setSnapshot}
+    <Panel tab={tab} onTab={openTab} onClose={() => setPanelOpen(false)} focus={focus} snapshot={snapshot} setSnapshot={setSnapshot} averageCosts={averageCosts} unresolved={unresolved} onImported={adopt}
       settings={settings} setSettings={setSettings} result={reopened ? null : result} decision={reopened} running={!!run} onError={setNotice} />
     <div className="scrim" onClick={() => { setPanelOpen(false); setRailOpen(false); }} aria-hidden="true" />
   </div>;

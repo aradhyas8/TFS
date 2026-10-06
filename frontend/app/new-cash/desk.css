@@ -121,7 +121,8 @@ body:has(.desk) { margin: 0; background: #131211; }
 .desk .starters { display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
 .desk .starter { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--rule); text-align: left; width: 100%; color: var(--text); }
 .desk .starter:hover .m { color: var(--text-2); }
-.desk .setup { display: grid; grid-template-columns: 180px 140px; gap: 16px; }
+.desk .identify { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; border-top: 1px solid var(--rule); }
+.desk .setup { display: grid; grid-template-columns: minmax(0, 180px) minmax(0, 140px); gap: 16px; }
 .desk .drop { display: flex; align-items: center; justify-content: center; min-height: 96px; border: 1px dashed var(--rule-strong); border-radius: 8px; color: var(--text-2); cursor: pointer; text-align: center; padding: 16px; }
 .desk .drop:focus-within { outline: 2px solid var(--brass); outline-offset: 2px; }
 .desk .drop input { position: absolute; opacity: 0; width: 1px; height: 1px; }
@@ -136,7 +137,7 @@ body:has(.desk) { margin: 0; background: #131211; }
 .desk .box-line input::placeholder { color: var(--muted); }
 .desk .prefix { color: var(--brass); white-space: nowrap; }
 .desk .nc-form { padding: 16px 16px 4px; display: flex; flex-direction: column; gap: 14px; }
-.desk .nc-grid { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 16px; }
+.desk .nc-grid { display: grid; grid-template-columns: 160px 96px minmax(0, 1fr); gap: 16px; }
 .desk .slash { margin-bottom: 8px; background: var(--raised); border: 1px solid var(--rule-strong); border-radius: 8px; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
 .desk .opt { display: grid; grid-template-columns: 150px minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 10px 12px; border-radius: 6px; text-align: left; width: 100%; color: var(--text); }
 .desk .opt[aria-selected="true"] { background: var(--raised-2); }

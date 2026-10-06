@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { post, type Analysis, type GuardrailReview, type PortfolioSettings, type SavedDecision, type Snapshot } from "../../lib/contracts";
+import { post, type Analysis, type GuardrailReview, type PortfolioSettings, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import type { Tab } from "./Memo";
-import { money, pct, positionName, shortDate } from "./format";
+import { fullDate, money, pct, positionName, shortDate } from "./format";
 
 export type Evidence = { id: string; title: string; source: string; date: string | null; url: string | null; excerpt: string | null; facts: string[]; available: boolean };
 
@@ -24,7 +24,8 @@ export function evidenceFor(result: Analysis | null, decision: SavedDecision | n
 
 type Props = {
   tab: Tab; onTab: (tab: Tab) => void; onClose: () => void; focus: string | null;
-  snapshot: Snapshot | null; setSnapshot: Dispatch<SetStateAction<Snapshot | null>>; settings: PortfolioSettings; setSettings: Dispatch<SetStateAction<PortfolioSettings>>;
+  snapshot: Snapshot | null; setSnapshot: Dispatch<SetStateAction<Snapshot | null>>; averageCosts: Record<string, string>; unresolved: UnresolvedHolding[];
+  onImported: (saved: SavedPortfolio) => void; settings: PortfolioSettings; setSettings: Dispatch<SetStateAction<PortfolioSettings>>;
   result: Analysis | null; decision: SavedDecision | null; running: boolean; onError: (message: string) => void;
 };
 
@@ -140,7 +141,7 @@ function GuardrailsTab({ result, snapshot }: { result: Analysis; snapshot: Snaps
   const review: GuardrailReview | null = top?.guardrails ?? current;
   const currency = result.portfolio.reporting_currency;
   const added = top?.changes.new_cash[0];
-  const addedCurrency = snapshot?.positions.find(row => row.id === added?.cash_position_id)?.currency || currency;
+  const addedCurrency = result.portfolio.positions.find(row => row.supplied.id === added?.cash_position_id)?.supplied.currency || currency;
   if (!review) return <p className="cap">You haven&apos;t set any rules, so nothing was checked. Set a company cap or active budget under Holdings.</p>;
   return <>
     <div><div>{top && added ? `If ${money(added.amount, addedCurrency)} arrives and is invested at the top of the range` : "Your portfolio today (no amount was tested)"}</div>
@@ -173,19 +174,55 @@ function RulesSummary({ settings }: { settings: PortfolioSettings }) {
     <span className="cap">They&apos;re checked against the portfolio after the new cash when the answer arrives. Edit them under Holdings.</span></div>;
 }
 
+const EXCHANGES = [["XNAS", "Nasdaq"], ["XNYS", "NYSE"], ["XASE", "NYSE American"], ["XTSE", "TSX"], ["XTSX", "TSX Venture"], ["NEOE", "Cboe Canada"], ["XCNQ", "CSE"]];
+
+/** Asks only for what is missing: the exchange, the security type, or both. */
+function Identify({ row, snapshot, disabled, onImported, onError }: { row: UnresolvedHolding; snapshot: Snapshot; disabled: boolean;
+  onImported: (saved: SavedPortfolio) => void; onError: (message: string) => void }) {
+  const [listing, setListing] = useState("");
+  const [kind, setKind] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ready = (row.listing || listing) && (row.kind || kind);
+  async function save() {
+    setBusy(true); onError("");
+    try { onImported(await post<SavedPortfolio>("/api/portfolio/identify", { account_id: row.account_id, ticker: row.ticker, listing: listing || null, kind: kind || null })); }
+    catch (failure) { onError(failure instanceof Error ? failure.message : "The holding couldn't be identified."); }
+    finally { setBusy(false); }
+  }
+  return <div className="identify">
+    <span className="n">{row.ticker} <span className="m">· {row.shares} sh · {snapshot.accounts.find(account => account.id === row.account_id)?.name}</span></span>
+    <div className="rules">
+      {!row.listing && <label className="field"><span className="cap">Exchange</span>
+        <select className="in" aria-label={`Exchange for ${row.ticker}`} value={listing} disabled={disabled || busy} onChange={event => setListing(event.target.value)}>
+          <option value="">Choose</option>{EXCHANGES.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></label>}
+      {!row.kind && <label className="field"><span className="cap">Type</span>
+        <select className="in" aria-label={`Type for ${row.ticker}`} value={kind} disabled={disabled || busy} onChange={event => setKind(event.target.value)}>
+          <option value="">Choose</option><option value="stock">Stock</option><option value="etf">ETF</option></select></label>}
+    </div>
+    <span><button type="button" className="btn secondary small" disabled={!ready || disabled || busy} onClick={save}>{busy ? "Saving…" : `Save ${row.ticker}`}</button></span>
+  </div>;
+}
+
 /** Percent in the UI, fraction for the backend. Local text keeps partial input like "12." editable. */
 function PercentInput({ label, value, onChange }: { label: string; value: string | null | undefined; onChange: (fraction: string | null) => void }) {
   const [text, setText] = useState(value ? String(Number((Number(value) * 100).toFixed(4))) : "");
+  // A restored rule replaces the field unless it already says the same thing.
+  useEffect(() => { setText(current => (current === "" ? null : Number(current) / 100) === (value ? Number(value) : null) ? current : value ? String(Number((Number(value) * 100).toFixed(4))) : ""); }, [value]);
   return <label className="field"><span className="cap">{label}</span><input className="in n" inputMode="decimal" value={text}
     onChange={event => { const next = event.target.value.replace(/[^0-9.]/g, ""); setText(next); onChange(next === "" || Number.isNaN(Number(next)) ? null : String(Number(next) / 100)); }} /></label>;
 }
 
-function HoldingsTab({ snapshot, setSnapshot, settings, setSettings, result, decision, running, onError }: Props) {
+function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, result, decision, running, onError }: Props) {
   if (!snapshot) return <p className="cap">Import a portfolio to see holdings.</p>;
   const review = result?.portfolio;
   const editable = !running;
   return <>
     {decision && <p className="cap">Today&apos;s portfolio. Historical weights weren&apos;t saved with this decision.</p>}
+    {unresolved.length > 0 && <div className="pgroup needs-id" aria-label="Holdings to identify" role="group">
+      <span className="lbl amber">Needs you · {unresolved.length} holding{unresolved.length === 1 ? "" : "s"} to identify</span>
+      <span className="cap">These couldn&apos;t be matched to a listing or type, so they aren&apos;t in the analysis yet. Nothing is assumed.</span>
+      {unresolved.map(row => <Identify key={`${row.account_id}:${row.ticker}`} row={row} snapshot={snapshot} disabled={!editable} onImported={onImported} onError={onError} />)}
+    </div>}
     {snapshot.accounts.map(account => {
       const rows = snapshot.positions.filter(row => row.account_id === account.id);
       return <div className="pgroup" key={account.id}>
@@ -200,12 +237,13 @@ function HoldingsTab({ snapshot, setSnapshot, settings, setSettings, result, dec
               <select className="in" style={{ width: 180, minHeight: 32 }} disabled={!editable} aria-label={`Fund type for ${row.ticker || row.id}`} value={row.etf_role ?? ""}
                 onChange={event => setSnapshot(current => current && ({ ...current, positions: current.positions.map(p => p.id === row.id ? { ...p, etf_role: (event.target.value || null) as typeof p.etf_role } : p) }))}>
                 <option value="">Unknown</option><option value="diversified">Diversified</option><option value="sector_theme">Sector or theme</option></select></label>}
+            {averageCosts[row.id] && <span className="cap">Average cost {money(averageCosts[row.id], row.currency)} · yours, not used for value</span>}
             {valued?.issues.map(issue => <span className="cap amber" key={issue}>{issue}</span>)}
           </div>;
         })}</div>
       </div>;
     })}
-    <p className="cap pnote">{review ? `Valued ${shortDate(review.reviewed_at)} from snapshot ${shortDate(review.as_of)}.` : `Snapshot ${shortDate(snapshot.as_of)}. Values come back with the analysis.`}
+    <p className="cap pnote">{review ? `Valued ${shortDate(review.reviewed_at)} from your portfolio as of ${fullDate(review.as_of)}.` : `Portfolio as of ${fullDate(snapshot.as_of)}. Prices, values and weights come back with the analysis.`}
       {snapshot.fx.map(fx => ` ${fx.from_currency}/${fx.to_currency} ${fx.rate}.`)}</p>
 
     <fieldset className="pgroup pnote" disabled={!editable} style={{ border: 0, padding: "12px 0 0" }}>
@@ -222,27 +260,35 @@ function HoldingsTab({ snapshot, setSnapshot, settings, setSettings, result, dec
           onChange={event => setSettings(s => ({ ...s, cash_is_deliberate_tilt: event.target.value === "" ? null : event.target.value === "true" }))}>
           <option value="">Not set</option><option value="true">Yes</option><option value="false">No</option></select></label>
     </fieldset>
-    <ImportCsv snapshot={snapshot} setSnapshot={setSnapshot} onError={onError} disabled={!editable} label="Replace with a new CSV" />
+    <ImportCsv snapshot={snapshot} onImported={onImported} onError={onError} disabled={!editable} label="Replace with a new CSV" />
     <p className="cap">Need to edit individual positions or set a target mix? Use the <a href="/">classic view</a>.</p>
   </>;
 }
 
-export function ImportCsv({ snapshot, setSnapshot, onError, disabled, label, asOf, currency }: {
-  snapshot: Snapshot | null; setSnapshot: Dispatch<SetStateAction<Snapshot | null>>; onError: (message: string) => void; disabled?: boolean; label: string;
-  asOf?: string; currency?: string;
+/** Imports and saves the current portfolio. The holdings date is the user's; it is shown wherever the portfolio is. */
+export function ImportCsv({ snapshot, onImported, onError, disabled, label }: {
+  snapshot: Snapshot | null; onImported: (saved: SavedPortfolio) => void; onError: (message: string) => void; disabled?: boolean; label: string;
 }) {
+  const [asOf, setAsOf] = useState(() => new Date().toLocaleDateString("en-CA"));
+  const [currency, setCurrency] = useState(snapshot?.reporting_currency || "CAD");
+  const [busy, setBusy] = useState(false);
   async function load(file: File) {
     if (file.size > 1_000_000) { onError("CSV must be no larger than 1 MB."); return; }
-    onError("");
-    try {
-      setSnapshot(await post<Snapshot>("/api/portfolio/csv", { csv: await file.text(), as_of: asOf || snapshot?.as_of || undefined,
-        reporting_currency: currency || snapshot?.reporting_currency || "CAD" }));
-    } catch (failure) { onError(failure instanceof Error ? failure.message : "CSV import failed."); }
+    onError(""); setBusy(true);
+    try { onImported(await post<SavedPortfolio>("/api/portfolio/import", { csv: await file.text(), as_of: asOf || undefined, reporting_currency: currency })); }
+    catch (failure) { onError(failure instanceof Error ? failure.message : "CSV import failed."); }
+    finally { setBusy(false); }
   }
-  return <label className="drop" style={{ position: "relative" }}>
-    <span>{label}</span>
-    <input type="file" accept=".csv,text/csv" aria-label="Load portfolio CSV" disabled={disabled}
-      onChange={event => { const file = event.target.files?.[0]; if (file) void load(file); event.target.value = ""; }} />
-  </label>;
+  return <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <div className="setup">
+      <label className="field"><span className="cap">Holdings as of</span><input className="in" type="date" aria-label="Holdings as of" value={asOf} disabled={disabled} onChange={event => setAsOf(event.target.value)} /></label>
+      <label className="field"><span className="cap">Reporting currency</span><input className="in" aria-label="Reporting currency" value={currency} maxLength={3} disabled={disabled} onChange={event => setCurrency(event.target.value.toUpperCase())} /></label>
+    </div>
+    <label className="drop" style={{ position: "relative" }}>
+      <span>{busy ? "Importing…" : label}</span>
+      <input type="file" accept=".csv,text/csv" aria-label="Load portfolio CSV" disabled={disabled || busy}
+        onChange={event => { const file = event.target.files?.[0]; if (file) void load(file); event.target.value = ""; }} />
+    </label>
+    <span className="cap">Columns: account, ticker, shares, and optionally average_cost and type (stock or etf). Use .TO, .V, .NE or .CN for Canadian listings. Cash rows are optional. <a href="/api/portfolio/holdings-template" download>Template</a> · the <a href="/api/portfolio/template" download>full template</a> also works.</span>
+  </div>;
 }
-

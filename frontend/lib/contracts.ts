@@ -110,7 +110,23 @@ export type StockResult = { position_id: string; as_of: string; reporting_curren
       dilution: string[]; payout: string[]; return_on_equity: string[] | null; fx_multipliers: string[]; discount_rate: string;
       exit_multiple: string; exit_sensitivity: string[]; assumptions: string[]; uncertainty: string[] } }[];
   qualifications: string[]; calculation_basis: string };
-export type NewCashInput = { amount: string | null; cash_position_id: string | null; confirmed: boolean; risk_context: string | null };
+export type NewCashInput = { amount: string | null; cash_position_id: string | null; confirmed: boolean; risk_context: string | null;
+  account_id?: string | null; currency?: string | null };
+/** The backend binds new money to this temporary zero-balance cash row for one request; it is never saved. */
+export const NEW_CASH_DESTINATION = "new-cash-destination";
+/** An imported holding whose listing or type couldn't be resolved; only what is known is filled in. */
+export type UnresolvedHolding = { account_id: string; ticker: string; shares: string; average_cost: string | null;
+  currency: string | null; listing: string | null; kind: "stock" | "etf" | null };
+export type SavedPortfolio = { snapshot: Snapshot; average_costs: Record<string, string>; settings: PortfolioSettings | null;
+  unresolved: UnresolvedHolding[]; saved_at: string | null };
+
+export async function put<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "The request could not be completed.");
+  return data as T;
+}
 export type AllocationAmount = { minimum: string; maximum: string; currency: string; position_id: string };
 export type AllocationResult = { context: NewCashInput;
   scan: { source_captured_at: string | null; scanned_at: string; as_of: string; source: string; issues: string[];

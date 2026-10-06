@@ -324,9 +324,16 @@ class StockInput(Contract):
     position_id: Identifier
 
 
+NEW_CASH_DESTINATION = "new-cash-destination"
+
+
 class NewCashInput(Contract):
     amount: Quantity | None = None
     cash_position_id: Identifier | None = None
+    # Destination for money that is not yet in the portfolio. The request binds a
+    # zero-balance cash row for it, so no existing cash holding is required.
+    account_id: Identifier | None = None
+    currency: Currency | None = None
     confirmed: bool = False
     risk_context: Text | None = None
 
@@ -492,6 +499,16 @@ class AnalysisRequest(Contract):
         if self.new_cash is not None:
             if self.stock is not None or self.comparison is not None or self.proposed_changes is not None:
                 raise ValueError("New-cash decisions bind their own comparison and previews in the shared pipeline.")
+            if self.new_cash.account_id is not None and self.new_cash.cash_position_id is None:
+                if all(account.id != self.new_cash.account_id for account in self.portfolio.accounts):
+                    raise ValueError("Choose a destination account from the portfolio.")
+                if any(row.id == NEW_CASH_DESTINATION for row in self.portfolio.positions):
+                    raise ValueError("Reserved new-cash destination identifier.")
+                currency = self.new_cash.currency or self.portfolio.reporting_currency
+                self.portfolio.positions.append(Position(id=NEW_CASH_DESTINATION, account_id=self.new_cash.account_id,
+                                                         kind="cash", currency=currency, cash=Decimal(0)))
+                self.new_cash.cash_position_id = NEW_CASH_DESTINATION
+                self.new_cash.currency = currency
             if self.new_cash.cash_position_id is not None and not any(row.id == self.new_cash.cash_position_id and row.kind == "cash" for row in self.portfolio.positions):
                 raise ValueError("Confirm an existing account cash balance for the new contribution.")
             if any(row.id == "__new_cash__" for row in self.portfolio.positions):
@@ -1024,3 +1041,43 @@ CandidateCasesInput.model_rebuild()
 AnalysisRequest.model_rebuild()
 SaveDecisionRequest.model_rebuild()
 
+
+
+class UnresolvedHolding(Contract):
+    """An imported holding whose listing or security type could not be resolved. Only what is known is kept."""
+    account_id: Identifier
+    ticker: Identifier  # as entered, including any exchange suffix
+    shares: Quantity
+    average_cost: Quantity | None = None
+    currency: Currency | None = None
+    listing: Identifier | None = None
+    kind: Literal["stock", "etf"] | None = None
+
+
+class SavedPortfolio(Contract):
+    """The user's current portfolio and rules. Average cost is kept for the user only and never sent to analysis."""
+    snapshot: Snapshot
+    average_costs: dict[Identifier, Quantity] = Field(default_factory=dict)
+    settings: PortfolioSettings | None = None
+    unresolved: list[UnresolvedHolding] = Field(default_factory=list, max_length=2000)
+    saved_at: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def check_costs(self) -> Self:
+        securities = {row.id for row in self.snapshot.positions if row.kind != "cash"}
+        if any(key not in securities for key in self.average_costs):
+            raise ValueError("Average cost must reference a held security.")
+        if any(row.id == NEW_CASH_DESTINATION for row in self.snapshot.positions):
+            raise ValueError("Reserved new-cash destination identifier.")
+        accounts = {account.id for account in self.snapshot.accounts}
+        if any(row.account_id not in accounts for row in self.unresolved):
+            raise ValueError("Every unresolved holding must reference a supplied account.")
+        return self
+
+
+class IdentifyHolding(Contract):
+    """The user's answer for one unresolved holding: only the missing listing and/or type."""
+    account_id: Identifier
+    ticker: Identifier
+    listing: Identifier | None = None
+    kind: Literal["stock", "etf"] | None = None

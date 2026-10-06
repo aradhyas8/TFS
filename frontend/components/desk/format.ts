@@ -1,5 +1,5 @@
 // Display formatting only. Every value comes from the backend or the user's snapshot.
-import { actionLabel, type Analysis, type Position, type Snapshot } from "../../lib/contracts";
+import { actionLabel, type Analysis, type NewCashInput, type Position, type Snapshot } from "../../lib/contracts";
 
 const SYMBOL: Record<string, string> = { CAD: "C$", USD: "US$", EUR: "€", GBP: "£" };
 
@@ -27,6 +27,19 @@ export function shortDate(value: string | null | undefined): string {
   if (Number.isNaN(date.getTime())) return value;
   const sameYear = date.getFullYear() === new Date().getFullYear();
   return date.toLocaleDateString("en-CA", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
+}
+
+/** Always with the year: the loaded portfolio date must be exact. */
+export function fullDate(value: string | null | undefined): string {
+  if (!value) return "Unknown date";
+  const date = new Date(value.length === 10 ? `${value}T12:00:00` : value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
+}
+
+/** "C$2,000 → TFSA" from the user's new-cash input. */
+export function newCashLabel(newCash: NewCashInput, snapshot: Snapshot | null): string | null {
+  if (!newCash.amount || !newCash.account_id) return null;
+  return `${money(newCash.amount, newCash.currency || snapshot?.reporting_currency || "")} → ${accountName(snapshot, newCash.account_id)}`;
 }
 
 export const clock = (value: string) => new Date(value).toLocaleTimeString("en-CA", { hour: "2-digit", minute: "2-digit" });

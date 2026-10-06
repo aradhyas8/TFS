@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 import type { NewCashInput, Snapshot } from "../../lib/contracts";
-import { accountName, money, shortDate } from "./format";
+import { accountName, fullDate, money, newCashLabel } from "./format";
 
 const WORKFLOWS = [
   { cmd: "/new-cash", text: "Decide where new money should go", live: true },
@@ -11,27 +11,29 @@ const WORKFLOWS = [
 ];
 
 type Props = {
-  snapshot: Snapshot | null; workflow: "new-cash" | null; onWorkflow: (workflow: "new-cash" | null) => void;
+  snapshot: Snapshot | null; unresolved: number; workflow: "new-cash" | null; onWorkflow: (workflow: "new-cash" | null) => void;
   question: string; onQuestion: (value: string) => void; newCash: NewCashInput; onNewCash: (value: NewCashInput) => void;
   running: boolean; collapsed: boolean; onExpand: () => void; onSubmit: () => void;
 };
 
-export function missingInput(snapshot: Snapshot | null, newCash: NewCashInput, question: string): string | null {
+export function missingInput(snapshot: Snapshot | null, newCash: NewCashInput, question: string, unresolved = 0): string | null {
   if (!snapshot) return "Import a portfolio first";
+  if (unresolved) return `Identify ${unresolved} holding${unresolved === 1 ? "" : "s"} first`;
   if (!newCash.amount || !(Number(newCash.amount) > 0)) return "Enter an amount";
-  if (!newCash.cash_position_id) return "Choose where it arrives";
+  if (!newCash.account_id) return "Choose an account";
   if (!newCash.confirmed) return "Confirm the box above";
   if (!question.trim()) return "Ask a question";
   return null;
 }
 
-export default function Composer({ snapshot, workflow, onWorkflow, question, onQuestion, newCash, onNewCash, running, collapsed, onExpand, onSubmit }: Props) {
+export default function Composer({ snapshot, unresolved, workflow, onWorkflow, question, onQuestion, newCash, onNewCash, running, collapsed, onExpand, onSubmit }: Props) {
   const [active, setActive] = useState(0);
   const slashOpen = !workflow && question.startsWith("/");
   const matches = slashOpen ? WORKFLOWS.filter(item => item.cmd.startsWith(question.trim().split(" ")[0] || "/")) : [];
-  const cashRows = snapshot?.positions.filter(row => row.kind === "cash") || [];
-  const destination = cashRows.find(row => row.id === newCash.cash_position_id);
-  const blocked = workflow === "new-cash" ? missingInput(snapshot, newCash, question) : null;
+  const accounts = snapshot?.accounts || [];
+  const currencies = [...new Set([snapshot?.reporting_currency, "CAD", "USD", ...(snapshot?.positions.map(row => row.currency) || [])].filter((c): c is string => !!c))];
+  const label = newCashLabel(newCash, snapshot);
+  const blocked = workflow === "new-cash" ? missingInput(snapshot, newCash, question, unresolved) : null;
   const update = (patch: Partial<NewCashInput>) => onNewCash({ ...newCash, ...patch, confirmed: "confirmed" in patch ? !!patch.confirmed : false });
 
   function choose(index: number) {
@@ -72,23 +74,27 @@ export default function Composer({ snapshot, workflow, onWorkflow, question, onQ
             <label className="field"><span className="cap">Amount</span>
               <input className="in n" inputMode="decimal" placeholder={snapshot ? snapshot.reporting_currency : ""} value={newCash.amount || ""}
                 onChange={event => update({ amount: event.target.value.replace(/[^0-9.]/g, "") || null })} /></label>
-            <label className="field"><span className="cap">Arrives in</span>
-              <select className="in" value={newCash.cash_position_id || ""} onChange={event => update({ cash_position_id: event.target.value || null })}>
-                <option value="">Choose a cash balance</option>
-                {cashRows.map(row => <option key={row.id} value={row.id}>{accountName(snapshot, row.account_id)} · {row.currency} cash (now {money(row.cash ?? null, row.currency)})</option>)}
+            <label className="field"><span className="cap">Currency</span>
+              <select className="in" value={newCash.currency || ""} onChange={event => update({ currency: event.target.value })}>
+                {currencies.map(currency => <option key={currency} value={currency}>{currency}</option>)}
+              </select></label>
+            <label className="field"><span className="cap">Into account</span>
+              <select className="in" value={newCash.account_id || ""} onChange={event => update({ account_id: event.target.value || null })}>
+                <option value="">Choose an account</option>
+                {accounts.map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
               </select></label>
           </div>
           <label className="field"><span className="cap">Loss tolerance or withdrawal plans</span>
             <input className="in" maxLength={1000} placeholder="e.g. could hold through a 30% drop; no withdrawals for 5 years" value={newCash.risk_context || ""}
               onChange={event => onNewCash({ ...newCash, risk_context: event.target.value || null })} />
             <span className="cap">You can leave this out, but the analyst won't give an amount without it.</span></label>
-          <label className="check"><input type="checkbox" checked={newCash.confirmed} disabled={!newCash.amount || !destination}
+          <label className="check"><input type="checkbox" checked={newCash.confirmed} disabled={!label}
             onChange={event => update({ confirmed: event.target.checked })} />
-            <span>{newCash.amount && destination ? `This ${money(newCash.amount, destination.currency)} is new money, not already in the ${shortDate(snapshot?.as_of)} snapshot, and it will arrive in ${accountName(snapshot, destination.account_id)}.`
+            <span>{label && newCash.amount ? `This ${money(newCash.amount, newCash.currency || "")} is new money, not already in your portfolio as of ${fullDate(snapshot?.as_of)}, and it will arrive in ${accountName(snapshot, newCash.account_id || undefined)}.`
               : "Confirm this is new money and where it arrives."}</span></label>
         </fieldset>}
         {workflow === "new-cash" && collapsed && <div className="box-line" style={{ minHeight: 44 }}>
-          <span className="cap n" style={{ flex: 1 }}>{newCash.amount && destination ? `${money(newCash.amount, destination.currency)} into ${accountName(snapshot, destination.account_id)} · ${destination.currency} cash` : "New cash inputs"}{newCash.risk_context ? " · loss tolerance given" : " · no loss tolerance"}</span>
+          <span className="cap n" style={{ flex: 1 }}>{label || "New cash inputs"}{newCash.risk_context ? " · loss tolerance given" : " · no loss tolerance"}</span>
           <button type="button" className="link cap" onClick={onExpand}>Edit inputs</button>
         </div>}
         <div className="box-line">

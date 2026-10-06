@@ -9,10 +9,12 @@ from typing import Any
 from analyst.api import create_app
 from analyst.config import Settings
 from analyst.decisions import DecisionStore
+from analyst.portfolio import PortfolioStore
 from analyst.financial_data import FakeFinancialProvider
 from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import (
+    NEW_CASH_DESTINATION,
     AnalysisRequest,
     CompanyResearch,
     FinancialEvidence,
@@ -62,8 +64,13 @@ class BrowserTestModel:
             return scripted[-1]
         if request.get("new_cash"):
             called = {item["name"] for item in messages if item.get("type") == "function_call"}
-            for name, args in [("scan_opportunities", {}), ("calculate_comparison", comparison_judgments()),
-                               ("size_allocation", {"position_id": "fund", "min_weight": "0.55", "max_weight": "0.65",
+            rows = request["portfolio"]["positions"]
+            fund = next(row["id"] for row in rows if row.get("ticker") == "BROAD")
+            # Without an existing cash balance the fund is a larger share of the funded portfolio.
+            held_cash = any(row["kind"] == "cash" and row["id"] != NEW_CASH_DESTINATION for row in rows)
+            low, high = ("0.55", "0.65") if held_cash else ("0.6", "0.7")
+            for name, args in [("scan_opportunities", {}), ("calculate_comparison", comparison_judgments((fund, "cash", "keep"))),
+                               ("size_allocation", {"position_id": fund, "min_weight": low, "max_weight": high,
                                                     "reason": "Diversification and a retained reserve justify this exposure range."})]:
                 if name not in called:
                     return ModelTurn(calls=[ToolCall(name, name, json.dumps(args))])
@@ -169,6 +176,9 @@ class BrowserTestData(FakeDataProvider):
         for position in supplied.positions:
             if position.id == "fund" and position.mark and position.mark.source == "Fixture allocation":
                 financial.reference = allocation_evidence()
+            if position.ticker == "BROAD" and position.kind == "etf" and position.mark is None:
+                # A simple holdings import: the source fixture follows the application-made position ID.
+                financial.reference = FinancialEvidence.model_validate_json(allocation_evidence().model_dump_json().replace('"fund"', json.dumps(position.id)))
             if position.id == "p2" and position.mark and position.mark.source.startswith("Fixture "):
                 scenario = position.mark.source.removeprefix("Fixture ")
                 if scenario == "missing_research":
@@ -218,6 +228,9 @@ for _file in decision_store.directory.glob("*.json"):
     except OSError:
         pass
 
+portfolio_store = PortfolioStore(Path(__file__).parent / "data" / "e2e_portfolio")
+portfolio_store.path.unlink(missing_ok=True)
+
 app = create_app(
     model=BrowserTestModel(),
     data=BrowserTestData(),
@@ -225,5 +238,13 @@ app = create_app(
     research=stock_research,
     settings=Settings("sk-test-backend-only-never-browser", "test-model"),
     store=decision_store,
+    portfolio_store=portfolio_store,
 )
+
+
+@app.delete("/api/test/portfolio")
+def forget_portfolio() -> None:
+    """Test server only: each browser journey starts without a saved portfolio or a leftover source fixture."""
+    portfolio_store.path.unlink(missing_ok=True)
+    financial.reference = FinancialEvidence()
 

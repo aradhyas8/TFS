@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from openai import OpenAIError
+from pydantic import ValidationError
 
 from .allocation import DiscoveryProvider
 from .config import Settings
@@ -12,6 +13,7 @@ from .csv_input import COLUMNS, load_csv
 from .decisions import DecisionStore, extract_decision
 from .financial_data import FinancialProvider, PersonalFinancialProvider
 from .pipeline import InvalidReview, analyze
+from .portfolio import HOLDINGS_COLUMNS, PortfolioStore, identify, load_holdings
 from .providers import DataProvider, ModelProvider, OpenAIModel, SuppliedDataProvider
 from .research import ResearchProvider, ReviewedResearchProvider
 from .schemas import (
@@ -19,7 +21,10 @@ from .schemas import (
     AnalysisResult,
     ConfirmActionRequest,
     CSVRequest,
+    FinancialEvidence,
+    IdentifyHolding,
     SavedDecision,
+    SavedPortfolio,
     SaveDecisionRequest,
     Snapshot,
 )
@@ -34,10 +39,12 @@ def create_app(
     research: ResearchProvider | None = None,
     discovery: DiscoveryProvider | None = None,
     store: DecisionStore | None = None,
+    portfolio_store: PortfolioStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Personal Investment Analyst", version="0.1.0")
     source = data or SuppliedDataProvider()
     decisions = store or DecisionStore()
+    portfolios = portfolio_store or PortfolioStore()
 
     @app.exception_handler(RequestValidationError)
     async def invalid_input(_request: Request, error: RequestValidationError) -> JSONResponse:
@@ -73,6 +80,47 @@ def create_app(
                 422,
                 "Invalid portfolio CSV. Check the template columns, row types, dates, quantities and references.",
             ) from None
+
+    @app.get("/api/portfolio/holdings-template")
+    def holdings_template() -> Response:
+        return Response(",".join(HOLDINGS_COLUMNS) + "\r\nTFSA,XEQT.TO,120,31.50,,etf\r\nTFSA,AAPL,10,,,\r\n", media_type="text/csv",
+                        headers={"Content-Disposition": 'attachment; filename="holdings-template.csv"'})
+
+    @app.get("/api/portfolio", response_model=SavedPortfolio | None)
+    def current_portfolio() -> SavedPortfolio | None:
+        return portfolios.get()
+
+    @app.post("/api/portfolio/import", response_model=SavedPortfolio)
+    def import_portfolio(request: CSVRequest) -> SavedPortfolio:
+        try:
+            imported = load_holdings(request, reference_identities())
+        except (ValueError, csv.Error) as exc:
+            message = exc.errors()[0]["msg"].removeprefix("Value error, ") if isinstance(exc, ValidationError) else str(exc)
+            raise HTTPException(422, f"Invalid portfolio CSV: {message}") from None
+        # New holdings replace the old ones; the user's rules stay.
+        current = portfolios.get()
+        return portfolios.save(imported.model_copy(update={"settings": current.settings if current else None}))
+
+    @app.put("/api/portfolio", response_model=SavedPortfolio)
+    def update_portfolio(request: SavedPortfolio) -> SavedPortfolio:
+        return portfolios.save(request)
+
+    @app.post("/api/portfolio/identify", response_model=SavedPortfolio)
+    def identify_holding(request: IdentifyHolding) -> SavedPortfolio:
+        current = portfolios.get()
+        if current is None:
+            raise HTTPException(404, "No saved portfolio.")
+        try:
+            return portfolios.save(identify(current, request, reference_identities()))
+        except ValueError as exc:
+            message = exc.errors()[0]["msg"].removeprefix("Value error, ") if isinstance(exc, ValidationError) else str(exc)
+            raise HTTPException(422, message) from None
+
+    def reference_identities() -> FinancialEvidence | None:
+        try:
+            return getattr(financial or PersonalFinancialProvider.from_environment(), "reference", None)
+        except (ValueError, OSError):
+            return None
 
     @app.post("/api/analyze", response_model=AnalysisResult)
     async def analysis(request: AnalysisRequest) -> AnalysisResult:

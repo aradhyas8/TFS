@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { actionLabel, type Analysis, type DecisionAction, type NewCashInput, type SavedDecision, type Snapshot } from "../../lib/contracts";
-import { accountName, answerSentence, clock, doneLabel, durationLabel, money, pct, positionName, range, shortDate } from "./format";
+import { answerSentence, clock, doneLabel, durationLabel, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
 
 export type Tab = "evidence" | "scenarios" | "holdings" | "guardrails";
 type Cite = { numbers: Map<string, number>; onCite: (id: string) => void };
@@ -27,9 +27,8 @@ function Expandable({ title, count, children }: { title: string; count: string; 
 const Bullets = ({ items }: { items: string[] }) => <ul className="bullets">{items.map((item, index) => <li key={index}>{item}</li>)}</ul>;
 
 export function Echo({ question, newCash, snapshot }: { question: string; newCash: NewCashInput; snapshot: Snapshot | null }) {
-  const cash = snapshot?.positions.find(row => row.id === newCash.cash_position_id);
   return <div className="echo"><span className="q">{question}</span>
-    <span className="cap n">{newCash.amount && cash ? `${money(newCash.amount, cash.currency)} into ${accountName(snapshot, cash.account_id)} · ${cash.currency} cash` : "New cash"}
+    <span className="cap n">{newCashLabel(newCash, snapshot) || "New cash"}
       {newCash.confirmed ? " · confirmed new money" : " · not confirmed"}{newCash.risk_context ? " · loss tolerance given" : " · no loss tolerance given"}</span></div>;
 }
 

@@ -193,13 +193,33 @@ Under 768:
 - Reopened decisions: the rail keeps today's portfolio. Saved decisions don't store weights, so none are shown as historical; if they're stored later, label them "Historical weights · <date>".
 - Sample SYNTH stays above its cap; the Guardrails tab shows "Over, before this cash" with `/rebalance`.
 
+## Persistent portfolio context
+
+The user model:
+
+- **Portfolio** is what you own. It is imported once, saved, and loaded every time.
+- **Chat** is what you want to know.
+- **A slash command** starts an explicit, structured workflow.
+- **New cash** is temporary input to one decision. It is never treated as an existing cash holding.
+
+The saved portfolio is the normal application context:
+
+- **Storage.** The backend keeps one current portfolio in `backend/data/portfolio/current.json`; `PORTFOLIO_DIR` overrides the folder. There's no database, the same as for saved decisions. `GET /api/portfolio` restores it, `POST /api/portfolio/import` imports and replaces the holdings, `PUT /api/portfolio` saves edits such as fund type and rules, and `POST /api/portfolio/identify` takes the user's answer for an unresolved holding.
+- **Import.** The simple CSV has the columns `account, ticker, shares`, plus optional `average_cost`, `currency` and `type`. The full template CSV is still accepted unchanged. The app derives account and position IDs. It takes listing, currency, type and issuer from the `type` column, an explicit suffix (`.TO` is XTSE in CAD, `.V` is XTSX, `.NE` is NEOE, `.CN` is XCNQ) and the backend reference identities. A `CASH` row is optional and holds a real balance.
+- **Date.** The user gives a holdings date on import, defaulting to today. That date always shows with its year: "As of Sep 30, 2026" in the rail and "Portfolio as of …" in the context header and Holdings tab.
+- **Average cost.** It is stored beside the snapshot for the user, appears in Holdings, and is never sent to analysis. Prices, values and weights come only from the analysis and its refresh.
+- **Unresolved holdings.** When the listing or type can't be resolved, nothing is assumed: a bare ticker is not treated as a US stock. The holding is saved as unresolved, with only the fields that are known, and kept out of the snapshot. The rail marks it "needs exchange", "needs type" or both. The Holdings tab's "Needs you" group asks only for the missing exchange (US or Canadian) and/or type. Analysis is blocked with "Identify N holdings first" until every holding is identified.
+- **Rules.** The company cap, active budget, indirect cap policy, cash tilt and any baseline are saved with the portfolio. They are restored on load and survive a re-import. Only rules the user set are stored: there are no defaults, and an unset rule stays unknown.
+
+New Cash input is amount, currency, destination account, optional loss tolerance and an explicit confirmation, shown as "C$2,000 → TFSA". The request carries `new_cash.account_id` and `new_cash.currency`. For that request only, the backend adds a zero-balance cash row, `new-cash-destination`, in that account and currency. The saved portfolio is never changed by an analysis, and the rail hides the temporary row. A follow-up is a new analysis against the same saved portfolio. There is no conversational memory yet.
+
 ## 10. New Cash sequence (boards on the canvas)
 
 | # | Board | Shows |
 |---|---|---|
 | 1 | Shell | Returning user; rail with portfolio and decisions; prompt; workflow starters; Holdings tab |
 | 2 | Start | Slash menu open over a dimmed center; cash available in the panel |
-| 3 | Inputs | Expanded composer: amount, destination, optional loss tolerance, required confirmation; Analyze disabled with its reason; panel previews where the cash lands |
+| 3 | Inputs | Expanded composer: amount, currency, destination account, optional loss tolerance, required confirmation; Analyze disabled with its reason; panel previews where the cash lands |
 | 4 | Waiting | Honest wait as described in section 9 |
 | 5 | Answer | Recommendation, why (cited), portfolio impact, alternatives, downside, detail links; Evidence tab with item 2 focused |
 | 6 | Scenarios | Downside/assumptions/uncertainty/what-would-change expanded in place; Scenarios tab with three cases, drivers and outcome on C$1,500 |
