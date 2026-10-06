@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState, type FormEvent, type SetStateAction } from "react";
+// Legacy styles stay on this page so they never leak into the Direction D route.
+import "./globals.css";
 import ThemeInputs from "../components/ThemeInputs";
 import type { ThemeInput } from "../lib/contracts";
 import PortfolioEditor from "../components/PortfolioEditor";

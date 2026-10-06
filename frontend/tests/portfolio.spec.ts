@@ -186,7 +186,8 @@ test("malformed CSV reports a clear import error", async ({ page }) => {
 
 test("frontend source has no backend credential configuration", () => {
   for (const folder of ["app", "components", "lib"]) {
-    for (const name of fs.readdirSync(folder)) {
+    for (const name of fs.readdirSync(folder, { recursive: true }) as string[]) {
+      if (fs.statSync(path.join(folder, name)).isDirectory()) continue;
       const source = fs.readFileSync(path.join(folder, name), "utf8");
       expect(source).not.toContain("OPENAI_API_KEY");
       expect(source).not.toContain("sk-test-backend-only-never-browser");
