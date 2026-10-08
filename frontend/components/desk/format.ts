@@ -1,5 +1,5 @@
 // Display formatting only. Every value comes from the backend or the user's snapshot.
-import { actionLabel, type Analysis, type NewCashInput, type Position, type Snapshot } from "../../lib/contracts";
+import { actionLabel, type Analysis, type NewCashInput, type Position, type Snapshot, type StockResult } from "../../lib/contracts";
 
 const SYMBOL: Record<string, string> = { CAD: "C$", USD: "US$", EUR: "€", GBP: "£" };
 
@@ -65,6 +65,27 @@ export function answerSentence(action: string, amount: Analysis["recommendation"
   if (action === "review_only") return "Here is where your portfolio stands.";
   return `${actionLabel(action)}.`;
 }
+
+/** Per-share case values are in the currency of the reported metric they were calculated from. */
+export function caseCurrency(stock: StockResult, fallback: string): string {
+  const id = stock.judgments.metric_fact_id || stock.judgments.revenue_fact_id;
+  return stock.research.facts.find(fact => fact.id === id)?.currency || fallback;
+}
+
+/** Large reported figures for reading: US$63.9B, US$812M, 4.85B shares. Exact values stay in the data. */
+export function compact(value: string | null | undefined, currency: string | null): string {
+  if (value === null || value === undefined) return "Unknown";
+  const number = Number(value);
+  const size = Math.abs(number);
+  const [scaled, suffix] = size >= 1e12 ? [number / 1e12, "T"] : size >= 1e9 ? [number / 1e9, "B"] : size >= 1e6 ? [number / 1e6, "M"] : [number, ""];
+  const digits = suffix ? (Math.abs(scaled) >= 100 ? 0 : Math.abs(scaled) >= 10 ? 1 : 2) : 0;
+  const text = `${scaled < 0 ? "−" : ""}${Math.abs(scaled).toLocaleString("en-CA", { maximumFractionDigits: digits })}${suffix}`;
+  return currency ? `${SYMBOL[currency] || `${currency} `}${text}` : `${text} shares`;
+}
+
+/** The price against the discounted cases, in words. */
+export const POSITION_LABEL: Record<string, string> = { below_downside: "below even the downside case", downside_to_base: "between the downside and base cases",
+  base_to_upside: "between the base and upside cases", above_upside: "above even the upside case", unknown: "not comparable with the cases" };
 
 /** Past-tense label for an action the user confirmed they took. */
 export const doneLabel = (action: string) => ({ add: "added", no_action: "no action", hold: "held", reduce: "reduced", exit: "exited" }[action] || actionLabel(action).toLowerCase());

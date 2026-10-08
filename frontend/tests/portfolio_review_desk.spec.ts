@@ -108,5 +108,5 @@ test("portfolio review: without rules the analyst's own answer is shown and noth
   await expect(memo).toContainText("No rules set");
   await expect(memo.getByTestId("review-total")).toContainText("C$3,700");
   // A follow-up is a new review of the same saved portfolio.
-  await expect(ask).toHaveAttribute("placeholder", "Ask a follow-up. It runs a new review of the same portfolio.");
+  await expect(ask).toHaveAttribute("placeholder", "Ask a follow-up. Each question is a fresh analysis of your saved portfolio.");
 });

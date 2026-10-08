@@ -19,6 +19,8 @@ Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=
 Currency = Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$")]
 Quantity = Annotated[Decimal, Field(ge=0, le=Decimal("1e12"), max_digits=24, decimal_places=10)]
 Rate = Annotated[Decimal, Field(gt=0, le=Decimal("1e6"), max_digits=24, decimal_places=10)]
+# A reported amount that may be negative (operating income, net income, cash flows).
+SignedAmount = Annotated[Decimal, Field(ge=Decimal("-1e15"), le=Decimal("1e15"), max_digits=28, decimal_places=10)]
 Fraction = Annotated[Decimal, Field(ge=0, le=1, max_digits=11, decimal_places=10)]
 SharesChange = Annotated[Decimal, Field(ge=Decimal("-1e12"), le=Decimal("1e12"), max_digits=24, decimal_places=10)]
 
@@ -762,6 +764,10 @@ class CalculatedCase(Contract):
     known_terminal_value: str | None
     terminal_value: str | None
     qualifications: list[str]
+    # The value to compare: after costs and taxes when both are known, else before the adjustments listed in
+    # `unmodeled`, which are unknown and never assumed to be zero.
+    comparison_value: str | None = None
+    unmodeled: list[str] = Field(default_factory=list)
 
 
 class CalculatedAlternative(Contract):
@@ -806,10 +812,32 @@ class ResearchDocument(Contract):
         return self
 
 
+class FactSource(Contract):
+    """Where one reported number came from, exactly as SEC published it."""
+    taxonomy: Identifier
+    concept: Identifier
+    unit: Identifier
+    accession: Identifier
+    form: Identifier
+    fiscal_year: int | None = None
+    fiscal_period: Identifier | None = None
+    filed: date
+    period_start: date | None
+    period_end: date
+    value: SignedAmount
+    url: str
+
+
+RESEARCH_METRICS = ("revenue", "shares", "book_value", "ffo", "operating_income", "net_income", "cash", "total_debt",
+                    "operating_cash_flow", "capex", "free_cash_flow")
+NON_NEGATIVE_METRICS = {"revenue", "shares", "book_value", "ffo", "cash", "total_debt", "capex"}
+
+
 class ResearchFact(Contract):
     id: Identifier
-    metric: Literal["revenue", "shares", "book_value", "ffo"]
-    value: Quantity | None
+    metric: Literal["revenue", "shares", "book_value", "ffo", "operating_income", "net_income", "cash", "total_debt",
+                    "operating_cash_flow", "capex", "free_cash_flow"]
+    value: SignedAmount | None
     unit: Literal["currency", "shares"]
     currency: Currency | None
     period_start: date | None
@@ -820,6 +848,16 @@ class ResearchFact(Contract):
     notes_checked: bool
     custom_tags_checked: bool
     segments_checked: bool
+    # "manual": independently reviewed extract. "sec_xbrl": read automatically from SEC CompanyFacts; the filing,
+    # segment and alternative-tag checks are automated and footnotes are not read, so notes_checked stays false.
+    review: Literal["manual", "sec_xbrl"] = "manual"
+    sources: list[FactSource] = Field(default_factory=list, max_length=6)
+
+    @model_validator(mode="after")
+    def sign(self) -> Self:
+        if self.value is not None and self.value < 0 and self.metric in NON_NEGATIVE_METRICS:
+            raise ValueError(f"A reported {self.metric} cannot be negative.")
+        return self
 
 
 class CompanyResearch(Contract):
@@ -880,9 +918,28 @@ class CompanyJudgments(Contract):
         return self
 
 
+class CaseYear(Contract):
+    """One modeled year of a company case, as calculated. Money is in the reported metric's currency."""
+    year: int
+    revenue: str | None
+    metric: str
+    metric_margin: str | None
+    diluted_shares: str
+    metric_per_share: str
+    distribution_per_share: str
+
+
 class CalculatedCompanyCase(Contract):
     name: CaseName
     judgment: CompanyCase
+    # The deterministic chain, exposed for audit: starting facts, each year, the exit and the discounting.
+    starting_metric: str | None = None
+    starting_shares: str | None = None
+    path: list[CaseYear] = Field(default_factory=list, max_length=5)
+    equity_value: str | None = None
+    discount_factor: str | None = None
+    present_value_of_exit: str | None = None
+    present_value_of_distributions: str | None = None
     terminal_metric: str | None
     terminal_shares: str | None
     terminal_price: str | None
@@ -894,6 +951,25 @@ class CalculatedCompanyCase(Contract):
     qualifications: list[str]
 
 
+class StockValuation(Contract):
+    """Where today's price sits against the calculated cases. Deterministic; the model interprets it."""
+    price: str | None
+    currency: Currency
+    price_as_of: date | None
+    downside: str | None
+    base: str | None
+    upside: str | None
+    price_to_base: str | None
+    position: Literal["below_downside", "downside_to_base", "base_to_upside", "above_upside", "unknown"]
+    # Reported figures for the same period, so the modeled path can be checked against what the company reported.
+    reported_margin: str | None = None
+    modeled_first_year_margin: str | None = None
+    cash: str | None = None
+    total_debt: str | None = None
+    balance_date: date | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
 class StockResult(Contract):
     position_id: str
     as_of: date
@@ -903,6 +979,9 @@ class StockResult(Contract):
     cases: list[CalculatedCompanyCase]
     calculation_basis: str
     qualifications: list[str]
+    valuation: StockValuation | None = None
+    # Why exact position sizing is not given, stated apart from the investment view.
+    sizing_withheld: list[str] = Field(default_factory=list)
 
 
 class AllocationResult(Contract):

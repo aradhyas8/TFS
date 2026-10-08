@@ -94,7 +94,7 @@ export type ScenarioDriver = { position_id: string; annual_returns: string[] | n
 export type ComparisonResult = { as_of: string; reporting_currency: string; horizon_years: number; starting_value: string | null;
   inputs: ComparisonInput; qualifications: string[]; calculation_basis: string;
   alternatives: { selection: ComparisonAlternative; position_ids: string[]; cases: { name: string;
-    known_terminal_value: string | null; terminal_value: string | null; qualifications: string[];
+    known_terminal_value: string | null; terminal_value: string | null; qualifications: string[]; comparison_value?: string | null; unmodeled?: string[];
     judgment: { name: string; drivers: ScenarioDriver[]; assumptions: string[]; downside: string; uncertainty: string[] };
     components: { position_id: string; local_currency: string; starting_local_value: string | null;
       fx_used: FX | null; terminal_local_value: string | null; known_terminal_value: string | null; fully_specified: boolean; qualifications: string[] }[];
@@ -106,14 +106,20 @@ export type StockResult = { position_id: string; as_of: string; reporting_curren
     facts: { id: string; metric: string; value: string | null; unit: string; currency: string | null;
       period_start: string | null; period_end: string; definition: string; document_ids: string[];
       filing_checked: boolean; notes_checked: boolean; custom_tags_checked: boolean; segments_checked: boolean }[] };
-  judgments: { method: string; mid_cycle_context: string | null };
+  judgments: { method: string; mid_cycle_context: string | null; metric_fact_id?: string | null; revenue_fact_id?: string | null };
   cases: { name: string; terminal_metric: string | null; terminal_shares: string | null;
     terminal_price: string | null; known_terminal_value: string | null; present_value_per_share: string | null;
+    starting_metric?: string | null; starting_shares?: string | null; equity_value?: string | null; discount_factor?: string | null;
+    present_value_of_exit?: string | null; present_value_of_distributions?: string | null;
+    path?: { year: number; revenue: string | null; metric: string; metric_margin: string | null; diluted_shares: string; metric_per_share: string; distribution_per_share: string }[];
     sensitivity_prices: (string | null)[]; required_exit_multiple: string | null; qualifications: string[];
     judgment: { growth: string[]; margins: string[]; cash_conversion: string[]; reinvestment: string[];
       dilution: string[]; payout: string[]; return_on_equity: string[] | null; fx_multipliers: string[]; discount_rate: string;
       exit_multiple: string; exit_sensitivity: string[]; assumptions: string[]; uncertainty: string[] } }[];
-  qualifications: string[]; calculation_basis: string };
+  qualifications: string[]; calculation_basis: string; sizing_withheld?: string[];
+  valuation?: { price: string | null; currency: string; price_as_of: string | null; downside: string | null; base: string | null; upside: string | null;
+    price_to_base: string | null; position: "below_downside" | "downside_to_base" | "base_to_upside" | "above_upside" | "unknown";
+    reported_margin: string | null; modeled_first_year_margin: string | null; cash: string | null; total_debt: string | null; balance_date: string | null; notes: string[] } | null };
 export type NewCashInput = { amount: string | null; cash_position_id: string | null; confirmed: boolean; risk_context: string | null;
   account_id?: string | null; currency?: string | null };
 /** The backend binds new money to this temporary zero-balance cash row for one request; it is never saved. */

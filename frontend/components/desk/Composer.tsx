@@ -4,7 +4,7 @@ import { accountName, fullDate, money, newCashLabel } from "./format";
 
 const WORKFLOWS = [
   { cmd: "/new-cash", text: "Decide where new money should go", live: true },
-  { cmd: "/stock", text: "Value one company with its filings", live: false },
+  { cmd: "/stock", text: "Analyze one company you own, e.g. /stock AVGO", live: true },
   { cmd: "/review", text: "Exposure, concentration and fund overlap", live: true },
   { cmd: "/rebalance", text: "Recheck each thesis against your rules", live: false },
   { cmd: "/theme", text: "Test an idea against a short list", live: false },
@@ -29,12 +29,13 @@ export function missingInput(snapshot: Snapshot | null, newCash: NewCashInput | 
 
 export default function Composer({ snapshot, unresolved, workflow, onWorkflow, question, onQuestion, newCash, onNewCash, running, collapsed, onExpand, onSubmit }: Props) {
   const [active, setActive] = useState(0);
-  const slashOpen = !workflow && question.startsWith("/");
+  // The menu is for picking a command; once it has an argument ("/stock AVGO") the line is a question to send.
+  const slashOpen = !workflow && /^\/\S*$/.test(question);
   const matches = slashOpen ? WORKFLOWS.filter(item => item.cmd.startsWith(question.trim().split(" ")[0] || "/")) : [];
   const accounts = snapshot?.accounts || [];
   const currencies = [...new Set([snapshot?.reporting_currency, "CAD", "USD", ...(snapshot?.positions.map(row => row.currency) || [])].filter((c): c is string => !!c))];
   const label = newCashLabel(newCash, snapshot);
-  // Without a workflow, an ordinary question is a portfolio review of the saved portfolio.
+  // Without a workflow, a question is routed: a company you own becomes Stock Analysis, anything else a portfolio review.
   const blocked = slashOpen ? "Choose a workflow" : missingInput(snapshot, workflow === "new-cash" ? newCash : null, question, unresolved);
   const update = (patch: Partial<NewCashInput>) => onNewCash({ ...newCash, ...patch, confirmed: "confirmed" in patch ? !!patch.confirmed : false });
 
@@ -44,6 +45,7 @@ export default function Composer({ snapshot, unresolved, workflow, onWorkflow, q
     if (!item.live) { window.location.href = "/classic"; return; }
     const rest = question.slice(item.cmd.length).trimStart();
     if (item.cmd === "/review") { onWorkflow(null); onQuestion(rest || "Review my portfolio"); return; }
+    if (item.cmd === "/stock") { onWorkflow(null); onQuestion(`/stock ${rest}`); return; }
     onWorkflow("new-cash"); onQuestion(rest);
   }
   function keys(event: KeyboardEvent<HTMLInputElement>) {
@@ -103,10 +105,10 @@ export default function Composer({ snapshot, unresolved, workflow, onWorkflow, q
         </div>}
         <div className="box-line">
           {workflow === "new-cash" && <span className="prefix">New cash</span>}
-          <label htmlFor="ask" className="sr-only">{workflow ? "Question" : "Ask about your portfolio, or type / for workflows"}</label>
+          <label htmlFor="ask" className="sr-only">{workflow ? "Question" : "Ask about your portfolio or a holding, or type / for workflows"}</label>
           <input id="ask" autoComplete="off" value={question} disabled={running} onKeyDown={keys}
             aria-controls={slashOpen ? "slash-menu" : undefined} aria-expanded={slashOpen}
-            placeholder={running ? "You can ask a follow-up once this answer arrives." : workflow ? collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?" : collapsed ? "Ask a follow-up. It runs a new review of the same portfolio." : "Ask about your portfolio, or type / for a workflow"}
+            placeholder={running ? "You can ask a follow-up once this answer arrives." : workflow ? collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?" : collapsed ? "Ask a follow-up. Each question is a fresh analysis of your saved portfolio." : "Ask about your portfolio or a holding, or type / for a workflow"}
             onChange={event => { onQuestion(event.target.value); setActive(0); }} />
           {(workflow === "new-cash" || question.trim()) && blocked && !running && !slashOpen && <span className="cap amber hint">{blocked}</span>}
           {workflow === "new-cash" ? <button type="submit" className="btn primary" disabled={!!blocked || running}>Analyze</button>

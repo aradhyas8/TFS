@@ -30,6 +30,7 @@ from .schemas import (
     SavedPortfolio,
     Snapshot,
 )
+from .sec_research import SecResearchProvider
 
 
 def create_app(
@@ -160,7 +161,9 @@ def create_app(
             provider = OpenAIModel(config)
         try:
             financial_source = financial or PersonalFinancialProvider.from_environment()
-            research_source = research or (ReviewedResearchProvider.from_environment() if request.stock or request.new_cash or request.portfolio_review or (request.theme and request.theme.confirmed) else None)
+            # Stock Analysis reads SEC EDGAR live (cached) for verified US stocks; the reviewed file stays optional extra evidence.
+            research_source = research or (SecResearchProvider.from_environment() if request.stock
+                                           else ReviewedResearchProvider.from_environment() if request.new_cash or request.portfolio_review or (request.theme and request.theme.confirmed) else None)
             return await analyze(request, provider, source, secret=config.api_key, financial=financial_source, research=research_source, discovery=discovery)
         except (ValueError, OSError):
             raise HTTPException(503, "Backend financial source configuration is invalid.") from None

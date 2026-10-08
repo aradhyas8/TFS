@@ -21,6 +21,7 @@ def no_live_services(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENFIGI_ENABLED", "false")
     monkeypatch.setenv("YFINANCE_ENABLED", "false")  # yfinance uses curl_cffi, which the socket guard cannot see
     monkeypatch.setenv("MARKET_DATA_DIR", str(tmp_path / "market"))
+    monkeypatch.setenv("SEC_CACHE_DIR", str(tmp_path / "sec"))
     monkeypatch.setenv("SEC_USER_AGENT", "")
     monkeypatch.delenv("FINANCIAL_REFERENCE_FILE", raising=False)
 

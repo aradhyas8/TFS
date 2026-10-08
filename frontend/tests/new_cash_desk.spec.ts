@@ -110,6 +110,8 @@ test("new cash: missing loss tolerance returns a needs-input answer that re-runs
 });
 
 test("portfolio: simple import asks only what's unknown, then holdings and rules are restored on reload and untouched by a new-cash run", async ({ page }) => {
+  // Undated holdings are analyzed as of the browser's today; pin it to the fixture evidence date (2026-09-30).
+  await page.clock.setFixedTime(new Date(2026, 8, 30, 12));
   await start(page);
   await importCsv(page, SIMPLE_CSV);
   await expect(rail(page)).toContainText("BROAD");

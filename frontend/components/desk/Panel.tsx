@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { NEW_CASH_DESTINATION, post, type Analysis, type GuardrailReview, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import type { Tab } from "./Memo";
-import { fullDate, money, pct, positionName, shortDate } from "./format";
+import { caseCurrency, compact, fullDate, money, pct, positionName, shortDate } from "./format";
 
 export type Evidence = { id: string; title: string; source: string; date: string | null; url: string | null; excerpt: string | null; facts: string[]; available: boolean };
 
@@ -106,7 +106,7 @@ function Valuation({ result }: { result: Analysis }) {
 }
 
 function ScenariosTab({ result, snapshot }: { result: Analysis; snapshot: Snapshot | null }) {
-  const stocks = result.allocation?.stocks || [];
+  const stocks = [result.stock, ...(result.allocation?.stocks || [])].filter((s): s is NonNullable<typeof s> => !!s);
   const comparison = result.comparison;
   const currency = result.portfolio.reporting_currency;
   const altName = (alt: NonNullable<typeof comparison>["alternatives"][number]["selection"]) => alt.kind === "no_action" ? "No action" : alt.kind === "cash" ? "Keep as cash" :
@@ -115,13 +115,28 @@ function ScenariosTab({ result, snapshot }: { result: Analysis; snapshot: Snapsh
   return <>
     {stocks.map(stock => {
       const row = snapshot?.positions.find(position => position.id === stock.position_id);
+      const quote = result.portfolio.positions.find(position => position.supplied.id === stock.position_id)?.quote_used;
+      const local = caseCurrency(stock, row?.currency || quote?.currency || stock.reporting_currency);
       return <div className="pgroup" key={stock.position_id}>
         <div><div>{positionName(row, stock.position_id)} · per share, discounted to today</div>
-          <div className="cap n">{row?.mark ? `Price ${money(row.mark.value, row.currency)} on ${shortDate(row.mark.as_of)} · ` : ""}{stock.judgments.method}</div></div>
+          <div className="cap n">{quote ? `Price ${money(quote.value, quote.currency)} on ${shortDate(quote.as_of)} · ` : row?.mark ? `Price ${money(row.mark.value, row.currency)} on ${shortDate(row.mark.as_of)} · ` : ""}{stock.judgments.method.replaceAll("_", " ")}</div></div>
+        {(() => {
+          const base = stock.cases.find(c => c.name === "base");
+          if (!base?.path?.length) return null;
+          return <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <table className="matrix" aria-label="Base case, year by year">
+              <thead><tr><th scope="col">Year</th><th scope="col">Revenue</th><th scope="col">{stock.judgments.method === "fcf_exit" ? "FCF" : "Earnings"}</th><th scope="col">Shares</th><th scope="col">Per share</th></tr></thead>
+              <tbody>{base.path.map(year => <tr key={year.year}><th scope="row">{year.year}</th><td>{compact(year.revenue, local)}</td><td>{compact(year.metric, local)}</td>
+                <td>{compact(year.diluted_shares, null).replace(" shares", "")}</td><td>{money(year.metric_per_share, local)}</td></tr>)}</tbody>
+            </table>
+            <span className="cap n">Start {compact(base.starting_metric, local)} revenue, {compact(base.starting_shares, null)} · year 5 {compact(base.terminal_metric, local)} × {base.judgment.exit_multiple} = equity {compact(base.equity_value, local)} ÷ {compact(base.terminal_shares, null)} = {money(base.terminal_price, local)} · ÷ {base.discount_factor} = {money(base.present_value_of_exit, local)} + payouts {money(base.present_value_of_distributions, local)} = {money(base.present_value_per_share, local)}</span>
+          </div>;
+        })()}
         {stock.cases.map(c => <div className="case" key={c.name}>
           <div className="pv" style={{ alignItems: "baseline" }}><span className="lbl" style={{ color: c.name === "base" ? "var(--brass)" : undefined }}>{c.name}</span>
-            <span className="fig" style={{ color: c.name === "base" ? "var(--brass)" : undefined }}>{money(c.present_value_per_share, stock.reporting_currency)}</span></div>
-          <div className="drv n"><span>Exit price</span><span>{money(c.terminal_price, stock.reporting_currency)}</span></div>
+            <span className="fig" style={{ color: c.name === "base" ? "var(--brass)" : undefined }}>{money(c.present_value_per_share, local)}</span></div>
+          <div className="drv n"><span>Exit price</span><span>{money(c.terminal_price, local)}</span></div>
+          {c.required_exit_multiple && <div className="drv n"><span>Multiple needed</span><span>{c.required_exit_multiple}</span></div>}
           <div className="drv n"><span>Exit multiple</span><span>{c.judgment.exit_multiple}</span></div>
           <div className="drv n"><span>Discount rate</span><span>{pct(c.judgment.discount_rate)}</span></div>
           {c.judgment.growth.length > 0 && <div className="drv n"><span>Growth path</span><span>{c.judgment.growth.map(pct).join(" → ")}</span></div>}
@@ -135,8 +150,9 @@ function ScenariosTab({ result, snapshot }: { result: Analysis; snapshot: Snapsh
       <table className="matrix" aria-label="Five-year comparison">
         <thead><tr><th scope="col">Option</th>{comparison.alternatives[0]?.cases.map(c => <th scope="col" key={c.name}>{c.name}</th>)}</tr></thead>
         <tbody>{comparison.alternatives.map(alt => <tr key={alt.selection.id}><th scope="row">{altName(alt.selection)}</th>
-          {alt.cases.map(c => <td key={c.name} className={c.terminal_value === null ? "m" : ""}>{money(c.terminal_value, comparison.reporting_currency || currency)}</td>)}</tr>)}</tbody>
+          {alt.cases.map(c => <td key={c.name} className={(c.terminal_value ?? c.comparison_value) == null ? "m" : ""}>{money(c.terminal_value ?? c.comparison_value, comparison.reporting_currency || currency)}</td>)}</tr>)}</tbody>
       </table>
+      {comparison.alternatives.some(alt => alt.cases.some(c => !c.terminal_value && c.comparison_value)) && <p className="cap">Values are before {[...new Set(comparison.alternatives.flatMap(alt => alt.cases.flatMap(c => c.terminal_value ? [] : c.unmodeled || [])))].join(" and ")}, which are unknown and not assumed to be zero.</p>}
       {comparison.alternatives.some(alt => alt.cases.some(c => c.terminal_value === null)) && <p className="cap">Unknown where costs, fund facts or drivers weren&apos;t supplied. Unknown is never treated as zero.</p>}
       {comparison.qualifications.length > 0 && <details><summary className="cap" style={{ cursor: "pointer" }}>Comparison notes · {comparison.qualifications.length}</summary>
         <ul className="cap" style={{ paddingLeft: 16, paddingTop: 6 }}>{comparison.qualifications.map(q => <li key={q}>{q}</li>)}</ul></details>}

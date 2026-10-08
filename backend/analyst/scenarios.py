@@ -179,7 +179,7 @@ def _calculate(
                     stock_fx = rows[key].fx_used
                     initial_fx = Decimal(1) if rows[key].supplied.currency == portfolio.reporting_currency else stock_fx.rate if stock_fx else None
                     if quote is not None and quote.value > 0 and initial_fx is not None and initial is not None and stock_case.terminal_reporting_per_share is not None:
-                        computed.known_terminal_value = money(Decimal(stock_case.terminal_reporting_per_share) * initial / (quote.value * initial_fx))
+                        computed.known_terminal_value = money((Decimal(stock_case.terminal_reporting_per_share) * initial / (quote.value * initial_fx)).quantize(Decimal("0.0000000001")))
                         computed.terminal_local_value = None
                         computed.fully_specified = True
                         computed.qualifications = ["Retained stock uses its operating-driver company case, including idle distributions; costs/taxes stay unknown.", *stock_case.qualifications]
@@ -190,10 +190,15 @@ def _calculate(
             # Provisional source provenance qualifies an otherwise fully specified
             # conditional result; missing numeric effects must never become zero.
             fully_specified = transaction is not None and tax is not None and all(row.fully_specified for row in components)
+            # Unknown costs and taxes are named, never assumed zero; no action makes no trade, so it has no trading cost.
+            unmodeled = [*(["transaction costs"] if transaction is None and alternative.kind != "no_action" else []), *(["taxes"] if tax is None else [])]
+            known = money(terminal) if terminal is not None else None
             case_results.append(CalculatedCase(
                 name=case.name, judgment=case, components=components,
-                known_terminal_value=money(terminal) if terminal is not None else None,
-                terminal_value=money(terminal) if terminal is not None and fully_specified else None,
+                known_terminal_value=known,
+                terminal_value=known if fully_specified else None,
+                comparison_value=money(terminal.quantize(Decimal("0.01"))) if terminal is not None and all(row.fully_specified for row in components) else None,
+                unmodeled=[] if fully_specified else unmodeled,
                 qualifications=list(dict.fromkeys(issues)),
             ))
         alternatives.append(CalculatedAlternative(selection=alternative, position_ids=ids, cases=case_results))

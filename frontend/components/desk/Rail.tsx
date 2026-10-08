@@ -1,16 +1,22 @@
-import { NEW_CASH_DESTINATION, type Analysis, type PortfolioSettings, type SavedDecision, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { isSupportedStock, NEW_CASH_DESTINATION, type Analysis, type PortfolioSettings, type Position, type SavedDecision, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import { doneLabel, fullDate, money, pct, shortDate } from "./format";
 
 type Props = {
   snapshot: Snapshot | null; unresolved: UnresolvedHolding[]; settings: PortfolioSettings; result: Analysis | null;
   decisions: SavedDecision[]; currentId: string | null; running: string | null;
-  onNew: () => void; onHoldings: () => void; onOpen: (decision: SavedDecision) => void;
+  onNew: () => void; onHoldings: () => void; onOpen: (decision: SavedDecision) => void; onStock: (position: Position) => void;
   onDelete: (decision: SavedDecision) => void; onClearAll: () => void;
 };
 
 /** Left rail: which portfolio and which decisions am I working with? */
-export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, onNew, onHoldings, onOpen, onDelete, onClearAll }: Props) {
+export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, onNew, onHoldings, onOpen, onStock, onDelete, onClearAll }: Props) {
   const review = result?.portfolio;
+  // A supported stock row offers Stock Analysis; funds and cash are listed only.
+  const holding = (row: Position, figure: string) => {
+    const name = row.kind === "cash" ? `Cash ${row.currency}` : row.ticker || row.company_name || "Unnamed";
+    return isSupportedStock(row) ? <button type="button" className="pv hold" key={row.id} aria-label={`Analyze ${name}`} title={`Stock Analysis for ${name}`} onClick={() => onStock(row)}>
+      <span>{name}</span><span className="m">{figure}</span></button> : <span className="pv" key={row.id}><span>{name}</span><span className="m">{figure}</span></span>;
+  };
   const rules = [settings.single_company_cap && `cap ${pct(settings.single_company_cap)}`, settings.active_budget && `active ${pct(settings.active_budget)}`].filter(Boolean);
   return <nav className="rail" aria-label="Portfolio and decisions" id="rail">
     <div className="rail-head">
@@ -20,24 +26,23 @@ export default function Rail({ snapshot, unresolved, settings, result, decisions
       </button>
     </div>
 
-    {snapshot ? <button type="button" className="portfolio" onClick={onHoldings} aria-label="Portfolio, open holdings">
-      <span className="pv"><span className="lbl">Portfolio</span>
-        <span className="cap" data-testid="portfolio-date">As of {fullDate(snapshot.as_of)}</span></span>
-      {review && <span className="cap">Weights · {shortDate(review.reviewed_at)} analysis</span>}
-      {review && <span className="portfolio-total n">{money(review.total_value, review.reporting_currency)}</span>}
+    {snapshot ? <div className="portfolio">
+      <button type="button" className="portfolio" onClick={onHoldings} aria-label="Portfolio, open holdings">
+        <span className="pv"><span className="lbl">Portfolio</span>
+          <span className="cap" data-testid="portfolio-date">As of {fullDate(snapshot.as_of)}</span></span>
+        {review && <span className="cap">Weights · {shortDate(review.reviewed_at)} analysis</span>}
+        {review && <span className="portfolio-total n">{money(review.total_value, review.reporting_currency)}</span>}
+      </button>
       <span className="holdings-mini n">
-        {review ? review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION).map(row => <span className="pv" key={row.supplied.id}>
-          <span>{row.supplied.kind === "cash" ? `Cash ${row.supplied.currency}` : row.supplied.ticker || row.supplied.company_name || "Unnamed"}</span>
-          <span className="m">{pct(row.weight)}</span></span>)
-          : snapshot.positions.map(row => <span className="pv" key={row.id}>
-            <span>{row.kind === "cash" ? `Cash ${row.currency}` : row.ticker || row.company_name || "Unnamed"}</span>
-            <span className="m">{row.kind === "cash" ? money(row.cash ?? null, row.currency) : `${row.shares ?? "?"} sh`}</span></span>)}
+        {review ? review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION).map(row =>
+          holding(snapshot.positions.find(held => held.id === row.supplied.id) ?? row.supplied, pct(row.weight)))
+          : snapshot.positions.map(row => holding(row, row.kind === "cash" ? money(row.cash ?? null, row.currency) : `${row.shares ?? "?"} sh`))}
       </span>
       {unresolved.length > 0 && <span className="holdings-mini n">{unresolved.map(row => <span className="pv" key={`${row.account_id}:${row.ticker}`}>
         <span>{row.ticker}</span><span className="amber">needs {[!row.listing && "exchange", !row.kind && "type"].filter(Boolean).join(" and ")}</span></span>)}</span>}
       {!review && <span className="cap">Values and weights appear after the first analysis.</span>}
       <span className="cap n rules-line">{rules.length ? `Rules · ${rules.join(" · ")}` : "No rules set"}</span>
-    </button> : <div className="portfolio"><span className="lbl">Portfolio</span><span className="cap">No saved portfolio yet. Import a CSV to start.</span></div>}
+    </div> : <div className="portfolio"><span className="lbl">Portfolio</span><span className="cap">No saved portfolio yet. Import a CSV to start.</span></div>}
 
     <div className="decisions">
       <span className="lbl dhead"><span>Decisions</span>

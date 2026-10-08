@@ -99,7 +99,7 @@ def test_stock_research_calculations_and_conditional_action_complete_in_same_req
     assert stock["cases"][2]["terminal_price"] == "150"
     assert stock["cases"][1]["known_terminal_value"] == "1300"
     assert stock["cases"][1]["sensitivity_prices"] == ["80", "100", "120"]
-    assert stock["cases"][1]["required_exit_multiple"] == "10"
+    assert stock["cases"][1]["required_exit_multiple"] == "16.11"  # price 100 x 1.1^5 / year-5 EPS 10
     assert result["recommendation"]["preferred_action"] == "hold"
     assert result["recommendation"]["amount"] is None
     assert "filing" in str(model.requests[-1])
@@ -296,7 +296,7 @@ def test_dilution_changes_terminal_shares_and_exit_sensitivity():
     case = response.json()["stock"]["cases"][1]
     assert case["terminal_shares"] == "20"
     assert case["terminal_price"] == "50"
-    assert case["required_exit_multiple"] == "20"
+    assert case["required_exit_multiple"] == "32.21"  # price 100 x 1.1^5 / year-5 EPS 5
     assert case["sensitivity_prices"] == ["40", "50", "60"]
 
 
