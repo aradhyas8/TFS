@@ -69,7 +69,7 @@ def test_all_nine_holdings_priced_by_one_yfinance_batch_and_reviewed_from_the_ca
     # Persisted in the existing format and keys; daily closes beside it.
     stored = json.loads((tmp_path / "market" / "quotes.json").read_text())
     assert set(stored) == set(PRICES) and set(stored["CM.TO"]) == set(json.loads(json.dumps(cm)))
-    history = QuoteCache(tmp_path / "market").get_history()
+    history = QuoteCache(tmp_path / "market").read("history")
     assert history["CM.TO"]["symbol"] == "CM.TO" and history["CM.TO"]["daily_close"]["2026-10-07"] == "154.5700000000"
 
     for _ in range(2):

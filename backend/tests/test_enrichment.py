@@ -33,19 +33,27 @@ SEC = [[1730168, "Broadcom Inc.", "AVGO", "Nasdaq"], [37996, "FORD MOTOR CO", "F
 # Fictional delayed prices.
 PRICES = {"AVGO.US": 340, "F.US": 12, "GOOG.US": 250, "HDB.US": 35, "IBN.US": 30, "INFY.US": 18, "NBIS.US": 100, "SHOP.US": 150, "CM.TO": 110}
 TODAY = datetime.now(MARKET_TIME).date()
+# SEC submissions records, trimmed: what a registrant files says what it is.
+OPERATING = {"entityType": "operating", "sic": "3674", "filings": {"recent": {"form": ["10-K", "10-Q", "8-K"]}}}
 
 
 class Market:
     """EODHD free plan (20 requests a day), SEC and Bank of Canada behind one fake transport."""
 
-    def __init__(self, used: int = 0, missing: frozenset[str] = frozenset(), sec_down: bool = False) -> None:
+    def __init__(self, used: int = 0, missing: frozenset[str] = frozenset(), sec_down: bool = False,
+                 sec: list | None = None, entities: dict[int, dict] | None = None) -> None:
         self.used, self.missing, self.sec_down = used, missing, sec_down
+        self.sec, self.entities = SEC if sec is None else sec, entities or {}
         self.eodhd: list[str] = []  # one entry per counted EODHD request unit
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == "www.sec.gov":
             assert request.headers["User-Agent"] == "Test test@example.test"
-            return httpx.Response(403) if self.sec_down else httpx.Response(200, json={"fields": ["cik", "name", "ticker", "exchange"], "data": SEC})
+            return httpx.Response(403) if self.sec_down else httpx.Response(200, json={"fields": ["cik", "name", "ticker", "exchange"], "data": self.sec})
+        if request.url.host == "data.sec.gov":
+            assert request.headers["User-Agent"] == "Test test@example.test"
+            cik = int(request.url.path.removeprefix("/submissions/CIK").removesuffix(".json"))
+            return httpx.Response(200, json=self.entities.get(cik, OPERATING))
         if request.url.host == "www.bankofcanada.ca":
             return httpx.Response(200, json={"observations": [{"d": (TODAY - timedelta(days=1)).isoformat(), "FXUSDCAD": {"v": "1.38"}}]})
         assert request.url.host == "eodhd.com" and request.url.params["api_token"] == "eodhd-test-key"

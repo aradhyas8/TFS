@@ -16,6 +16,7 @@ import httpx
 from dotenv import load_dotenv
 
 from .schemas import (
+    CANADIAN_LISTINGS,
     FX,
     US_LISTINGS,
     FinancialEvidence,
@@ -34,6 +35,12 @@ EODHD_URL = "https://eodhd.com/api"
 EODHD_SOURCE = "EODHD"
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 SEC_LISTINGS = {"Nasdaq": "XNAS", "NYSE": "XNYS"}
+SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+# What a registrant files says what it is: an investment company (ETF/fund/unit trust) or an operating company.
+FUND_FORMS = {"N-CEN", "NPORT-P", "N-CSR", "N-CSRS", "485BPOS", "485APOS", "24F-2NT", "N-30D", "N-1A", "N-8A"}
+OPERATING_FORMS = {"10-K", "10-Q", "20-F", "40-F", "6-K", "8-K"}
+# Commodity pools (SIC 6221, such as gold trusts) file 10-Ks like companies but trade as ETPs: SEC cannot say which.
+SEC_UNCLEAR_SIC = {"6221"}
 # EODHD exchange codes. All US listings share "US"; SEC supplies the exact US exchange.
 EODHD_LISTINGS = {"TO": "XTSE", "V": "XTSX", "NEO": "NEOE", "CN": "XCNQ"}
 EODHD_CODE = {**{listing: code for code, listing in EODHD_LISTINGS.items()}, "XNAS": "US", "XNYS": "US", "XASE": "US"}
@@ -48,6 +55,13 @@ YAHOO_SOURCE = "Yahoo Finance via yfinance (unofficial, not exchange data)"
 YAHOO_QUALIFICATION = SourceQualification(
     source=YAHOO_SOURCE, terms_url="https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html",
     checked_on=date(2026, 10, 8), personal_use_permitted=True, covered_listings=sorted(EODHD_CODE))
+# OpenFIGI identifies securities only; never prices, fundamentals, filings, FX or research. It lists every trading
+# venue (a Nasdaq stock also has NYSE and Arca rows), so only the country composites ("US", "CN") name a security.
+# Bloomberg's Nasdaq tier codes appear only for Nasdaq-listed securities; no other code is trusted to fix a listing.
+OPENFIGI_URL = "https://api.openfigi.com/v3/mapping"
+FIGI_SIDES = {"US": ("USD", US_LISTINGS), "CN": ("CAD", CANADIAN_LISTINGS)}
+NASDAQ_TIERS = {"UW", "UQ", "UR"}
+FIGI_FIELDS = ("ticker", "name", "exchCode", "securityType", "securityType2", "figi", "compositeFIGI", "shareClassFIGI")
 MARKET_TIME = ZoneInfo("America/New_York")
 PRICE_PLACES = Decimal("0.0000000001")
 # Yahoo symbol -> {"price", "currency", "time" (epoch seconds), "history": [(ISO date, close)]}; absent when not returned.
@@ -121,13 +135,13 @@ def yahoo_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
 class QuoteCache:
     """The last fetched quote per symbol (EODHD-style key: AVGO.US, CM.TO), in one local JSON file. Analysis reads only this.
 
-    Daily closes from the same refresh sit beside it in history.json; nothing reads them yet.
+    Daily closes from the same refresh sit beside it in history.json; nothing reads them yet. OpenFIGI identity
+    rows sit in identities.json.
     """
 
     def __init__(self, directory: Path | str | None = None) -> None:
         self.directory = Path(directory or os.environ.get("MARKET_DATA_DIR") or Path(__file__).resolve().parents[1] / "data" / "market")
         self.path = self.directory / "quotes.json"
-        self.history_path = self.directory / "history.json"
 
     def get(self) -> dict[str, Quote]:
         if not self.path.exists():
@@ -141,15 +155,17 @@ class QuoteCache:
         temporary.write_text(json.dumps({symbol: row.model_dump(mode="json") for symbol, row in merged.items()}, indent=2), encoding="utf-8")
         temporary.replace(self.path)
 
-    def get_history(self) -> dict[str, Any]:
-        return json.loads(self.history_path.read_text(encoding="utf-8")) if self.history_path.exists() else {}
+    def read(self, name: str) -> dict[str, Any]:
+        """A side file in the same directory: "history" (daily closes) or "identities" (OpenFIGI rows by ticker)."""
+        path = self.directory / f"{name}.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
-    def put_history(self, history: dict[str, Any]) -> None:
-        merged = {**self.get_history(), **history}
+    def merge(self, name: str, rows: dict[str, Any]) -> None:
+        merged = {**self.read(name), **rows}
         self.directory.mkdir(parents=True, exist_ok=True)
-        temporary = self.history_path.with_suffix(".tmp")
+        temporary = self.directory / f"{name}.tmp"
         temporary.write_text(json.dumps(merged, indent=2), encoding="utf-8")
-        temporary.replace(self.history_path)
+        temporary.replace(self.directory / f"{name}.json")
 
 
 class PersonalFinancialProvider:
@@ -163,7 +179,8 @@ class PersonalFinancialProvider:
 
     def __init__(self, reference: FinancialEvidence | None = None, *, valet: bool = False,
                  transport: httpx.AsyncBaseTransport | None = None, eodhd_key: str = "", sec_agent: str = "",
-                 cache: QuoteCache | None = None, yahoo: YahooFetch | None = None) -> None:
+                 cache: QuoteCache | None = None, yahoo: YahooFetch | None = None, openfigi: bool = False,
+                 openfigi_key: str = "") -> None:
         self.reference = reference or FinancialEvidence()
         self.valet = valet
         self.transport = transport
@@ -171,6 +188,8 @@ class PersonalFinancialProvider:
         self.sec_agent = sec_agent
         self.cache = cache
         self.yahoo = yahoo
+        self.openfigi = openfigi
+        self.openfigi_key = openfigi_key
         self._sec: tuple[dict[str, tuple[int, str, str]], dict[str, int]] | None = None
 
     @classmethod
@@ -187,7 +206,8 @@ class PersonalFinancialProvider:
                 reference.sponsor_holdings[key] = SponsorHoldings.model_validate(val) if val else None
         return cls(reference, valet=os.environ.get("BOC_FX_ENABLED", "true").lower() == "true",
                    eodhd_key=os.environ.get("EODHD_API_KEY", ""), sec_agent=os.environ.get("SEC_USER_AGENT", ""),
-                   cache=QuoteCache(), yahoo=yahoo_quotes if os.environ.get("YFINANCE_ENABLED", "true").lower() == "true" else None)
+                   cache=QuoteCache(), yahoo=yahoo_quotes if os.environ.get("YFINANCE_ENABLED", "true").lower() == "true" else None,
+                   openfigi=os.environ.get("OPENFIGI_ENABLED", "true").lower() == "true", openfigi_key=os.environ.get("OPENFIGI_API_KEY", ""))
 
     async def _get(self, url: str, params: dict[str, str], headers: dict[str, str] | None = None) -> Any:
         async with httpx.AsyncClient(transport=self.transport, timeout=20, headers=headers) as client:
@@ -238,8 +258,11 @@ class PersonalFinancialProvider:
     async def lookup(self, ticker: str, listing: str | None, currency: str | None, as_of: date) -> list[Identity]:
         """Every listing matching what the user gave. More than one means ask; none leaves it unknown.
 
-        SEC answers US stocks for free. EODHD search (one call) is used only for Canadian listings
-        and US securities SEC does not list, such as ETFs.
+        SEC answers US operating companies for free. A ticker SEC lists for an investment company (an ETF or
+        unit trust such as SPY) keeps SEC's name but is an ETF; its exchange, which SEC's file does not give
+        reliably for funds, comes from OpenFIGI. When SEC cannot establish the security, OpenFIGI (free, cached)
+        is asked next; if it cannot name a Canadian listing or a type, EODHD search (one call) fills in.
+        Whatever is still missing is asked of the user.
         """
         tickers, names = await self._sec_safe()
         now = datetime.now(UTC)
@@ -247,17 +270,28 @@ class PersonalFinancialProvider:
         want_ca = listing in EODHD_LISTINGS.values() or listing is None and currency in {None, "CAD"}
         found: list[Identity] = []
         sec = tickers.get(ticker) if want_us else None
-        if sec and listing in {None, sec[2]}:
+        sec_kind = await self._sec_kind(sec[0]) if sec else None
+        if sec and sec_kind == "stock" and listing in {None, sec[2]}:
             found.append(Identity(status="verified", ticker=ticker, listing=sec[2], currency="USD", kind="stock",
                                   company_id=f"CIK{sec[0]:010d}", company_name=sec[1], source=f"SEC registrant CIK{sec[0]:010d}",
                                   source_url=SEC_TICKERS_URL, as_of=as_of, captured_at=now))
+        sides = {side for side, wanted in (("US", want_us and not found), ("CN", want_ca)) if wanted}
+        figi: list[Identity] = []
+        if sides and not found:  # SEC could not establish it
+            figi = self._figi_identities(ticker, await self._openfigi(ticker) or [], sides, listing, tickers, as_of, now)
+            if sec and sec_kind == "etf":
+                figi = self._sec_fund(sec, figi, ticker, listing, as_of, now)
+            # EODHD's US search names no exchange, so a typed US row without one can only be asked of the user.
+            if figi and all(row.kind and (row.listing or row.currency == "USD") for row in figi):
+                return figi
         exchange = EODHD_CODE.get(listing or "") or ("TO" if want_ca else "US")
         if not self.eodhd_key or not (want_ca or want_us and not found):
-            return found
+            return found + figi
         try:
             rows = await self._eodhd(f"search/{ticker}", exchange=exchange, limit="10")
         except (*SOURCE_ERRORS, SourceLimit):
-            return found
+            return found + figi
+        searched = len(found)
         for row in rows if isinstance(rows, list) else []:
             if not isinstance(row, dict) or row.get("Code") != ticker or row.get("Exchange") != exchange:
                 continue
@@ -275,6 +309,96 @@ class PersonalFinancialProvider:
             if cik is not None:
                 identity = identity.model_copy(update={"status": "verified", "source": f"SEC registrant CIK{cik:010d}; {identity.source}"})
             found.append(identity)
+        # EODHD rows replace OpenFIGI's incomplete rows for the side it searched; the other side's rows stay.
+        side_currency = "USD" if exchange == "US" else "CAD"
+        return found + [row for row in figi if len(found) == searched or row.listing and row.kind or row.currency != side_currency]
+
+    async def _sec_kind(self, cik: int) -> Literal["stock", "etf"] | None:
+        """What SEC's own records say a registrant is: "etf" for an investment company, "stock" for an operating
+        company, None when they do not say clearly or SEC is unreachable. Cached per CIK once known."""
+        key = f"CIK{cik:010d}"
+        cached = self.cache.read("sec_entities").get(key) if self.cache else None
+        if cached:
+            return cached["kind"]  # type: ignore[no-any-return]
+        try:
+            entity = await self._get(SEC_SUBMISSIONS_URL.format(cik=cik), {}, {"User-Agent": self.sec_agent})
+            forms = set(entity["filings"]["recent"]["form"])
+        except (*SOURCE_ERRORS, AttributeError):
+            return None
+        fund = entity.get("entityType") == "investment" or not entity.get("sic") and forms & FUND_FORMS and not forms & OPERATING_FORMS
+        operating = entity.get("sic") not in {None, "", *SEC_UNCLEAR_SIC} and forms & OPERATING_FORMS and not forms & FUND_FORMS
+        kind: Literal["stock", "etf"] | None = "etf" if fund else "stock" if operating else None
+        if kind and self.cache:
+            self.cache.merge("sec_entities", {key: {"kind": kind, "name": entity.get("name"), "entity_type": entity.get("entityType"),
+                                                    "sic": entity.get("sic"), "captured_at": datetime.now(UTC).isoformat()}})
+        return kind
+
+    @staticmethod
+    def _sec_fund(sec: tuple[int, str, str], figi: list[Identity], ticker: str, listing: str | None,
+                  as_of: date, now: datetime) -> list[Identity]:
+        """An SEC investment company: SEC's name and the ETF type win; OpenFIGI's US rows supply the listing, if any."""
+        source = f"SEC investment company CIK{sec[0]:010d}"
+        us = [row.model_copy(update={"kind": "etf", "company_name": sec[1], "company_id": None, "status": "supplied",
+                                     "source": f"{source}; {row.source}"}) for row in figi if row.currency == "USD"]
+        if not us:
+            us = [Identity(status="supplied", ticker=ticker, listing=listing if listing in US_LISTINGS else None, currency="USD",
+                           kind="etf", company_name=sec[1], source=source, source_url=SEC_SUBMISSIONS_URL.format(cik=sec[0]),
+                           as_of=as_of, captured_at=now)]
+        return us + [row for row in figi if row.currency != "USD"]
+
+    async def _openfigi(self, ticker: str) -> list[dict[str, str]] | None:
+        """OpenFIGI equity rows for one ticker: country composites and Nasdaq tiers only. None when off or failed.
+
+        Matches are cached for good; a no-match is cached for the day, so normal loads do not call again.
+        """
+        if not self.openfigi:
+            return None
+        cached = self.cache.read("identities").get(ticker) if self.cache else None
+        if cached and (cached["rows"] or cached["captured_at"][:10] == datetime.now(UTC).date().isoformat()):
+            return list(cached["rows"])
+        headers = {"X-OPENFIGI-APIKEY": self.openfigi_key} if self.openfigi_key else None
+        job = {"idType": "TICKER", "idValue": ticker.replace(".", "/"), "marketSecDes": "Equity"}
+        try:
+            async with httpx.AsyncClient(transport=self.transport, timeout=20, headers=headers) as client:
+                response = await client.post(OPENFIGI_URL, json=[job])
+                response.raise_for_status()
+                [answer] = response.json()
+            if "error" in answer:
+                return None
+            rows = [{field: str(row.get(field) or "") for field in FIGI_FIELDS} for row in answer.get("data", [])
+                    if row.get("exchCode") in {*FIGI_SIDES, *NASDAQ_TIERS}]
+        except (*SOURCE_ERRORS, AttributeError):
+            return None  # a 429 or an outage is not cached; the next load retries
+        if self.cache:
+            self.cache.merge("identities", {ticker: {"captured_at": datetime.now(UTC).isoformat(), "rows": rows}})
+        return rows
+
+    @staticmethod
+    def _figi_identities(ticker: str, rows: list[dict[str, str]], sides: set[str], listing: str | None,
+                         tickers: dict[str, tuple[int, str, str]], as_of: date, now: datetime) -> list[Identity]:
+        """One identity per OpenFIGI composite security on a wanted side. The listing is the user's, or XNAS from a
+        Nasdaq tier code; otherwise unknown. Currency follows the side and never changes the user's."""
+        found: list[Identity] = []
+        kinds: dict[str, Literal["stock", "etf"]] = {"Common Stock": "stock", "Preferred Stock": "stock"}
+        for row in rows:
+            if row["exchCode"] not in sides:
+                continue
+            currency, listings = FIGI_SIDES[row["exchCode"]]
+            nasdaq = row["exchCode"] == "US" and any(other["exchCode"] in NASDAQ_TIERS and other["compositeFIGI"] == row["compositeFIGI"]
+                                                     for other in rows)
+            known = "XNAS" if nasdaq else None
+            if listing is not None and (listing not in listings or known not in {None, listing}):
+                continue
+            kind = "etf" if row["securityType"] == "ETP" else kinds.get(row["securityType2"])
+            # A Canadian share class that is also a US composite links to the SEC registrant of that US ticker.
+            us = next((other for other in rows if other["exchCode"] == "US" and other["shareClassFIGI"] == row["shareClassFIGI"]), None)
+            sec = tickers.get(us["ticker"]) if kind == "stock" and us and row["shareClassFIGI"] else None
+            share_class = row["shareClassFIGI"] or row["compositeFIGI"]
+            found.append(Identity(
+                status="verified" if sec else "supplied", ticker=ticker, listing=listing or known, currency=currency, kind=kind,
+                company_id=f"CIK{sec[0]:010d}" if sec else f"FIGI-{share_class}" if kind == "stock" else None,
+                company_name=sec[1] if sec else row["name"], source_url=OPENFIGI_URL, as_of=as_of, captured_at=now,
+                source=(f"SEC registrant CIK{sec[0]:010d}; " if sec else "") + f"OpenFIGI {row['compositeFIGI']} (share class {share_class})"))
         return found
 
     async def identity(self, position: Position, as_of: date) -> Identity:
@@ -362,7 +486,7 @@ class PersonalFinancialProvider:
             history[symbol] = {"source": YAHOO_SOURCE, "symbol": yahoo, "currency": position.currency, "basis": "unadjusted",
                                "captured_at": now.isoformat(), "daily_close": closes}
         self.cache.put(quotes)
-        self.cache.put_history(history)
+        self.cache.merge("history", history)
         return quotes
 
     async def _eodhd_refresh(self, due: list[str], wanted: dict[str, Position], result: dict[str, Any]) -> None:
