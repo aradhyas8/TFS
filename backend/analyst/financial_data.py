@@ -1,8 +1,11 @@
 """Dated financial-source boundary. No model supplies identities, prices or rates."""
 
+import asyncio
 import json
 import os
 import re
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, localcontext
 from pathlib import Path
@@ -39,7 +42,16 @@ SUFFIX = {"XTSE": ".TO", "XTSX": ".V", "NEOE": ".NE", "XCNQ": ".CN"}
 EODHD_QUALIFICATION = SourceQualification(
     source=EODHD_SOURCE, terms_url="https://eodhd.com/financial-apis/terms-conditions",
     checked_on=date(2026, 10, 7), personal_use_permitted=True, covered_listings=sorted(EODHD_CODE))
+# Chosen by the user on 2026-10-08 after a live acceptance test: Yahoo Finance through the unofficial
+# yfinance library is the zero-cost primary quote source; EODHD remains the fallback. Not exchange data.
+YAHOO_SOURCE = "Yahoo Finance via yfinance (unofficial, not exchange data)"
+YAHOO_QUALIFICATION = SourceQualification(
+    source=YAHOO_SOURCE, terms_url="https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html",
+    checked_on=date(2026, 10, 8), personal_use_permitted=True, covered_listings=sorted(EODHD_CODE))
 MARKET_TIME = ZoneInfo("America/New_York")
+PRICE_PLACES = Decimal("0.0000000001")
+# Yahoo symbol -> {"price", "currency", "time" (epoch seconds), "history": [(ISO date, close)]}; absent when not returned.
+YahooFetch = Callable[[list[str]], dict[str, dict[str, Any]]]
 
 
 class FinancialProvider(Protocol):
@@ -70,12 +82,52 @@ def eodhd_symbol(position: Position) -> str | None:
     return f"{position.ticker}.{code}" if code and position.ticker and position.kind != "cash" else None
 
 
+def yahoo_symbol(position: Position) -> str | None:
+    """US tickers as-is, Canadian ones with their exchange suffix (CM -> CM.TO); share classes use a dash."""
+    if eodhd_symbol(position) is None or position.ticker is None:
+        return None
+    return position.ticker.replace(".", "-") + SUFFIX.get(position.listing or "", "")
+
+
+def yahoo_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    """One Yahoo chart request per symbol, run in parallel: latest price, currency, quote time and a month of daily closes.
+
+    yfinance has no multi-symbol quote call; yf.download is this same per-symbol fan-out but drops currency and time.
+    A symbol that errors or returns nothing is left out, so the caller can fall back for it.
+    """
+    import yfinance as yf  # type: ignore[import-untyped]
+
+    def one(symbol: str) -> dict[str, Any]:
+        ticker = yf.Ticker(symbol)
+        closes = ticker.history(period="1mo", interval="1d", auto_adjust=False)["Close"].dropna()
+        meta = ticker.get_history_metadata()
+        stamp = meta.get("regularMarketTime")  # a pandas Timestamp in yfinance 1.x
+        return {"price": meta.get("regularMarketPrice"), "currency": meta.get("currency"),
+                "time": int(stamp.timestamp()) if hasattr(stamp, "timestamp") else stamp,
+                "history": [(day.date().isoformat(), float(close)) for day, close in closes.items()]}
+
+    found: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for symbol, future in [(symbol, pool.submit(one, symbol)) for symbol in symbols]:
+            try:
+                row = future.result()
+            except Exception:  # noqa: BLE001 - any yfinance failure means "no quote", and the caller falls back
+                continue
+            if row["price"] is not None or row["history"]:
+                found[symbol] = row
+    return found
+
+
 class QuoteCache:
-    """The last fetched quote per EODHD symbol, in one local JSON file. Analysis reads only this."""
+    """The last fetched quote per symbol (EODHD-style key: AVGO.US, CM.TO), in one local JSON file. Analysis reads only this.
+
+    Daily closes from the same refresh sit beside it in history.json; nothing reads them yet.
+    """
 
     def __init__(self, directory: Path | str | None = None) -> None:
         self.directory = Path(directory or os.environ.get("MARKET_DATA_DIR") or Path(__file__).resolve().parents[1] / "data" / "market")
         self.path = self.directory / "quotes.json"
+        self.history_path = self.directory / "history.json"
 
     def get(self) -> dict[str, Quote]:
         if not self.path.exists():
@@ -89,24 +141,36 @@ class QuoteCache:
         temporary.write_text(json.dumps({symbol: row.model_dump(mode="json") for symbol, row in merged.items()}, indent=2), encoding="utf-8")
         temporary.replace(self.path)
 
+    def get_history(self) -> dict[str, Any]:
+        return json.loads(self.history_path.read_text(encoding="utf-8")) if self.history_path.exists() else {}
+
+    def put_history(self, history: dict[str, Any]) -> None:
+        merged = {**self.get_history(), **history}
+        self.directory.mkdir(parents=True, exist_ok=True)
+        temporary = self.history_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+        temporary.replace(self.history_path)
+
 
 class PersonalFinancialProvider:
-    """Reviewed reference file first, then SEC and EODHD identity, cached EODHD quotes and Valet FX.
+    """Reviewed reference file first, then SEC and EODHD identity, cached quotes and Valet FX.
 
-    yfinance is intentionally not enabled. EODHD is never primary-source verification: only an SEC
-    registrant match verifies an issuer. Quotes come only from the local cache, which refresh_quotes
-    fills at most once per symbol per day unless the user forces a refresh.
+    EODHD is never primary-source verification: only an SEC registrant match verifies an issuer.
+    Quotes come only from the local cache, which refresh_quotes fills at most once per symbol per day
+    unless the user forces a refresh: yfinance first, EODHD for whatever yfinance misses. yfinance is
+    used for quotes and daily closes only, never identity, FX, filings or holdings.
     """
 
     def __init__(self, reference: FinancialEvidence | None = None, *, valet: bool = False,
                  transport: httpx.AsyncBaseTransport | None = None, eodhd_key: str = "", sec_agent: str = "",
-                 cache: QuoteCache | None = None) -> None:
+                 cache: QuoteCache | None = None, yahoo: YahooFetch | None = None) -> None:
         self.reference = reference or FinancialEvidence()
         self.valet = valet
         self.transport = transport
         self.eodhd_key = eodhd_key
         self.sec_agent = sec_agent
         self.cache = cache
+        self.yahoo = yahoo
         self._sec: tuple[dict[str, tuple[int, str, str]], dict[str, int]] | None = None
 
     @classmethod
@@ -123,7 +187,7 @@ class PersonalFinancialProvider:
                 reference.sponsor_holdings[key] = SponsorHoldings.model_validate(val) if val else None
         return cls(reference, valet=os.environ.get("BOC_FX_ENABLED", "true").lower() == "true",
                    eodhd_key=os.environ.get("EODHD_API_KEY", ""), sec_agent=os.environ.get("SEC_USER_AGENT", ""),
-                   cache=QuoteCache())
+                   cache=QuoteCache(), yahoo=yahoo_quotes if os.environ.get("YFINANCE_ENABLED", "true").lower() == "true" else None)
 
     async def _get(self, url: str, params: dict[str, str], headers: dict[str, str] | None = None) -> Any:
         async with httpx.AsyncClient(transport=self.transport, timeout=20, headers=headers) as client:
@@ -247,7 +311,7 @@ class PersonalFinancialProvider:
         return cached
 
     async def refresh_quotes(self, positions: list[Position], *, force: bool = False) -> dict[str, Any]:
-        """Fetches each holding's delayed quote at most once per market day, within the plan's daily limit."""
+        """Fetches each holding's delayed quote at most once per market day: yfinance first, then EODHD within its daily limit."""
         if self.cache is None:
             return {"fetched": [], "fresh": [], "skipped": [], "failed": [], "remaining": None, "message": "No market-data cache."}
         today = datetime.now(MARKET_TIME).date()
@@ -258,11 +322,55 @@ class PersonalFinancialProvider:
         due = [symbol for symbol in wanted if symbol not in fresh]
         result: dict[str, Any] = {"fetched": [], "fresh": fresh, "skipped": [], "failed": [], "remaining": None, "message": ""}
         if not due:
-            result["message"] = "Prices already fetched today; no EODHD calls used."
+            result["message"] = "Prices already fetched today; no provider calls used."
             return result
+        yahoo = await self._yahoo_refresh({symbol: wanted[symbol] for symbol in due}) if self.yahoo else {}
+        result["fetched"] = sorted(yahoo)
+        rest = [symbol for symbol in due if symbol not in yahoo]
+        if not rest:
+            result["message"] = "Delayed prices fetched from Yahoo Finance (yfinance)."
+            return result
+        await self._eodhd_refresh(rest, wanted, result)
+        if yahoo:
+            result["message"] = f"{len(yahoo)} priced by Yahoo Finance (yfinance); EODHD fallback for {len(rest)}: {result['message']}"
+        return result
+
+    async def _yahoo_refresh(self, due: dict[str, Position]) -> dict[str, Quote]:
+        """Caches the yfinance quotes it can validate. A failed call, wrong currency or bad price leaves that symbol for EODHD."""
+        assert self.cache is not None and self.yahoo is not None
+        symbols = {yahoo: symbol for symbol, position in due.items() if (yahoo := yahoo_symbol(position))}
+        try:
+            rows = await asyncio.to_thread(self.yahoo, list(symbols))
+        except Exception:  # noqa: BLE001 - yfinance is unofficial; any failure means fall back
+            return {}
+        now = datetime.now(UTC)
+        quotes: dict[str, Quote] = {}
+        history: dict[str, Any] = {}
+        for yahoo, symbol in symbols.items():
+            row, position = rows.get(yahoo), due[symbol]
+            try:
+                assert row is not None and row.get("currency") == position.currency
+                price = Decimal(str(row["price"])).quantize(PRICE_PLACES)
+                traded = datetime.fromtimestamp(int(row["time"]), MARKET_TIME).date()
+                assert price.is_finite() and price > 0
+                closes = {day: str(Decimal(str(close)).quantize(PRICE_PLACES)) for day, close in row.get("history") or []}
+            except (AssertionError, KeyError, TypeError, ValueError, ArithmeticError):
+                continue
+            quotes[symbol] = Quote(value=price, as_of=traded, source=YAHOO_SOURCE, captured_at=now, basis="unadjusted",
+                                   ticker=position.ticker or "", listing=position.listing or "", currency=position.currency,
+                                   status="delayed", qualification=YAHOO_QUALIFICATION)
+            history[symbol] = {"source": YAHOO_SOURCE, "symbol": yahoo, "currency": position.currency, "basis": "unadjusted",
+                               "captured_at": now.isoformat(), "daily_close": closes}
+        self.cache.put(quotes)
+        self.cache.put_history(history)
+        return quotes
+
+    async def _eodhd_refresh(self, due: list[str], wanted: dict[str, Position], result: dict[str, Any]) -> None:
+        """EODHD real-time for the symbols yfinance missed, within the plan's daily limit. Fills result in place."""
+        assert self.cache is not None
         if not self.eodhd_key:
             result.update(skipped=due, message="No EODHD key configured; prices stay unknown.")
-            return result
+            return
         remaining = await self.remaining_calls()
         batch = due if remaining is None else due[:remaining]
         result["skipped"] = due[len(batch):]
@@ -271,17 +379,17 @@ class PersonalFinancialProvider:
                 rows = await self._eodhd(f"real-time/{batch[0]}", **({"s": ",".join(batch[1:])} if batch[1:] else {}))
             except SourceLimit:
                 result.update(skipped=due, message="EODHD daily request limit reached; cached prices are kept and new prices wait until tomorrow.")
-                return result
+                return
             except SOURCE_ERRORS:
                 result.update(failed=batch, message="EODHD could not be reached; cached prices are kept.")
-                return result
+                return
             now = datetime.now(UTC)
             quotes: dict[str, Quote] = {}
             for row in rows if isinstance(rows, list) else [rows]:
                 symbol = str(row.get("code")) if isinstance(row, dict) else ""
                 position = wanted.get(symbol)
                 try:
-                    price = Decimal(str(row["close"])).quantize(Decimal("0.0000000001"))
+                    price = Decimal(str(row["close"])).quantize(PRICE_PLACES)
                     traded = datetime.fromtimestamp(int(row["timestamp"]), MARKET_TIME).date()
                 except (KeyError, TypeError, ValueError, ArithmeticError):
                     continue
@@ -292,12 +400,11 @@ class PersonalFinancialProvider:
                                        ticker=position.ticker or "", listing=position.listing or "", currency=position.currency,
                                        status="delayed", qualification=EODHD_QUALIFICATION)
             self.cache.put(quotes)
-            result["fetched"] = sorted(quotes)
+            result["fetched"] = sorted([*result["fetched"], *quotes])
             result["failed"] = [symbol for symbol in batch if symbol not in quotes]
         result["remaining"] = None if remaining is None else remaining - len(batch)
         result["message"] = (f"{len(result['skipped'])} holdings wait for tomorrow: EODHD daily limit reached." if result["skipped"]
                              else "Delayed prices fetched." if result["fetched"] else "No prices returned.")
-        return result
 
     async def sponsor_holdings(self, position: Position, as_of: date) -> SponsorHoldings | None:
         holdings = self.reference.sponsor_holdings.get(position.id)

@@ -109,7 +109,7 @@ def test_identity_once_quotes_once_a_day_and_reviews_cost_no_eodhd_calls(tmp_pat
     before = len(market.eodhd)
     for _ in range(3):
         portfolio = reviewed(api, saved["snapshot"])
-    assert api.post("/api/market/refresh", json={}).json()["message"] == "Prices already fetched today; no EODHD calls used."
+    assert api.post("/api/market/refresh", json={}).json()["message"] == "Prices already fetched today; no provider calls used."
     assert len(market.eodhd) == before  # three reviews and a same-day refresh: zero EODHD calls
 
     rows = {row["supplied"]["ticker"]: row for row in portfolio["positions"]}

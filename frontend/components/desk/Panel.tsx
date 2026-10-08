@@ -200,9 +200,10 @@ function PriceStatus({ prices, refreshing, disabled, onRefresh }: { prices: Pric
   const quotes = Object.values(prices?.quotes ?? {});
   const latest = quotes.map(q => q.captured_at).filter((t): t is string => !!t).sort().at(-1);
   const cached = quotes.some(q => q.status === "cached");
+  const sources = [...new Set(quotes.map(q => q.source))].join(" and ");
   return <div className="pgroup pnote" aria-label="Prices" role="group">
     <span className="lbl">Prices</span>
-    <span className="cap">{quotes.length ? `${quotes.length} delayed quote${quotes.length === 1 ? "" : "s"} (about 15–20 min) from EODHD, fetched ${new Date(latest ?? "").toLocaleString()}${cached ? "; some are from an earlier day" : ""}. Not live.` : "No cached prices yet."}
+    <span className="cap">{quotes.length ? `${quotes.length} delayed quote${quotes.length === 1 ? "" : "s"} from ${sources}, fetched ${new Date(latest ?? "").toLocaleString()}${cached ? "; some are from an earlier day" : ""}. Not live.` : "No cached prices yet."}
       {prices?.message ? ` ${prices.message}` : ""}{prices?.remaining != null ? ` ${prices.remaining} EODHD requests left today.` : ""}</span>
     <span><button type="button" className="btn secondary small" disabled={refreshing || disabled} onClick={onRefresh}>{refreshing ? "Refreshing…" : "Refresh prices"}</button></span>
   </div>;
