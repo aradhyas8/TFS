@@ -259,7 +259,8 @@ def test_sector_appropriate_company_methods_use_reported_metric(sector, method, 
     for case in paths["cases"]:
         case.update(margins=["0.1" if method == "fcf_exit" else "1"] * 5,
                     cash_conversion=["0.8" if method == "fcf_exit" else "1"] * 5,
-                    reinvestment=["0.25" if method == "fcf_exit" else "0"] * 5)
+                    reinvestment=["0.25" if method == "fcf_exit" else "0"] * 5,
+                    return_on_equity=["0"] * 5 if method == "book_exit" else None)  # zero ROE: book value stays flat
     response, _ = run_stock(research=source, paths=paths)
     assert response.status_code == 200, response.text
     assert response.json()["stock"]["cases"][1]["terminal_price"] == expected
@@ -324,10 +325,12 @@ def test_financial_company_payout_uses_roe_earnings_instead_of_book_capital():
     response, _ = run_stock(research=source, paths=paths)
     assert response.status_code == 200, response.text
     case = response.json()["stock"]["cases"][1]
-    # Book/share = 20; annual earnings/share = 20 * 0.1 = 2.
-    # Annual dividend = 1; exit = 20. Ten shares convert at 1.3 CAD/USD.
-    assert case["terminal_price"] == "20"
-    assert case["known_terminal_value"] == "325"
+    # Book/share = 20; ROE 10% with half paid out retains 5%, so book/share compounds to 20 x 1.05^5 = 25.5256.
+    # Dividends are half of each year's earnings on opening book: 1 + 1.05 + ... + 1.05^4 = 5.52563.
+    # Exit at 1x book = 25.5256; (25.52563 + 5.52563) x ten shares x 1.3 CAD/USD = 403.67.
+    assert case["terminal_price"] == "25.5256"
+    assert case["known_terminal_value"] == "403.67"
+    assert [year["book_growth"] for year in case["path"]] == ["0.05"] * 5 and case["path"][0]["retention"] == "0.5"
 
 
 def test_missing_roe_does_not_turn_book_capital_into_dividends():
@@ -512,3 +515,42 @@ def test_stock_forced_tool_forces_calculate_company_cases_after_multiple_prematu
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["comparison"] is not None
+
+
+def test_explanatory_stock_prose_may_quote_figures_and_periods():
+    from analyst.pipeline import InvalidReview, validate_prose
+    # Ordinary explanation of reported figures and periods is allowed in Stock Analysis prose.
+    validate_prose("ROE was 14.3% for fiscal 2025 and 15.2% annualized in the latest quarter; book value per share is 65.14.", explanatory=True)
+    validate_prose("A brief history of one quarter and one fiscal year cannot settle where the credit cycle stands.", stock=True, explanatory=True)
+    validate_prose("Credit losses could reduce earnings by 10% in a downturn.", stock=True, explanatory=True)
+    # Probabilities, guarantees, all-your-cash and numeric trade sizing still fail.
+    for prose in ("The base case has a probability of fifty percent.", "Returns are guaranteed.", "Move all your cash into the bank.",
+                  "Add 30% to the position.", "Sell half of the holding.", "Buy 100 shares."):
+        with pytest.raises(InvalidReview):
+            validate_prose(prose, stock=True, explanatory=True)
+    # Outside Stock Analysis the strict rule is unchanged.
+    with pytest.raises(InvalidReview):
+        validate_prose("ROE was 14.3% in the latest quarter.")
+
+
+@pytest.mark.parametrize("reason,ok", [
+    ("No earnings-call transcript was available, so management tone is unknown.", True),
+    ("A transcript could change the view on credit quality.", True),
+    ("The transcript says management expects lower credit losses.", False),
+    ("Transcript Q&A was reviewed and confirms the thesis.", False),
+])
+def test_transcript_mentions_versus_claims(reason, ok):
+    answer = stock_answer()
+    answer["reason"] = reason
+    response, _ = run_stock(answer=answer)
+    assert (response.status_code == 200) is ok, response.text
+
+
+def test_stray_citation_is_removed_but_fabricated_evidence_fails():
+    answer = stock_answer()
+    answer["evidence_ids"] = [*answer["evidence_ids"], "quote-p1"]
+    response, _ = run_stock(answer=answer)
+    assert response.status_code == 200, response.text
+    recommendation = response.json()["recommendation"]
+    assert "quote-p1" not in recommendation["evidence_ids"] and recommendation["preferred_action"] == "hold"
+    assert "A citation to a document not available to this analysis was removed." in recommendation["uncertainty"]

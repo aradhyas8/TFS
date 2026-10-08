@@ -109,9 +109,10 @@ export type StockResult = { position_id: string; as_of: string; reporting_curren
   judgments: { method: string; mid_cycle_context: string | null; metric_fact_id?: string | null; revenue_fact_id?: string | null };
   cases: { name: string; terminal_metric: string | null; terminal_shares: string | null;
     terminal_price: string | null; known_terminal_value: string | null; present_value_per_share: string | null;
-    starting_metric?: string | null; starting_shares?: string | null; equity_value?: string | null; discount_factor?: string | null;
+    starting_metric?: string | null; starting_shares?: string | null; starting_per_share?: string | null; equity_value?: string | null; discount_factor?: string | null;
     present_value_of_exit?: string | null; present_value_of_distributions?: string | null;
-    path?: { year: number; revenue: string | null; metric: string; metric_margin: string | null; diluted_shares: string; metric_per_share: string; distribution_per_share: string }[];
+    path?: { year: number; revenue: string | null; metric: string; metric_margin: string | null; diluted_shares: string; metric_per_share: string; distribution_per_share: string;
+      return_on_equity?: string | null; payout?: string | null; retention?: string | null; book_growth?: string | null }[];
     sensitivity_prices: (string | null)[]; required_exit_multiple: string | null; qualifications: string[];
     judgment: { growth: string[]; margins: string[]; cash_conversion: string[]; reinvestment: string[];
       dilution: string[]; payout: string[]; return_on_equity: string[] | null; fx_multipliers: string[]; discount_rate: string;

@@ -57,9 +57,11 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
                 or candidate.period_start is not None and candidate.period_start > candidate.period_end
                 or metric in {"revenue", "ffo"} and (candidate.period_start is None or not 350 <= (candidate.period_end - candidate.period_start).days <= 380)
                 # Automated SEC XBRL facts pass on their automated checks; footnotes are not read, which is disclosed below.
-                or not all((candidate.filing_checked, candidate.review == "sec_xbrl" or candidate.notes_checked,
+                or not all((candidate.filing_checked, candidate.review in {"sec_xbrl", "issuer_report"} or candidate.notes_checked,
                             candidate.custom_tags_checked, candidate.segments_checked))
-                or not any(doc.authority in required_filing and doc.available for doc in refs)
+                # The issuer's own published report is the primary source for issuer_report facts; SEDAR+ is optional there.
+                or not any(doc.available and (doc.authority in required_filing or candidate.review == "issuer_report" and doc.authority == "issuer")
+                           for doc in refs)
                 or any(not doc.available or doc.published_on > portfolio.as_of or doc.as_of > portfolio.as_of or doc.as_of < candidate.period_end for doc in refs)):
             issues.append(f"{metric}: period, unit, definition or primary filing checks are unusable; fact remains unknown.")
             return None
@@ -69,6 +71,9 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
                (candidate.value, candidate.unit, candidate.currency, candidate.definition) for other in matches):
             issues.append(f"{metric}: contradictory reported facts remain unknown.")
             return None
+        if candidate.review == "issuer_report":
+            issues.append(f"{metric}: read automatically from the issuer's published report ({candidate.id}); period, unit and conflicts are "
+                          "checked automatically, footnotes were not human-reviewed.")
         if candidate.review == "sec_xbrl":
             issues.append(f"{metric}: automated SEC XBRL fact ({candidate.id}); filing, period, unit, segment and alternative-tag checks are automated, footnotes and company extension tags were not human-reviewed.")
         return candidate
@@ -107,9 +112,12 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
             case_issues = list(issues)
             if judgment.method != "book_exit" and case.return_on_equity is not None:
                 raise ValueError("ROE paths apply only to book-value cases.")
-            missing_roe = judgment.method == "book_exit" and any(case.payout) and case.return_on_equity is None
+            # A bank's book grows by what it retains: growth = ROE x (1 - payout), derived here, never judged separately.
+            missing_roe = judgment.method == "book_exit" and case.return_on_equity is None
             if missing_roe:
-                case_issues.append("Return on equity is unknown; book capital cannot be treated as distributable earnings.")
+                case_issues.append("Return on equity is unknown; book-value growth and distributable earnings cannot be derived.")
+            elif judgment.method == "book_exit" and any(case.growth):
+                case_issues.append("Book-value growth is derived as ROE x (1 - payout); the supplied growth path is not used.")
             base_metric = initial.value if initial and not missing_roe else None
             diluted = shares.value if shares else None
             distributions = Decimal(0)
@@ -125,7 +133,8 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
             if base_metric is not None and diluted is not None and diluted > 0 and fx is not None:
                 for year in range(5):
                     opening_metric = base_metric
-                    base_metric *= 1 + case.growth[year]
+                    book_growth = case.return_on_equity[year] * (1 - case.payout[year]) if judgment.method == "book_exit" and case.return_on_equity else None
+                    base_metric *= 1 + (case.growth[year] if book_growth is None else book_growth)
                     diluted *= 1 + case.dilution[year]
                     terminal_metric = base_metric * case.margins[year] if operating else base_metric
                     if judgment.method == "fcf_exit":
@@ -141,7 +150,9 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
                     path.append(CaseYear(year=year + 1, revenue=fixed(base_metric, 2) if operating else None, metric=fixed(terminal_metric, 2),
                                          metric_margin=fixed(terminal_metric / base_metric, 6) if operating and base_metric else None,
                                          diluted_shares=fixed(diluted, 0), metric_per_share=fixed(terminal_metric / diluted, 4),
-                                         distribution_per_share=fixed(income, 4)))
+                                         distribution_per_share=fixed(income, 4),
+                                         **({"return_on_equity": fixed(case.return_on_equity[year], 4), "payout": fixed(case.payout[year], 4),  # type: ignore[index]
+                                             "retention": fixed(1 - case.payout[year], 4), "book_growth": fixed(book_growth, 6)} if book_growth is not None else {})))
                 assert terminal_metric is not None
                 factor = (1 + case.discount_rate) ** 5
                 price = max(terminal_metric, Decimal(0)) * case.exit_multiple / diluted
@@ -156,6 +167,7 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
                 name=case.name, judgment=case,
                 starting_metric=fixed(initial.value, 2) if initial and initial.value is not None else None,
                 starting_shares=fixed(shares.value, 0) if shares and shares.value is not None else None,
+                starting_per_share=fixed(initial.value / shares.value, 4) if initial and shares and initial.value is not None and shares.value else None,
                 path=path,
                 equity_value=fixed(max(terminal_metric, Decimal(0)) * case.exit_multiple, 2) if price is not None and terminal_metric is not None else None,
                 discount_factor=fixed(factor, 6) if factor is not None and price is not None else None,
@@ -212,6 +224,16 @@ def valuation(research: CompanyResearch, judgment: CompanyJudgments, cases: list
         label = reported_name.replace("_", " ")
         notes.append(f"The base case's first-year {label} margin ({modeled:.1%}) differs from the reported {reported_margin:.1%} "
                      f"for {initial.period_start} to {initial.period_end} by more than a quarter; that gap is a judgment, not a reported fact.")
+    if judgment.method == "book_exit":
+        # The reported payout anchors the bank cases' payout judgment: dividends per share over diluted EPS, same fiscal year.
+        years = sorted({(fact.period_start, fact.period_end) for fact in research.facts if fact.metric == "eps_diluted" and fact.id.split("-")[1] == "fy"},
+                       key=lambda period: period[1], reverse=True)
+        for start, end in years[:1]:
+            eps, dps = by_metric.get(("eps_diluted", start, end)), by_metric.get(("dividend_per_share", start, end))
+            if eps and dps is not None and eps > 0:
+                payouts = ", ".join(f"{case.name} {case.judgment.payout[0]:.0%}" for case in cases)
+                notes.append(f"Reported payout for the year ended {end}: dividends {dps} / diluted EPS {eps} = {dps / eps:.1%}. "
+                             f"First-year payout judgments: {payouts}. Book value grows by ROE x (1 - payout).")
     cash = by_metric.get(("cash", None, initial.period_end))
     debt = by_metric.get(("total_debt", None, initial.period_end))
     if cash is not None or debt is not None:

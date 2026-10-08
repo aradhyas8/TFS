@@ -123,6 +123,17 @@ function ScenariosTab({ result, snapshot }: { result: Analysis; snapshot: Snapsh
         {(() => {
           const base = stock.cases.find(c => c.name === "base");
           if (!base?.path?.length) return null;
+          if (stock.judgments.method === "book_exit") {
+            const last = base.path[base.path.length - 1];
+            return <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <table className="matrix" aria-label="Base case, year by year">
+                <thead><tr><th scope="col">Year</th><th scope="col">ROE</th><th scope="col">Payout</th><th scope="col">Retention</th><th scope="col">Book growth</th><th scope="col">Book / share</th><th scope="col">Dividend</th></tr></thead>
+                <tbody>{base.path.map(year => <tr key={year.year}><th scope="row">{year.year}</th><td>{pct(year.return_on_equity)}</td><td>{pct(year.payout)}</td>
+                  <td>{pct(year.retention)}</td><td>{pct(year.book_growth)}</td><td>{money(year.metric_per_share, local)}</td><td>{money(year.distribution_per_share, local)}</td></tr>)}</tbody>
+              </table>
+              <span className="cap n">Start book {money(base.starting_per_share, local)} a share · grows by ROE × retention · year 5 {money(last.metric_per_share, local)} × {base.judgment.exit_multiple} book = {money(base.terminal_price, local)} · ÷ {base.discount_factor} = {money(base.present_value_of_exit, local)} + dividends {money(base.present_value_of_distributions, local)} = {money(base.present_value_per_share, local)}</span>
+            </div>;
+          }
           return <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <table className="matrix" aria-label="Base case, year by year">
               <thead><tr><th scope="col">Year</th><th scope="col">Revenue</th><th scope="col">{stock.judgments.method === "fcf_exit" ? "FCF" : "Earnings"}</th><th scope="col">Shares</th><th scope="col">Per share</th></tr></thead>

@@ -829,16 +829,20 @@ class FactSource(Contract):
 
 
 RESEARCH_METRICS = ("revenue", "shares", "book_value", "ffo", "operating_income", "net_income", "cash", "total_debt",
-                    "operating_cash_flow", "capex", "free_cash_flow")
-NON_NEGATIVE_METRICS = {"revenue", "shares", "book_value", "ffo", "cash", "total_debt", "capex"}
+                    "operating_cash_flow", "capex", "free_cash_flow", "eps_diluted", "book_value_per_share", "roe",
+                    "cet1_ratio", "dividend_per_share", "weighted_diluted_shares")
+NON_NEGATIVE_METRICS = {"revenue", "shares", "book_value", "ffo", "cash", "total_debt", "capex", "book_value_per_share",
+                        "cet1_ratio", "dividend_per_share", "weighted_diluted_shares"}
 
 
 class ResearchFact(Contract):
     id: Identifier
     metric: Literal["revenue", "shares", "book_value", "ffo", "operating_income", "net_income", "cash", "total_debt",
-                    "operating_cash_flow", "capex", "free_cash_flow"]
+                    "operating_cash_flow", "capex", "free_cash_flow", "eps_diluted", "book_value_per_share", "roe",
+                    "cet1_ratio", "dividend_per_share", "weighted_diluted_shares"]
     value: SignedAmount | None
-    unit: Literal["currency", "shares"]
+    # Per-share amounts carry their currency; ratios (ROE, CET1) are decimal fractions with no currency.
+    unit: Literal["currency", "shares", "per_share", "ratio"]
     currency: Currency | None
     period_start: date | None
     period_end: date
@@ -850,7 +854,9 @@ class ResearchFact(Contract):
     segments_checked: bool
     # "manual": independently reviewed extract. "sec_xbrl": read automatically from SEC CompanyFacts; the filing,
     # segment and alternative-tag checks are automated and footnotes are not read, so notes_checked stays false.
-    review: Literal["manual", "sec_xbrl"] = "manual"
+    # "issuer_report": read automatically from the issuer's own published report (e.g. a bank's supplementary financial
+    # information workbook); the same automated checks apply and footnotes are not read.
+    review: Literal["manual", "sec_xbrl", "issuer_report"] = "manual"
     sources: list[FactSource] = Field(default_factory=list, max_length=6)
 
     @model_validator(mode="after")
@@ -927,6 +933,11 @@ class CaseYear(Contract):
     diluted_shares: str
     metric_per_share: str
     distribution_per_share: str
+    # Book-value (bank) cases only: the year's ROE and payout judgments and the growth Python derives from them.
+    return_on_equity: str | None = None
+    payout: str | None = None
+    retention: str | None = None
+    book_growth: str | None = None
 
 
 class CalculatedCompanyCase(Contract):
@@ -935,6 +946,7 @@ class CalculatedCompanyCase(Contract):
     # The deterministic chain, exposed for audit: starting facts, each year, the exit and the discounting.
     starting_metric: str | None = None
     starting_shares: str | None = None
+    starting_per_share: str | None = None
     path: list[CaseYear] = Field(default_factory=list, max_length=5)
     equity_value: str | None = None
     discount_factor: str | None = None

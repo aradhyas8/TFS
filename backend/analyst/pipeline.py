@@ -1,5 +1,6 @@
 import copy
 import json
+import logging
 import re
 from decimal import Decimal
 from typing import Any
@@ -110,16 +111,26 @@ def validate_recommendation(answer: dict[str, Any], *, stock: bool = False) -> R
             *(alternative.reason for alternative in recommendation.alternatives),
         ]
     )
-    validate_prose(prose, stock=stock)
+    validate_prose(prose, stock=stock, explanatory=stock)
     return recommendation
 
 
-def validate_prose(prose: str, *, stock: bool = False) -> None:
+def validate_prose(prose: str, *, stock: bool = False, explanatory: bool = False) -> None:
+    """explanatory: Stock Analysis prose that explains backend-calculated cases. It may quote reported figures and
+    name periods ("the latest quarter"); the numbers that matter are validated as structured fields. Probabilities,
+    guarantees, "all your cash" and a number attached to a trade verb ("add 30%") are still rejected."""
     quantitative = (
         r"\d|[%$€£¥]|\b(?:percent|probability|probabilities|guaranteed|half|quarter|"
         r"third|double|triple|hundred|thousand|million|billion)\b|"
         r"\ball (?:of )?(?:your |the )?(?:cash|funds|holdings|portfolio|money)\b"
     )
+    if explanatory:
+        quantitative = (
+            r"\b(?:probability|probabilities|guaranteed|double|triple)\b|"
+            r"\ball (?:of )?(?:your |the )?(?:cash|funds|holdings|portfolio|money)\b|"
+            r"\b(?:buy|sell|add|trim|reduce|increase|deploy|invest|allocate|purchase)\s+(?:about |roughly |around |up to |another )?"
+            r"(?:[$€£¥]?\d[\d,.]*\s*(?:%|percent|shares?|units?)?|half|a quarter|a third)(?![\w-])"
+        )
     execution = r"(?:buy|buying|bought|sell|selling|sold|purchase[ds]?|purchasing|trade[ds]?|trading|allocate[ds]?|allocating|invest(?:ed|ing)?|rebalance[ds]?|rebalancing)"
     adjustment = r"(?:increase|reduce|trim|exit|deploy|put|shift|transfer|add)"
     direction = rf"(?:{execution}|{adjustment})"
@@ -225,9 +236,9 @@ def validate_review_baseline(prose: str, request: AnalysisRequest) -> None:
 
 def validate_company_judgments(judgments: CompanyJudgments) -> None:
     for case in judgments.cases:
-        validate_prose(" ".join([*case.assumptions, *case.uncertainty]))
+        validate_prose(" ".join([*case.assumptions, *case.uncertainty]), explanatory=True)
     if judgments.mid_cycle_context:
-        validate_prose(judgments.mid_cycle_context)
+        validate_prose(judgments.mid_cycle_context, explanatory=True)
 
 
 def enforce_guardrails(
@@ -483,6 +494,7 @@ async def analyze(
     comparison = None
     company_research = None
     stock_result = None
+    company_retry = True  # one rejected calculate_company_cases call is returned to the model to correct
     research_tools: set[str] = set()
     seen_calls: set[str] = set()
     forced_tool_next: str | None = None
@@ -769,11 +781,26 @@ async def analyze(
                         else:
                             if not {expected_filing, "get_issuer_material"}.issubset(research_tools):
                                 raise InvalidReview("Company cases require primary filing and issuer review, and run once.")
-                            company_judgments = CompanyJudgments.model_validate(normalize_numeric_tool_inputs(arguments))
-                            validate_company_judgments(company_judgments)
-                            stock_result = calculate_company_cases(request.stock.position_id, company_research, company_judgments, computed)
-                            output = stock_result.model_dump(mode="json")
-                            if request.comparison:
+                            rejected = ""
+                            try:
+                                company_judgments = CompanyJudgments.model_validate(normalize_numeric_tool_inputs(arguments))
+                                validate_company_judgments(company_judgments)
+                                stock_result = calculate_company_cases(request.stock.position_id, company_research, company_judgments, computed)
+                            except (InvalidReview, ValidationError, ValueError) as err:
+                                if not company_retry:
+                                    raise
+                                company_retry = False
+                                logging.warning("calculate_company_cases rejected with %s: %s; returning the error once.", type(err).__name__, err)
+                                rejected = str(err)
+                            if rejected:
+                                output = {"error": f"calculate_company_cases was rejected: {rejected}",
+                                          "instruction": "Correct the inputs and call calculate_company_cases again. Assumptions and uncertainty are explanation: no probabilities, "
+                                                         "guarantees or trade sizes. book_exit and ffo_exit need margins and cash conversion of 1 and zero reinvestment; "
+                                                         "book_exit needs return_on_equity every year."}
+                            else:
+                                assert stock_result is not None
+                                output = stock_result.model_dump(mode="json")
+                            if not rejected and request.comparison:
                                 output["comparison_inputs"] = request.comparison.model_dump(mode="json")
                                 output["instruction"] = "MANDATORY: You must now call calculate_comparison using these exact comparison_inputs before returning your final recommendation."
                     else:
@@ -1230,7 +1257,7 @@ Required tool sequence:
 3. Call get_issuer_material.
 4. Call calculate_company_cases with operating judgments for this company.
 5. After calculate_company_cases, you MUST call calculate_comparison using judgments that cover exactly the alternatives in comparison_inputs (by alternative_id). Every stock analysis requires calculate_comparison before the final recommendation. Never return the final recommendation before calling calculate_comparison.
-6. In your final recommendation, evidence_ids must cite both the filing document ID (from get_sec_filings or get_sedar_filings) and the issuer document ID (from get_issuer_material). Do not cite quote IDs or invented IDs.
+6. In your final recommendation, evidence_ids must cite both the filing document ID (from get_sec_filings or get_sedar_filings) and the issuer document ID (from get_issuer_material); when the figures come from the issuer's own published report and no SEDAR+ link is returned, citing that issuer report is enough. Do not cite quote IDs or invented IDs.
 7. Return the final recommendation.
 
 Research is backend bound; filing and
@@ -1241,6 +1268,13 @@ definitions, original filing checks and conflicting records are authoritative. S
 revenue_fact_id to a fiscal-year revenue fact (id containing "-fy-") and shares_fact_id to the diluted
 shares fact for the same fiscal year; quarterly and year-to-date facts, operating and net income, cash,
 debt and cash flows are evidence for your margin, cash-conversion, reinvestment and growth judgments.
+For book_exit (banks), set revenue_fact_id to null, metric_fact_id to the latest book_value fact (common
+equity, id containing "-at-") and shares_fact_id to the shares fact (metric "shares", period-end shares
+outstanding) at the same date, never a weighted-average share count; margins and cash conversion are 1,
+reinvestment is 0, and return_on_equity is required for every year. Choose a normalized annual ROE and a payout
+ratio per year (anchor payout to reported dividends per share over diluted EPS for the same fiscal year); Python
+derives book-value growth as ROE x (1 - payout), so set growth to 0. Starting book is a period-end balance, ROE and
+payout are annual rates: do not treat a quarter's figures as a year.
 When research cyclical is null or true, mid_cycle_context is required: state, from the reported history,
 why your margin path is a mid-cycle rather than peak level; without it the cases stay unknown.
 Anchor the first modeled year to the reported figures: for fcf_exit, margin x cash_conversion x
@@ -1292,14 +1326,24 @@ def validate_stock_recommendation(answer: Recommendation, stock: StockResult,
                                   evidence_scope: dict[str, ResearchDocument] | None = None) -> Recommendation:
     assert isinstance(answer, StockRecommendation)
     available = evidence_scope if evidence_scope is not None else {doc.id: doc for doc in stock.research.documents if doc.available}
-    if any(key not in available for key in answer.evidence_ids):
-        raise InvalidReview("Material claims cannot cite unavailable primary evidence.")
+    unavailable = [key for key in answer.evidence_ids if key not in available]
+    if unavailable:
+        # Only available documents may be cited. A stray ID beside real citations is removed and said so; an answer
+        # citing nothing available is fabricated evidence and fails.
+        if len(unavailable) == len(answer.evidence_ids):
+            raise InvalidReview("Material claims cannot cite unavailable primary evidence.")
+        logging.warning("Removed citations to unavailable documents: %s", unavailable)
+        answer = answer.model_copy(update={"evidence_ids": [key for key in answer.evidence_ids if key in available],
+                                           "uncertainty": [*answer.uncertainty, "A citation to a document not available to this analysis was removed."]})
     cited = [available[key] for key in answer.evidence_ids]
     prose = " ".join([answer.reason, answer.downside, *answer.assumptions, *answer.uncertainty,
                       *answer.what_could_change, *(row.reason for row in answer.alternatives)])
     if not any(doc.qa_available for doc in cited):
         for sentence in re.split(r"[.!?;]", prose):
-            if re.search(r"(?:transcript|Q&A|question.and.answer)", sentence, re.I) and (not re.search(r"(?:unavailable|not available|not reviewed|unknown)", sentence, re.I) or re.search(r"\b(?:reviewed|read|confirms|supports)\b", re.sub(r"not reviewed|not read", "", sentence, flags=re.I), re.I)):
+            # Mentioning a transcript is fine; claiming to have read one that is unavailable is not.
+            claimed = re.sub(r"\b(?:not|never|no|without|cannot|could not|was not|were not)\s+(?:been\s+)?(?:reviewed|read|available)\b", "", sentence, flags=re.I)
+            if re.search(r"(?:transcript|Q&A|question.and.answer)", sentence, re.I) and re.search(
+                    r"\b(?:reviewed|read|confirms?|confirmed|supports?|says|said|states?|stated|notes?|noted|shows?|showed|according to)\b", claimed, re.I):
                 raise InvalidReview("Unavailable transcript Q&A cannot be claimed reviewed.")
     if any(doc.authority == "macro" for doc in cited) and not re.search(r"(?:mechanism|because|through)", prose, re.I):
         raise InvalidReview("Macro evidence requires a named thesis mechanism.")
@@ -1308,7 +1352,9 @@ def validate_stock_recommendation(answer: Recommendation, stock: StockResult,
                    or any(doc.authority in {"sedar", "sedar_plus"} for doc in cited)
                    or any(doc.authority in {"sedar", "sedar_plus"} for doc in stock.research.documents))
     required_filing = {"sedar", "sedar_plus"} if is_canadian else {"sec"}
-    has_filing = any(doc.authority in required_filing for doc in cited if doc.company_id == stock.research.company_id)
+    # An issuer's own published report counts as the primary filing for the figures read from it (a SEDAR+ link is optional).
+    issuer_reports = {key for fact in stock.research.facts if fact.review == "issuer_report" for key in fact.document_ids}
+    has_filing = any(doc.authority in required_filing or doc.id in issuer_reports for doc in cited if doc.company_id == stock.research.company_id)
     has_issuer = any(doc.authority == "issuer" for doc in cited if doc.company_id == stock.research.company_id)
     missing = (not has_filing or not has_issuer) or any(case.terminal_price is None for case in stock.cases)
     adding = answer.preferred_action == "add" or any(row.action == "add" for row in answer.alternatives)

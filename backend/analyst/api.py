@@ -13,6 +13,7 @@ from .config import Settings
 from .csv_input import COLUMNS, load_csv
 from .decisions import DecisionStore, extract_decision
 from .financial_data import FinancialProvider, PersonalFinancialProvider, eodhd_symbol
+from .issuer_research import IssuerResearchProvider
 from .pipeline import InvalidReview, analyze
 from .portfolio import HOLDINGS_COLUMNS, PortfolioStore, enrich, identify, load_holdings
 from .providers import DataProvider, ModelProvider, OpenAIModel, SuppliedDataProvider
@@ -162,7 +163,7 @@ def create_app(
         try:
             financial_source = financial or PersonalFinancialProvider.from_environment()
             # Stock Analysis reads SEC EDGAR live (cached) for verified US stocks; the reviewed file stays optional extra evidence.
-            research_source = research or (SecResearchProvider.from_environment() if request.stock
+            research_source = research or (IssuerResearchProvider.from_environment(SecResearchProvider.from_environment()) if request.stock
                                            else ReviewedResearchProvider.from_environment() if request.new_cash or request.portfolio_review or (request.theme and request.theme.confirmed) else None)
             return await analyze(request, provider, source, secret=config.api_key, financial=financial_source, research=research_source, discovery=discovery)
         except (ValueError, OSError):
