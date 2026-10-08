@@ -24,7 +24,7 @@ export default function PortfolioEditor({ snapshot, setSnapshot, busy, onError, 
     setImporting(true); onError("");
     try {
       const loaded = await post<Snapshot>("/api/portfolio/csv", { csv: await file.text(),
-        as_of: snapshot.as_of, reporting_currency: snapshot.reporting_currency });
+        as_of: snapshot.as_of || undefined, reporting_currency: snapshot.reporting_currency || "CAD" });
       setSnapshot(loaded);
     } catch (error) { onError(error instanceof Error ? error.message : "CSV import failed."); }
     finally { setImporting(false); }

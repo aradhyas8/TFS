@@ -1,4 +1,4 @@
-# UI Direction D — design system and New Cash workflow
+# UI Direction D — design system, New Cash and Portfolio Review
 
 Status: approved. New Cash is implemented at `/new-cash` (`frontend/app/new-cash/`, `frontend/components/desk/`). Other workflows still use the classic page at `/`.
 Visual boards: https://claude.ai/artifact/A5CuE6vFYVvCN9k3bhofLr (page "Direction D · New cash").
@@ -238,6 +238,35 @@ Field mapping:
 - `previews[].guardrails` produce the Guardrails tab.
 - `missing_inputs` produce "Needs you".
 - `research.documents[].available === false` produces "Looked for, not found".
+
+## Portfolio Review (shipped)
+
+Direction D is now the app's normal shell. It answers at `/`, and `/new-cash` serves the same page. The classic page moved to `/classic`. Stock analysis, rebalance and theme discovery still link there.
+
+- **Opening the app.** The saved portfolio, rules and decisions load automatically. The rail shows the holdings, the exact portfolio date and the rules. A first-time user sees the import.
+- **Asking.** An ordinary question typed into the composer runs the existing portfolio review against the saved portfolio. No slash command is needed; the button reads "Ask". `/review` is only a shortcut that fills in "Review my portfolio". A starter of the same name runs it in one click. The request is the plain review contract: question, saved snapshot and saved rules. No new backend fields.
+- **Questions about new cash.** If the backend recognizes the question as one, the answer comes back as an allocation and is shown with the New Cash memo.
+- **Follow-ups.** Each one is a new review of the same saved portfolio. The composer clears and its placeholder says so. There is no conversational memory.
+- **Unresolved holdings** block asking, with "Identify N holdings first" in the composer and a link to the Holdings tab.
+
+Review memo rows (`ReviewAnswer`):
+
+| Row | Source |
+|---|---|
+| Recommendation | `preferred_action`. For `review_only`: "Your portfolio breaks N of your rules." when guardrails are breached, otherwise "Here is where your portfolio stands." The meta line shows "Valued <date>" or "Some values are unknown", plus the rules status. |
+| Why | `reason`, with citations |
+| Portfolio today | `total_value` (or the known subtotal), holdings, cash, account count, then up to 8 position weight bars. A position over its cap is amber; an unknown weight is a dashed bar. |
+| Exposure | Top 3 `direct_companies` by weight, the `indirect_exposure` status (unknown is never shown as zero), and `company_overlap` rows held through funds |
+| Risks | `downside`, plus "What's unknown": position issues and review qualifications, collapsed |
+| Alternatives, Detail, Notes | As in New Cash. Detail links to Guardrails, Evidence and Scenarios. |
+| Saved | Record what you did: "Left the portfolio as it is", "Trimmed a holding" or "Added to a holding" |
+
+Panel for a review:
+
+- **Evidence:** "Prices and rates used", meaning each position's quote (source, date, status), the FX rates and the fund-holdings sources.
+- **Scenarios:** says a review doesn't project scenarios and points to /new-cash.
+- **Holdings:** valued positions and weights.
+- **Guardrails:** "Your portfolio today (no amount was tested)", with plain Over/Within status. "Over, before this cash" appears only when an amount was tested.
 
 ## 11. Extending to the other workflows
 

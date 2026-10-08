@@ -361,3 +361,198 @@ def test_empty_or_partial_baseline_does_not_authorize_an_invented_complete_mix(b
     final = {**recommendation(), "preferred_action": "reduce", "reason": "Rebalance toward the target mix.", "evidence_ids": ["review-p1-filing", "review-p1-issuer"]}
     response, _ = run_review(request, answer=final)
     assert response.status_code == 502
+
+
+def test_reunderwriting_normalizes_unknown_in_numeric_fields_and_preserves_strict_schemas():
+    holding_judgment = assessment()
+    for case in holding_judgment["judgments"]["cases"]:
+        case["growth"] = ["unknown", "unknown", "unknown", "unknown", "unknown"]
+        case["margins"] = ["unknown", "unknown", "unknown", "unknown", "unknown"]
+        case["discount_rate"] = "unknown"
+        case["exit_multiple"] = "n/a"
+    response, _ = run_review(judgment=holding_judgment)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert "reunderwriting" in result
+    stocks = result["reunderwriting"]["stocks"]
+    assert len(stocks) == 1
+    # Check that cases were calculated using normalized baseline numbers and uncertainty was recorded
+    cases = stocks[0]["cases"]
+    assert any("normalized" in u.lower() or "missing" in u.lower() for c in cases for u in c["judgment"]["uncertainty"])
+
+
+def test_reunderwriting_maps_position_id_to_comparison_alternative_id():
+    request = review_request()
+    comparison = {
+        "scope_position_ids": [row["id"] for row in request["portfolio"]["positions"]],
+        "alternatives": [
+            {"id": "company-p1", "kind": "stock", "position_id": "p1"},
+            {"id": "cash", "kind": "cash", "position_id": "c1"},
+            {"id": "keep", "kind": "no_action", "position_id": None},
+        ],
+    }
+    bound = {**request, "comparison": comparison}
+    # Pass "p1" as alternative_id instead of "company-p1"
+    paths = stock_comparison_judgments(bound)
+    for alt in paths["alternatives"]:
+        if alt["alternative_id"] == "company-p1":
+            alt["alternative_id"] = "p1"
+    model = ScriptedModel([
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(assessment()))]),
+        ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(paths))]),
+        ModelTurn(answer=review_answer()),
+    ])
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["comparison"] is not None
+    # Check that comparison_inputs were exposed in reunderwrite_holding output
+    thesis_output = json.loads(model.requests[2][-1]["output"])
+    assert "comparison_inputs" in thesis_output
+    assert any(a["id"] == "company-p1" for a in thesis_output["comparison_inputs"]["alternatives"])
+
+
+def test_reunderwriting_maps_company_id_and_kind_to_comparison_alternative_id():
+    request = review_request()
+    comparison = {
+        "scope_position_ids": [row["id"] for row in request["portfolio"]["positions"]],
+        "alternatives": [
+            {"id": "company-p1", "kind": "stock", "position_id": "p1"},
+            {"id": "cash", "kind": "cash", "position_id": "c1"},
+            {"id": "keep", "kind": "no_action", "position_id": None},
+        ],
+    }
+    bound = {**request, "comparison": comparison}
+    paths = stock_comparison_judgments(bound)
+    for alt in paths["alternatives"]:
+        if alt["alternative_id"] == "company-p1":
+            # Test model sending company_id ("company-acme") and driver position_id "acme"
+            alt["alternative_id"] = "company-acme"
+            for c in alt["cases"]:
+                for d in c["drivers"]:
+                    d["position_id"] = "acme"
+    model = ScriptedModel([
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(assessment()))]),
+        ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(paths))]),
+        ModelTurn(answer=review_answer()),
+    ])
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["comparison"] is not None
+
+
+def test_reunderwriting_reprompts_if_model_answers_before_calculate_comparison():
+    request = review_request()
+    comparison = {
+        "scope_position_ids": [row["id"] for row in request["portfolio"]["positions"]],
+        "alternatives": [
+            {"id": "company-p1", "kind": "stock", "position_id": "p1"},
+            {"id": "cash", "kind": "cash", "position_id": "c1"},
+            {"id": "keep", "kind": "no_action", "position_id": None},
+        ],
+    }
+    bound = {**request, "comparison": comparison}
+    paths = stock_comparison_judgments(bound)
+    model = ScriptedModel([
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(assessment()))]),
+        # Premature answer before calculate_comparison
+        ModelTurn(answer=review_answer()),
+        # Reprompted turn: now calls calculate_comparison
+        ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(paths))]),
+        ModelTurn(answer=review_answer()),
+    ])
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["comparison"] is not None
+    assert any("You MUST call calculate_comparison" in str(msg) for msg in model.requests[-2])
+
+
+def test_reunderwriting_review_portfolio_is_idempotent():
+    request = review_request()
+    comparison = {
+        "scope_position_ids": [row["id"] for row in request["portfolio"]["positions"]],
+        "alternatives": [
+            {"id": "company-p1", "kind": "stock", "position_id": "p1"},
+            {"id": "cash", "kind": "cash", "position_id": "c1"},
+            {"id": "keep", "kind": "no_action", "position_id": None},
+        ],
+    }
+    bound = {**request, "comparison": comparison}
+    paths = stock_comparison_judgments(bound)
+    model = ScriptedModel([
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(assessment()))]),
+        # Model calls review_portfolio again
+        ModelTurn(calls=[ToolCall("portfolio2", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(paths))]),
+        ModelTurn(answer=review_answer()),
+    ])
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["comparison"] is not None
+
+
+def test_validate_review_baseline_distinguishes_qualifications_from_claims():
+    from analyst.pipeline import InvalidReview, validate_review_baseline
+    from analyst.schemas import AnalysisRequest
+
+    req = AnalysisRequest.model_validate(review_request())
+    # Qualifying statements must pass without raising InvalidReview
+    validate_review_baseline("Rebalancing toward a target allocation requires a user-supplied baseline.", req)
+    validate_review_baseline("Target-relative rebalancing requires a user-supplied baseline.", req)
+    validate_review_baseline("Rebalancing to target weights is unsupplied and absent.", req)
+
+    # Unqualified target claims without a baseline must fail closed
+    with pytest.raises(InvalidReview, match="Target-relative rebalancing requires a user-supplied baseline"):
+        validate_review_baseline("We should rebalance to target weights.", req)
+    with pytest.raises(InvalidReview, match="Target-relative rebalancing requires a user-supplied baseline"):
+        validate_review_baseline("Move portfolio to target mix.", req)
+
+
+def test_reunderwriting_forced_tool_forces_reunderwrite_holding_after_premature_answer():
+    """Regression: when the model answers before reunderwrite_holding, forced_tool ensures
+    the next turn is forced to reunderwrite_holding, completing the workflow without loop exhaustion.
+    Previously WF5 would exhaust the 12-turn budget; now forced_tool + increased budget (16) prevents that."""
+    request = review_request()
+    comparison = {
+        "scope_position_ids": [row["id"] for row in request["portfolio"]["positions"]],
+        "alternatives": [
+            {"id": "company-p1", "kind": "stock", "position_id": "p1"},
+            {"id": "cash", "kind": "cash", "position_id": "c1"},
+            {"id": "keep", "kind": "no_action", "position_id": None},
+        ],
+    }
+    bound = {**request, "comparison": comparison}
+    paths = stock_comparison_judgments(bound)
+    # Simulate model answering prematurely before reunderwrite_holding.
+    # With forced_tool this must still succeed within the turn budget.
+    model = ScriptedModel([
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        # Premature answer before reunderwrite_holding
+        ModelTurn(answer=review_answer()),
+        # Forced reprompt → reunderwrite_holding (scripted model pops next turn regardless)
+        ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(assessment()))]),
+        ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(paths))]),
+        ModelTurn(answer=review_answer()),
+    ])
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["comparison"] is not None
+    # Confirm the reprompt message told the model to call reunderwrite_holding with numeric field warning
+    reprompt_messages = model.requests[2]  # Messages seen before the 3rd model call
+    assert any(
+        "reunderwrite_holding" in str(msg) and "numeric" in str(msg)
+        for msg in reprompt_messages
+    )

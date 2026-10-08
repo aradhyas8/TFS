@@ -65,6 +65,20 @@ body:has(.desk) { margin: 0; background: #131211; }
 .desk .rules-line { padding-top: 10px; border-top: 1px solid var(--rule); }
 .desk .decisions { display: flex; flex-direction: column; gap: 2px; min-height: 0; }
 .desk .decisions .lbl { padding: 0 12px 8px; }
+.desk .dhead { display: flex; justify-content: space-between; align-items: baseline; }
+.desk .dhead .link { text-transform: none; letter-spacing: 0; min-height: 0; }
+.desk .drow { position: relative; }
+.desk .drow .ditem { padding-right: 36px; }
+.desk .ddel { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--muted); border-radius: 6px; opacity: 0; }
+.desk .drow:hover .ddel, .desk .ddel:focus-visible { opacity: 1; }
+.desk .ddel:hover { color: var(--text); background: var(--raised-2); }
+@media (hover: none) { .desk .ddel { opacity: 1; } }
+/* Thin, quiet scrollbars for the rail and panel instead of the wide default. */
+.desk .rail, .desk .panel { scrollbar-width: thin; scrollbar-color: var(--rule-strong) transparent; overflow-x: hidden; }
+.desk .rail::-webkit-scrollbar, .desk .panel::-webkit-scrollbar { width: 6px; }
+.desk .rail::-webkit-scrollbar-thumb, .desk .panel::-webkit-scrollbar-thumb { background: var(--rule-strong); border-radius: 3px; }
+.desk .rail::-webkit-scrollbar-track, .desk .panel::-webkit-scrollbar-track { background: transparent; }
 .desk .ditem { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 18px; text-align: left; width: 100%; }
 .desk .ditem:hover { background: var(--raised); }
 .desk .ditem[aria-current="true"] { background: var(--raised); }
@@ -112,6 +126,10 @@ body:has(.desk) { margin: 0; background: #131211; }
 .desk .bar .chg.over { background: var(--amber); }
 .desk .bar .tick { position: absolute; top: -5px; bottom: -5px; width: 2px; background: var(--muted); }
 .desk .bar.unknown { background: none; border: 1px dashed var(--muted); }
+.desk .weights { display: flex; flex-direction: column; gap: 8px; }
+.desk .wrow { display: grid; grid-template-columns: minmax(0, 200px) minmax(0, 1fr) 56px; gap: 12px; align-items: center; font-size: 13px; }
+.desk .wrow > span:last-child { text-align: right; }
+.desk .wname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
 .desk .bar-legend { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; flex-wrap: wrap; }
 .desk .actions { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
 
@@ -190,6 +208,7 @@ body:has(.desk) { margin: 0; background: #131211; }
   .desk .panel { width: min(480px, 100vw); }
 }
 @media (max-width: 767px) {
+  .desk .wrow { grid-template-columns: minmax(0, 120px) minmax(0, 1fr) 48px; gap: 8px; }
   .desk .ctx { padding: 0 8px 0 4px; }
   .desk .hide-sm { display: none; }
   .desk .ctx-left, .desk .ctx-right { gap: 8px; }

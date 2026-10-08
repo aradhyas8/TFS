@@ -99,7 +99,7 @@ def test_unusable_sources_leave_values_unknown_and_amount_unset(fault):
     elif fault == "stale":
         evidence["quotes"]["p1"]["status"] = "stale"
     elif fault in {"old", "future"}:
-        evidence["quotes"]["p1"]["as_of"] = "2026-09-29" if fault == "old" else "2026-10-01"
+        evidence["quotes"]["p1"]["as_of"] = "2026-09-22" if fault == "old" else "2026-10-01"
     elif fault in {"adjusted", "dividend_adjusted"}:
         evidence["quotes"]["p1"]["basis"] = "split_adjusted" if fault == "adjusted" else "total_return_adjusted"
     elif fault == "missing":
@@ -108,7 +108,7 @@ def test_unusable_sources_leave_values_unknown_and_amount_unset(fault):
     elif fault == "fx_stale":
         evidence["fx"][0]["status"] = "stale"
     else:
-        evidence["fx"][0]["as_of"] = "2026-09-29"
+        evidence["fx"][0]["as_of"] = "2026-09-22"
     result, _ = review_with_evidence(evidence, portfolio)
     review = result["portfolio"]
     assert review["positions"][0]["value"] is None
@@ -117,6 +117,27 @@ def test_unusable_sources_leave_values_unknown_and_amount_unset(fault):
     assert review["source_inputs_usable"] is False
     assert review["qualifications"]
     assert result["recommendation"]["amount"] is None
+
+
+@pytest.mark.parametrize("source", ["quote", "fx"])
+def test_recent_provider_values_value_the_portfolio_with_their_own_date_but_never_size(source):
+    evidence = evidence_fixture()
+    if source == "quote":
+        evidence["quotes"]["p1"]["as_of"] = "2026-09-29"
+    else:
+        evidence["fx"][0]["as_of"] = "2026-09-29"
+    result, _ = review_with_evidence(evidence)
+    row = result["portfolio"]["positions"][0]
+    assert row["value"] == "1680"
+    assert row["quote_age_days" if source == "quote" else "fx_age_days"] == 1
+    assert row["source_inputs_usable"] is False
+
+
+def test_manual_marks_from_an_earlier_day_stay_unknown():
+    portfolio = snapshot()
+    portfolio["positions"][0]["mark"]["as_of"] = "2026-09-29"
+    result, _ = review_with_evidence({}, portfolio)
+    assert result["portfolio"]["positions"][0]["value"] is None
 
 
 @pytest.mark.parametrize("status", ["delayed", "cached", "stale", "manual"])
@@ -183,8 +204,8 @@ def test_valet_dated_cad_conversion_through_application_with_fake_http(inverse):
         requests.append(request)
         assert request.url.host == "www.bankofcanada.ca"
         assert request.url.path.endswith("/observations/FXUSDCAD/json")
-        assert request.url.params["start_date"] == request.url.params["end_date"] == "2026-09-30"
-        return httpx.Response(200, json={"observations": [{"d": "2026-09-30", "FXUSDCAD": {"v": "1.25"}}]})
+        assert (request.url.params["start_date"], request.url.params["end_date"]) == ("2026-09-23", "2026-09-30")
+        return httpx.Response(200, json={"observations": [{"d": "2026-09-29", "FXUSDCAD": {"v": "1.1"}}, {"d": "2026-09-30", "FXUSDCAD": {"v": "1.25"}}]})
     portfolio = snapshot()
     portfolio["fx"] = []
     if inverse:
@@ -201,12 +222,25 @@ def test_valet_dated_cad_conversion_through_application_with_fake_http(inverse):
     assert row["fx_used"]["captured_at"]
 
 
-@pytest.mark.parametrize("fault", ["missing", "old", "failure", "negative"])
-def test_valet_missing_or_unusable_observation_never_uses_another_date(fault):
+def test_valet_before_publication_uses_the_latest_earlier_day_with_its_date():
+    def fake_valet(request):
+        return httpx.Response(200, json={"observations": [{"d": "2026-09-29", "FXUSDCAD": {"v": "1.25"}}]})
+    portfolio = snapshot()
+    portfolio["fx"] = []
+    provider = PersonalFinancialProvider(valet=True, transport=httpx.MockTransport(fake_valet))
+    result, _ = review_with_evidence({}, portfolio, provider)
+    row = result["portfolio"]["positions"][0]
+    assert row["fx_used"]["as_of"] == "2026-09-29"
+    assert row["fx_age_days"] == 1
+    assert row["value"] == "1250"
+
+
+@pytest.mark.parametrize("fault", ["missing", "future", "failure", "negative"])
+def test_valet_missing_or_unusable_observation_stays_unknown(fault):
     def fake_valet(request):
         if fault == "failure":
             return httpx.Response(503)
-        observations = [] if fault == "missing" else [{"d": "2026-09-29" if fault == "old" else "2026-09-30", "FXUSDCAD": {"v": "-1" if fault == "negative" else "1.25"}}]
+        observations = [] if fault == "missing" else [{"d": "2026-10-01" if fault == "future" else "2026-09-30", "FXUSDCAD": {"v": "-1" if fault == "negative" else "1.25"}}]
         return httpx.Response(200, json={"observations": observations})
     portfolio = snapshot()
     portfolio["fx"] = []

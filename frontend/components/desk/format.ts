@@ -62,6 +62,7 @@ export function answerSentence(action: string, amount: Analysis["recommendation"
   }
   if (action === "wait_for_inputs" || action === "clarify_inputs") return "Not enough to size this yet.";
   if (action === "no_action") return "Keep the new cash as cash for now.";
+  if (action === "review_only") return "Here is where your portfolio stands.";
   return `${actionLabel(action)}.`;
 }
 

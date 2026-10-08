@@ -9,7 +9,7 @@ test.beforeEach(async ({ page }) => {
     const host = new URL(route.request().url()).hostname;
     return ["127.0.0.1", "localhost"].includes(host) ? route.continue() : route.abort();
   });
-  await page.goto("/");
+  await page.goto("/classic");
   await page.getByLabel("As-of date", { exact: true }).fill("2026-09-30");
 });
 

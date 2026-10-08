@@ -6,10 +6,10 @@ const sans = Instrument_Sans({ subsets: ["latin"], variable: "--font-sans" });
 const serif = Newsreader({ subsets: ["latin"], variable: "--font-serif", weight: ["300", "400"], style: ["normal", "italic"] });
 
 export const metadata: Metadata = {
-  title: "New cash · Analyst",
-  description: "Decide where new money should go, with the evidence one step away.",
+  title: "Analyst",
+  description: "Ask about your saved portfolio, with the evidence one step away.",
 };
 
-export default function NewCashLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default function DeskLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return <div className={`${sans.variable} ${serif.variable}`}>{children}</div>;
 }

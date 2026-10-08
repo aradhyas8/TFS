@@ -5,6 +5,9 @@ export type Identity = { status: string; ticker: string | null; listing: string 
   company_id: string | null; company_name: string | null; source: string; source_url: string | null;
   as_of: string | null; captured_at: string | null };
 export type Quote = Mark & { ticker: string; listing: string; currency: string; status: string };
+/** The market-data cache refresh: delayed quotes fetched at most once a day unless forced. Keyed by position ID. */
+export type PriceRefresh = { fetched: string[]; fresh: string[]; skipped: string[]; failed: string[]; remaining: number | null; message: string;
+  quotes: Record<string, Quote> };
 export type Position = {
   id: string; account_id: string; kind: "stock" | "etf" | "cash"; currency: string;
   ticker?: string | null; listing?: string | null; company_id?: string | null;
@@ -67,6 +70,7 @@ export type Review = {
   accounts: { id: string; name: string; total_value: string | null; known_value: string }[];
   direct_companies: { company_id: string; company_name: string; value: string | null; known_value: string;
     weight: string | null; position_ids: string[] }[];
+  currency_exposure?: { currency: string; value: string | null; known_value: string; weight: string | null }[];
   company_overlap: CompanyOverlap[];
   baseline: Baseline | null; guardrails: GuardrailReview | null; indirect_exposure: HoldingsCoverage | "none"; qualifications: string[]; calculation_basis: string;
   source_inputs_usable: boolean; sizing_eligible: false;
@@ -116,9 +120,14 @@ export type NewCashInput = { amount: string | null; cash_position_id: string | n
 export const NEW_CASH_DESTINATION = "new-cash-destination";
 /** An imported holding whose listing or type couldn't be resolved; only what is known is filled in. */
 export type UnresolvedHolding = { account_id: string; ticker: string; shares: string; average_cost: string | null;
-  currency: string | null; listing: string | null; kind: "stock" | "etf" | null };
+  currency: string | null; listing: string | null; kind: "stock" | "etf" | null; candidates: string[] };
 export type SavedPortfolio = { snapshot: Snapshot; average_costs: Record<string, string>; settings: PortfolioSettings | null;
   unresolved: UnresolvedHolding[]; saved_at: string | null };
+
+export async function del(path: string): Promise<void> {
+  const response = await fetch(path, { method: "DELETE", signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error("The delete could not be completed.");
+}
 
 export async function put<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -198,11 +207,14 @@ export type SavedDecision = {
   confirmed_action: UserConfirmedAction | null;
 };
 
-export async function get<T>(path: string): Promise<T> {
+export const DEFAULT_TIMEOUT_MS = 30_000;
+export const ANALYZE_TIMEOUT_MS = 600_000;
+
+export async function get<T>(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const response = await fetch(path, {
     method: "GET",
     headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const data = await response.json();
   if (!response.ok) {
@@ -211,10 +223,11 @@ export async function get<T>(path: string): Promise<T> {
   return data as T;
 }
 
-export async function post<T>(path: string, body: unknown): Promise<T> {
+export async function post<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
+  const timeout = timeoutMs ?? (path.includes("/api/analyze") ? ANALYZE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   const response = await fetch(path, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    signal: AbortSignal.timeout(150_000),
+    signal: AbortSignal.timeout(timeout),
   });
   const data = await response.json();
   if (!response.ok) {

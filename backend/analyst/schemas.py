@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
 Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
@@ -561,8 +569,15 @@ class AnalysisRequest(Contract):
 
 class CSVRequest(Contract):
     csv: str = Field(min_length=1, max_length=1_000_000)
-    as_of: date
+    as_of: date | None = None
     reporting_currency: Currency
+
+    @field_validator("as_of", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, v: Any) -> Any:
+        if v == "" or v is None:
+            return None
+        return v
 
 
 class Alternative(Contract):
@@ -607,6 +622,13 @@ class AccountResult(Contract):
     name: str
     total_value: str | None
     known_value: str
+
+
+class CurrencyExposure(Contract):
+    currency: str
+    value: str | None
+    known_value: str
+    weight: str | None
 
 
 class CompanyExposure(Contract):
@@ -695,6 +717,7 @@ class PortfolioReview(Contract):
     positions: list[PositionResult]
     accounts: list[AccountResult]
     direct_companies: list[CompanyExposure]
+    currency_exposure: list[CurrencyExposure] = Field(default_factory=list)
     company_overlap: list[CompanyOverlap] = Field(default_factory=list)
     total_value: str | None
     known_value: str
@@ -1052,6 +1075,8 @@ class UnresolvedHolding(Contract):
     currency: Currency | None = None
     listing: Identifier | None = None
     kind: Literal["stock", "etf"] | None = None
+    # Listings the market-data provider found when more than one matched; the user picks one.
+    candidates: list[Identifier] = Field(default_factory=list, max_length=8)
 
 
 class SavedPortfolio(Contract):
@@ -1073,6 +1098,11 @@ class SavedPortfolio(Contract):
         if any(row.account_id not in accounts for row in self.unresolved):
             raise ValueError("Every unresolved holding must reference a supplied account.")
         return self
+
+
+class RefreshPrices(Contract):
+    """Refresh the market-data cache; force fetches again even if today's prices are cached."""
+    force: bool = False
 
 
 class IdentifyHolding(Contract):

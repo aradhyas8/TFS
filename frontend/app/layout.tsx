@@ -6,5 +6,6 @@ export const metadata: Metadata = {
 };
 
 export default function Layout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en"><body>{children}</body></html>;
+  // Browser extensions add attributes to <html> before hydration; ignore those (this element only).
+  return <html lang="en" suppressHydrationWarning><body>{children}</body></html>;
 }

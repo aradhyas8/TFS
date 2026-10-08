@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 async function enterNewCash(page: import("@playwright/test").Page) {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.goto("/");
+  await page.goto("/classic");
   await page.getByLabel("As-of date", { exact: true }).fill("2026-09-30");
   await page.getByLabel("Reporting currency", { exact: true }).fill("USD");
   const csv = `row_type,id,account_id,account_name,ticker,listing,company_id,company_name,shares,cash,currency,mark,mark_date,mark_source,to_currency,fx_rate,fx_date,fx_source

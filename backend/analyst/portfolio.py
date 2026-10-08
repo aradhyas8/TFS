@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .csv_input import COLUMNS, load_csv
+from .financial_data import SOURCE_ERRORS
 from .schemas import (
     CANADIAN_LISTINGS,
     US_LISTINGS,
@@ -148,6 +149,60 @@ def identify(saved: SavedPortfolio, answer: IdentifyHolding, reference: Financia
     snapshot = Snapshot.model_validate({**saved.snapshot.model_dump(), "positions": [*saved.snapshot.model_dump()["positions"], found.model_dump()]})
     costs = {**saved.average_costs, **({found.id: holding.average_cost} if holding.average_cost is not None else {})}
     return saved.model_copy(update={"snapshot": snapshot, "average_costs": costs, "unresolved": rest})
+
+
+async def enrich(saved: SavedPortfolio, provider: Any) -> SavedPortfolio:
+    """Resolves holdings and fills names and company IDs from the market-data provider.
+
+    One matching listing resolves a holding. Several leave it unresolved with the candidate
+    listings to choose from; none, or a source failure, leaves it unresolved. Nothing is guessed.
+    """
+    lookup = getattr(provider, "lookup", None)
+    if lookup is None:
+        return saved
+    as_of = saved.snapshot.as_of
+
+    async def matches(ticker: str, listing: str | None, currency: str | None, kind: str | None) -> list[Any]:
+        try:
+            found = await lookup(ticker, listing, currency, as_of)
+        except SOURCE_ERRORS:
+            return []
+        # A search-only identity has no type yet; the user's type, if given, completes it.
+        return [row.model_copy(update={"kind": row.kind or kind}) for row in found if row.kind is None or kind in {None, row.kind}]
+
+    positions: list[Position] = []
+    for row in saved.snapshot.positions:
+        if row.kind == "cash" or not row.ticker or row.company_name and (row.kind == "etf" or row.company_id):
+            positions.append(row)
+            continue
+        # SEC names the exact US exchange, so a US listing is re-checked rather than trusted; so is a listing
+        # whose own currency contradicts the holding's (a USD holding saved on the TSX). The currency stays.
+        listing = None if row.listing in US_LISTINGS or listing_currency(row.listing) != row.currency else row.listing
+        found = [match for match in await matches(row.ticker, listing, row.currency, row.kind) if match.currency == row.currency]
+        positions.append(row.model_copy(update={"listing": found[0].listing or row.listing, "company_id": found[0].company_id,
+                                                "company_name": found[0].company_name}) if len(found) == 1 else row)
+    unresolved: list[UnresolvedHolding] = []
+    costs = dict(saved.average_costs)
+    for holding in saved.unresolved:
+        base, suffix = split_ticker(holding.ticker)
+        found = await matches(base, holding.listing or suffix, holding.currency, holding.kind)
+        position_id = f"{holding.account_id}-{slug(holding.ticker)}"
+        if len(found) == 1 and (found[0].kind is None or found[0].listing is None):
+            # What the source knows is kept; only the missing type or exchange is asked.
+            unresolved.append(holding.model_copy(update={"listing": found[0].listing, "currency": found[0].currency,
+                                                         "kind": found[0].kind or holding.kind, "candidates": []}))
+            continue
+        if len(found) != 1 or any(row.id == position_id for row in positions):
+            unresolved.append(holding.model_copy(update={"candidates": sorted({row.listing for row in found if row.listing})}))
+            continue
+        match = found[0]
+        positions.append(Position(id=position_id, account_id=holding.account_id, kind=match.kind, currency=match.currency,
+                                  ticker=base, listing=match.listing, shares=holding.shares,
+                                  company_id=match.company_id, company_name=match.company_name))
+        if holding.average_cost is not None:
+            costs[position_id] = holding.average_cost
+    snapshot = Snapshot.model_validate({**saved.snapshot.model_dump(), "positions": [row.model_dump() for row in positions]})
+    return saved.model_copy(update={"snapshot": snapshot, "average_costs": costs, "unresolved": unresolved})
 
 
 class PortfolioStore:

@@ -3,7 +3,7 @@ import path from "node:path";
 
 test("whole portfolio review challenges the thesis and compares all accounts without targets", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.goto("/");
+  await page.goto("/classic");
   await page.getByLabel("As-of date", { exact: true }).fill("2026-09-30");
   await page.getByLabel("Load portfolio CSV").setInputFiles(path.resolve("../examples/portfolio.csv"));
   await expect(page.getByRole("group", { name: "Position 1", exact: true })).toBeVisible();
@@ -30,7 +30,7 @@ test("whole portfolio review challenges the thesis and compares all accounts wit
 
 test("supported sizing can be reached through company cost and tax inputs", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.goto("/");
+  await page.goto("/classic");
   await page.getByLabel("As-of date", { exact: true }).fill("2026-09-30");
   await page.getByLabel("Reporting currency", { exact: true }).fill("USD");
   const header = "row_type,id,account_id,account_name,ticker,listing,company_id,company_name,shares,cash,currency,mark,mark_date,mark_source,to_currency,fx_rate,fx_date,fx_source";

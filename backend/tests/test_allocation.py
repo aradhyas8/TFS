@@ -335,3 +335,103 @@ def test_screen_preserves_source_capture_separately_from_request_time(monkeypatc
     assert scan["source_captured_at"] == captured
     assert datetime.fromisoformat(scan["scanned_at"]) > datetime.fromisoformat(captured)
     assert any("source capture" in issue for issue in scan["issues"])
+
+
+def test_allocation_comparison_aligns_cash_and_keep_drivers_to_new_cash():
+    # Misalign cash and keep driver position IDs (e.g. model passed "cash" or "keep" instead of "__new_cash__")
+    judgments = comparison_judgments()
+    for alt in judgments["alternatives"]:
+        if alt["alternative_id"] in {"cash", "keep"}:
+            for case in alt["cases"]:
+                for driver in case["drivers"]:
+                    driver["position_id"] = "guessed_cash_position_id"
+
+    turns = [
+        ModelTurn(calls=[ToolCall("review", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("scan", "scan_opportunities", "{}")]),
+        ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(judgments))]),
+        ModelTurn(calls=[ToolCall("sizing", "size_allocation", json.dumps({
+            "position_id": "fund", "min_weight": "0.55", "max_weight": "0.65",
+            "reason": "Diversification and a retained reserve justify this exposure range."
+        }))]),
+        ModelTurn(answer=allocation_answer()),
+    ]
+    model = ScriptedModel(turns)
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), financial=FakeFinancialProvider(allocation_evidence()))).post(
+        "/api/analyze", json=allocation_request())
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["comparison"]["starting_value"] == "6000"
+    # Verify driver for cash was mapped to __new_cash__ and calculated cleanly
+    cash_alt = next(a for a in result["comparison"]["alternatives"] if a["selection"]["kind"] == "cash")
+    assert cash_alt["position_ids"] == ["__new_cash__"]
+    assert cash_alt["cases"][1]["known_terminal_value"] == "6621.30144"
+
+
+def test_allocation_recovers_when_model_calls_check_proposed_changes():
+    # A premature check_proposed_changes call reprompts toward size_allocation instead of failing.
+    turns = [
+        ModelTurn(calls=[ToolCall("review", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("scan", "scan_opportunities", "{}")]),
+        ModelTurn(calls=[ToolCall("wrong", "check_proposed_changes", json.dumps({"new_cash": [], "trades": []}))]),
+        ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(comparison_judgments()))]),
+        ModelTurn(calls=[ToolCall("sizing", "size_allocation", json.dumps({
+            "position_id": "fund", "min_weight": "0.55", "max_weight": "0.65",
+            "reason": "Diversification and a retained reserve justify this exposure range."}))]),
+        ModelTurn(answer=allocation_answer()),
+    ]
+    model = ScriptedModel(turns)
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), financial=FakeFinancialProvider(allocation_evidence()))).post(
+        "/api/analyze", json=allocation_request())
+    assert response.status_code == 200, response.text
+    assert response.json()["comparison"]["starting_value"] == "6000"
+
+
+def test_allocation_recovers_when_model_compares_before_candidate_cases():
+    # research_candidate -> premature calculate_comparison -> forced cases -> comparison -> answer.
+    from analyst.research import ReviewedResearchProvider
+    from analyst.schemas import CompanyResearch
+    from tests.test_comparison import driver
+    from tests.test_stock import company_judgments, research_fixture
+    request = allocation_request()
+    discovery = FakeDiscovery(1)
+    source = research_fixture()
+    source["company_id"] = "issuer-0"
+    for doc in source["documents"]:
+        doc["company_id"] = source["company_id"]
+    records = {"issuer-0": CompanyResearch.model_validate(source)}
+    evidence = allocation_evidence()
+    evidence.identities["candidate-0"] = evidence.identities["fund"].model_copy(update={
+        "ticker": "ISSUER-0", "kind": "stock", "company_id": "issuer-0", "company_name": "Issuer 0"})
+    evidence.quotes["candidate-0"] = evidence.quotes["fund"].model_copy(update={"ticker": "ISSUER-0"})
+    paths = {"alternatives": [{"alternative_id": key, "cases": [
+        {"name": name, "drivers": [driver("__new_cash__" if key in {"cash", "keep"} else key, cash=key in {"cash", "keep"})],
+         "assumptions": ["Paths are conditional judgments."], "downside": "Equity losses and falling rates can impair wealth.",
+         "uncertainty": ["Future returns and rates remain uncertain."]}
+        for name in ("downside", "base", "upside")]} for key in ("candidate-0", "fund", "cash", "keep")]}
+    for alternative in paths["alternatives"]:
+        if alternative["alternative_id"] == "candidate-0":
+            for case in alternative["cases"]:
+                case["drivers"][0].update(annual_returns=None, income_multipliers=None, reinvest=False)
+    final = allocation_answer()
+    final.update(preferred_action="no_action", reason="The screened company does not clearly improve the tradeoff against the diversified fund and retaining cash.",
+                 alternatives=[{"action": "add", "reason": "A conditional diversified-fund addition could reduce reliance on individual company outcomes."},
+                               {"action": "clarify_inputs", "reason": "Defer the choice while testing pivotal operating assumptions and screening coverage."}])
+    turns = [
+        ModelTurn(calls=[ToolCall("review", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("scan", "scan_opportunities", "{}")]),
+        ModelTurn(calls=[ToolCall("research", "research_candidate", json.dumps({"position_id": "candidate-0", "reason": "Primary evidence could change the choice versus diversified exposure."}))]),
+        ModelTurn(calls=[ToolCall("early", "calculate_comparison", json.dumps(paths))]),
+        ModelTurn(calls=[ToolCall("cases", "calculate_company_cases", json.dumps({"position_id": "candidate-0", "judgments": company_judgments()}))]),
+        ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(paths))]),
+        ModelTurn(answer=final),
+    ]
+    model = ScriptedModel(turns)
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), financial=FakeFinancialProvider(evidence),
+                                     research=ReviewedResearchProvider(records), discovery=discovery)).post("/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert len(result["allocation"]["researched"]) == 1
+    assert len(result["allocation"]["stocks"]) == 1
+    assert result["comparison"]["starting_value"] == "6000"
+

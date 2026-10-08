@@ -1,28 +1,31 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { get, post, put, type Analysis, type DecisionAction, type NewCashInput, type PortfolioSettings, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { del, get, post, put, type Analysis, type DecisionAction, type NewCashInput, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import Rail from "../../components/desk/Rail";
 import Composer from "../../components/desk/Composer";
 import Panel, { evidenceFor, ImportCsv } from "../../components/desk/Panel";
-import { Answer, Echo, Failure, Historical, Waiting, type Tab } from "../../components/desk/Memo";
+import { Answer, Echo, Failure, Historical, ReviewAnswer, Waiting, type Tab } from "../../components/desk/Memo";
 import { clock, fullDate, newCashLabel, pct, shortDate } from "../../components/desk/format";
 
-type Sent = { question: string; newCash: NewCashInput };
+/** A question and, for /new-cash only, its new-cash input. Without one, the question is a portfolio review. */
+type Sent = { question: string; newCash: NewCashInput | null };
 const EMPTY_CASH: NewCashInput = { amount: null, cash_position_id: null, account_id: null, currency: null, confirmed: false, risk_context: null };
-const DURATIONS_KEY = "desk.newCashDurations";
-const TITLE = "New cash · Analyst";
+const durationsKey = (sent: Sent | null) => sent?.newCash ? "desk.newCashDurations" : "desk.reviewDurations";
+const TITLE = "Analyst";
+// The last answer, so a reload doesn't lose it. Per-browser convenience; Save puts it in Decisions.
+const ANSWER_KEY = "desk.lastAnswer";
 
 /** Only rules the user actually set; an all-unset rule set is sent and saved as none. */
 function storedSettings(settings: PortfolioSettings): PortfolioSettings | null {
   return Object.values(settings).some(value => value !== undefined && value !== null) ? settings : null;
 }
 
-function pastDurations(): number[] {
-  try { return JSON.parse(localStorage.getItem(DURATIONS_KEY) || "[]").filter((n: unknown) => typeof n === "number").slice(-3); } catch { return []; }
+function pastDurations(sent: Sent | null): number[] {
+  try { return JSON.parse(localStorage.getItem(durationsKey(sent)) || "[]").filter((n: unknown) => typeof n === "number").slice(-3); } catch { return []; }
 }
 
-export default function NewCashPage() {
+export default function DeskPage() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [averageCosts, setAverageCosts] = useState<Record<string, string>>({});
   const [unresolved, setUnresolved] = useState<UnresolvedHolding[]>([]);
@@ -48,12 +51,15 @@ export default function NewCashPage() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
   const [notice, setNotice] = useState("");
+  const [prices, setPrices] = useState<PriceRefresh | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const runId = useRef(0);
 
   useEffect(() => {
+    try { const last = localStorage.getItem(ANSWER_KEY); if (last) { setAnswer(JSON.parse(last)); setCollapsed(true); setTab("evidence"); } } catch { /* nothing to restore */ }
     get<SavedPortfolio | null>("/api/portfolio").then(saved => { if (saved) adopt(saved); })
       .catch(() => setNotice("Your saved portfolio couldn't be loaded.")).finally(() => setRestoring(false));
-    get<SavedDecision[]>("/api/decisions").then(setDecisions).catch(() => setNotice("Saved decisions couldn't be loaded.")); setPast(pastDurations());
+    get<SavedDecision[]>("/api/decisions").then(setDecisions).catch(() => setNotice("Saved decisions couldn't be loaded."));
   }, []);
   useEffect(() => {
     const current = JSON.stringify({ snapshot, settings });
@@ -76,6 +82,15 @@ export default function NewCashPage() {
     const restored = saved.settings || {};
     persisted.current = JSON.stringify({ snapshot: saved.snapshot, settings: restored });
     setSnapshot(saved.snapshot); setAverageCosts(saved.average_costs); setUnresolved(saved.unresolved); setSettings(restored);
+    // Once a day per holding; a same-day call costs no market-data requests.
+    if (saved.snapshot.positions.some(row => row.kind !== "cash")) void refreshPrices(false);
+  }
+
+  async function refreshPrices(force: boolean) {
+    setRefreshing(true);
+    try { setPrices(await post<PriceRefresh>("/api/market/refresh", { force })); }
+    catch (error) { setNotice(error instanceof Error ? `Prices couldn't be refreshed: ${error.message}` : "Prices couldn't be refreshed."); }
+    finally { setRefreshing(false); }
   }
 
   const result = answer?.analysis ?? null;
@@ -87,20 +102,39 @@ export default function NewCashPage() {
     if (!snapshot) return;
     const id = ++runId.current;
     const startedAt = Date.now();
-    setRun({ ...sent, id, startedAt }); setNow(startedAt); setFailure(null); setSaved(null); setReopened(null); setCollapsed(true); setNotice("");
+    setRun({ ...sent, id, startedAt }); setNow(startedAt); setPast(pastDurations(sent)); setFailure(null); setSaved(null); setReopened(null); setCollapsed(true); setNotice("");
     try {
-      const analysis = await post<Analysis>("/api/analyze", { question: sent.question, portfolio: snapshot, new_cash: sent.newCash,
+      // Saved holdings are the current portfolio: priced by the provider today, unless the user dated their own marks or FX.
+      const dated = snapshot.positions.some(row => row.mark) || snapshot.fx.length > 0;
+      const analysis = await post<Analysis>("/api/analyze", { question: sent.question, portfolio: dated ? snapshot : { ...snapshot, as_of: new Date().toLocaleDateString("en-CA") }, new_cash: sent.newCash ?? undefined,
         settings: storedSettings(settings) ?? undefined });
       if (runId.current !== id) return;
       if (analysis.status !== "completed") throw new Error("The analysis was not completed.");
       setAnswer({ ...sent, analysis }); setTab("evidence"); setFocus(null);
-      const durations = [...pastDurations(), Date.now() - startedAt].slice(-3);
-      try { localStorage.setItem(DURATIONS_KEY, JSON.stringify(durations)); } catch { /* per-viewer convenience only */ }
+      try { localStorage.setItem(ANSWER_KEY, JSON.stringify({ ...sent, analysis })); } catch { /* too large or blocked: kept in memory only */ }
+      const durations = [...pastDurations(sent), Date.now() - startedAt].slice(-3);
+      try { localStorage.setItem(durationsKey(sent), JSON.stringify(durations)); } catch { /* per-viewer convenience only */ }
       setPast(durations);
       if (document.hidden) document.title = `Answer ready · ${TITLE}`;
     } catch (error) {
       if (runId.current === id) setFailure({ ...sent, message: error instanceof Error ? error.message : "The analysis could not be completed." });
     } finally { if (runId.current === id) setRun(null); }
+  }
+
+  async function deleteDecision(decision: SavedDecision) {
+    if (!window.confirm(`Delete "${decision.question}"? This can't be undone.`)) return;
+    try {
+      await del(`/api/decisions/${encodeURIComponent(decision.id)}`);
+      setDecisions(list => list.filter(d => d.id !== decision.id));
+      if (reopened?.id === decision.id) setReopened(null);
+      if (saved?.id === decision.id) setSaved(null);
+    } catch (error) { setNotice(error instanceof Error ? error.message : "The decision couldn't be deleted."); }
+  }
+
+  async function clearDecisions() {
+    if (!window.confirm(`Delete all ${decisions.length} saved decisions? This can't be undone.`)) return;
+    try { await del("/api/decisions"); setDecisions([]); setReopened(null); setSaved(null); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "Decisions couldn't be cleared."); }
   }
 
   function stopWaiting() { runId.current++; setRun(null); setCollapsed(false); }
@@ -124,29 +158,42 @@ export default function NewCashPage() {
 
   function startOver() {
     runId.current++; setRun(null); setAnswer(null); setFailure(null); setSaved(null); setReopened(null);
+    try { localStorage.removeItem(ANSWER_KEY); } catch { /* nothing stored */ }
     setWorkflow(null); setQuestion(""); setCollapsed(false); setTab("holdings"); setRailOpen(false);
   }
 
-  const sentCash = (run ?? answer ?? failure)?.newCash;
-  const sentLabel = sentCash && newCashLabel(sentCash, snapshot);
-  const ctxLabel = reopened ? `Decision · ${shortDate(reopened.saved_at)}` : sentLabel ? `New cash · ${sentLabel}` : workflow ? "New cash" : "New analysis";
+  const sent = run ?? failure ?? answer;
+  const sentLabel = sent?.newCash && newCashLabel(sent.newCash, snapshot);
+  const ctxLabel = reopened ? `Decision · ${shortDate(reopened.saved_at)}` : sentLabel ? `New cash · ${sentLabel}` : sent ? sent.newCash ? "New cash" : "Portfolio review"
+    : workflow ? "New cash" : "New analysis";
   const holdingsCount = snapshot?.positions.filter(row => row.kind !== "cash").length ?? 0;
   const hasFund = snapshot?.positions.some(row => row.kind === "etf" && row.etf_role === "diversified");
-  const scope = snapshot ? [
-    `${holdingsCount} holding${holdingsCount === 1 ? "" : "s"}${snapshot.positions.length > holdingsCount ? ` and ${snapshot.positions.length - holdingsCount} cash balance${snapshot.positions.length - holdingsCount === 1 ? "" : "s"}` : ""} in ${snapshot.accounts.length} account${snapshot.accounts.length === 1 ? "" : "s"}, your portfolio as of ${fullDate(snapshot.as_of)}, plus the new cash`,
-    settings.single_company_cap || settings.active_budget ? `Your rules: ${settings.single_company_cap ? `${pct(settings.single_company_cap)} per company` : "no company cap"}, ${settings.active_budget ? `${pct(settings.active_budget)} in active picks` : "no active budget"}` : "No rules set, so no limits are checked",
+  const portfolioLine = snapshot ? `${holdingsCount} holding${holdingsCount === 1 ? "" : "s"}${snapshot.positions.length > holdingsCount ? ` and ${snapshot.positions.length - holdingsCount} cash balance${snapshot.positions.length - holdingsCount === 1 ? "" : "s"}` : ""} in ${snapshot.accounts.length} account${snapshot.accounts.length === 1 ? "" : "s"}, your portfolio as of ${fullDate(snapshot.as_of)}` : "";
+  const rulesLine = settings.single_company_cap || settings.active_budget ? `Your rules: ${settings.single_company_cap ? `${pct(settings.single_company_cap)} per company` : "no company cap"}, ${settings.active_budget ? `${pct(settings.active_budget)} in active picks` : "no active budget"}` : "No rules set, so no limits are checked";
+  const scope = !snapshot ? [] : run?.newCash ? [
+    `${portfolioLine}, plus the new cash`, rulesLine,
     "A bounded screen of what you could add to, then filings for candidates that could change the answer",
     `Against ${hasFund ? "a diversified fund, " : ""}keeping cash and doing nothing`,
-  ] : [];
+  ] : [
+    `${portfolioLine}, valued with dated prices and exchange rates`,
+    "Direct company exposure across accounts, and what your funds hold where that's known", rulesLine,
+  ];
+  const review = (question: string) => void analyze({ question, newCash: null });
 
   let center;
   if (reopened) center = <Historical decision={reopened} snapshot={snapshot} cite={cite} onConfirm={(action, notes) => confirm(reopened, action, notes)}
-    onRerun={() => { setReopened(null); setWorkflow("new-cash"); setQuestion(reopened.question); setCollapsed(false); setTab("holdings"); }} />;
-  else if (run) center = <><Echo question={run.question} newCash={run.newCash} snapshot={snapshot} /><Waiting startedAt={run.startedAt} now={now} past={past} scope={scope} onStop={stopWaiting} /></>;
+    onRerun={() => { setReopened(null); setWorkflow(reopened.conclusion.preferred_action === "review_only" ? null : "new-cash"); setQuestion(reopened.question); setCollapsed(false); setTab("holdings"); }} />;
+  else if (run) center = <><Echo question={run.question} newCash={run.newCash} snapshot={snapshot} /><Waiting title={run.newCash ? "Analyzing your new cash." : "Reviewing your portfolio."} startedAt={run.startedAt} now={now} past={past} scope={scope} onStop={stopWaiting} /></>;
   else if (failure) center = <><Echo question={failure.question} newCash={failure.newCash} snapshot={snapshot} /><Failure message={failure.message} onRetry={() => analyze(failure)} /></>;
-  else if (answer) center = <Answer key={answer.analysis.portfolio.reviewed_at} result={answer.analysis} sent={answer} snapshot={snapshot} cite={cite} saved={saved} onTab={openTab}
-    onConfirm={(action, notes) => saved ? confirm(saved, action, notes) : Promise.resolve()}
-    onRerun={risk => { const next = { ...answer.newCash, risk_context: risk }; setNewCash(next); void analyze({ question: answer.question, newCash: next }); }} />;
+  else if (answer && !answer.analysis.allocation) center = <ReviewAnswer key={answer.analysis.portfolio.reviewed_at} result={answer.analysis} snapshot={snapshot} cite={cite} saved={saved} onTab={openTab}
+    onConfirm={(action, notes) => saved ? confirm(saved, action, notes) : Promise.resolve()} />;
+  else if (answer) {
+    // A question that is really about new cash comes back as an allocation; show it with its own inputs.
+    const cash = answer.newCash ?? answer.analysis.allocation!.context;
+    center = <Answer key={answer.analysis.portfolio.reviewed_at} result={answer.analysis} sent={{ question: answer.question, newCash: cash }} snapshot={snapshot} cite={cite} saved={saved} onTab={openTab}
+      onConfirm={(action, notes) => saved ? confirm(saved, action, notes) : Promise.resolve()}
+      onRerun={risk => { const next = { ...cash, risk_context: risk }; setNewCash(next); void analyze({ question: answer.question, newCash: next }); }} />;
+  }
   else if (restoring) center = <p className="cap" role="status">Loading your saved portfolio…</p>;
   else if (!snapshot) center = <div className="hero">
     <h1>Start with what you own.</h1>
@@ -157,16 +204,18 @@ export default function NewCashPage() {
     <h1>{workflow ? "Where should new money go?" : "What should we look at?"}</h1>
     {workflow ? <p className="body" style={{ maxWidth: 560 }}>The analyst screens what you could add to, researches candidates that could change the answer, and compares them with keeping cash and doing nothing. You place any order yourself.</p>
       : <div className="starters">
+        <button type="button" className="starter" disabled={unresolved.length > 0} onClick={() => { setQuestion("Review my portfolio"); review("Review my portfolio"); }}><span>Review my portfolio</span><span className="m">Exposure, concentration, fund overlap and your rules</span></button>
         <button type="button" className="starter" onClick={() => { setWorkflow("new-cash"); setCollapsed(false); document.getElementById("ask")?.focus(); }}><span>/new-cash</span><span className="m">Decide where new money should go</span></button>
-        <a className="starter" href="/"><span>/rebalance</span><span className="m">Recheck holdings against your rules · classic view</span></a>
-        <a className="starter" href="/"><span>/stock</span><span className="m">Value one company with its filings · classic view</span></a>
+        <a className="starter" href="/classic"><span>/rebalance</span><span className="m">Recheck holdings against your rules · classic view</span></a>
+        <a className="starter" href="/classic"><span>/stock</span><span className="m">Value one company with its filings · classic view</span></a>
       </div>}
   </div>;
 
   return <div className={`desk${panelOpen ? " panel-open" : ""}${railOpen ? " rail-open" : ""}`}>
     <a className="skip" href="#details">Skip to details</a>
-    <Rail snapshot={snapshot} unresolved={unresolved} settings={settings} result={result} decisions={decisions} currentId={reopened?.id ?? saved?.id ?? null} running={!!run}
-      onNew={startOver} onHoldings={() => { openTab("holdings"); setRailOpen(false); }} onOpen={decision => { setReopened(decision); setTab("evidence"); setFocus(null); setRailOpen(false); }} />
+    <Rail snapshot={snapshot} unresolved={unresolved} settings={settings} result={result} decisions={decisions} currentId={reopened?.id ?? saved?.id ?? null} running={run ? run.newCash ? "New cash" : "Portfolio review" : null}
+      onNew={startOver} onHoldings={() => { openTab("holdings"); setRailOpen(false); }} onOpen={decision => { setReopened(decision); setTab("evidence"); setFocus(null); setRailOpen(false); }}
+      onDelete={decision => void deleteDecision(decision)} onClearAll={() => void clearDecisions()} />
     <main className="center">
       <header className="ctx">
         <div className="ctx-left">
@@ -185,15 +234,18 @@ export default function NewCashPage() {
       </header>
       <div className="scroll"><div className="col">
         {notice && <p className="amber" role="alert" style={{ marginBottom: 16 }}>{notice}</p>}
+        {!run && !reopened && unresolved.length > 0 && snapshot && <p className="amber" style={{ marginBottom: 16 }}>
+          <button type="button" className="link amber" onClick={() => openTab("holdings")}>Identify {unresolved.length} holding{unresolved.length === 1 ? "" : "s"}</button> before asking. They aren&apos;t in the analysis until then.</p>}
         {center}
         <p className="sr-only" aria-live="polite">{result && !run ? "Answer ready." : ""}</p>
       </div></div>
       {!reopened && <Composer snapshot={snapshot} unresolved={unresolved.length} workflow={workflow} onWorkflow={setWorkflow} question={question} onQuestion={setQuestion}
         newCash={newCash} onNewCash={setNewCash} running={!!run} collapsed={collapsed && !!(answer || failure || run)} onExpand={() => setCollapsed(false)}
-        onSubmit={() => void analyze({ question, newCash })} />}
+        onSubmit={() => { void analyze({ question, newCash: workflow === "new-cash" ? newCash : null }); if (workflow !== "new-cash") setQuestion(""); }} />}
     </main>
     <Panel tab={tab} onTab={openTab} onClose={() => setPanelOpen(false)} focus={focus} snapshot={snapshot} setSnapshot={setSnapshot} averageCosts={averageCosts} unresolved={unresolved} onImported={adopt}
-      settings={settings} setSettings={setSettings} result={reopened ? null : result} decision={reopened} running={!!run} onError={setNotice} />
+      settings={settings} setSettings={setSettings} result={reopened ? null : result} decision={reopened} running={!!run} onError={setNotice}
+      prices={prices} refreshing={refreshing} onRefreshPrices={() => void refreshPrices(true)} />
     <div className="scrim" onClick={() => { setPanelOpen(false); setRailOpen(false); }} aria-hidden="true" />
   </div>;
 }

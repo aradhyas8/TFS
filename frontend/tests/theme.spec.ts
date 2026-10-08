@@ -3,7 +3,7 @@ import path from "node:path";
 
 test("theme clarification and agreed bounded research complete through the shared form", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.goto("/");
+  await page.goto("/classic");
   await page.getByLabel("As-of date").fill("2026-09-30");
   await page.getByLabel("Load portfolio CSV").setInputFiles(path.resolve("../examples/portfolio.csv"));
   await expect(page.getByRole("group", { name: "Position 1", exact: true })).toBeVisible();

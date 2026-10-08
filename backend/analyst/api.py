@@ -1,5 +1,6 @@
 import csv
 import io
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -11,9 +12,9 @@ from .allocation import DiscoveryProvider
 from .config import Settings
 from .csv_input import COLUMNS, load_csv
 from .decisions import DecisionStore, extract_decision
-from .financial_data import FinancialProvider, PersonalFinancialProvider
+from .financial_data import FinancialProvider, PersonalFinancialProvider, eodhd_symbol
 from .pipeline import InvalidReview, analyze
-from .portfolio import HOLDINGS_COLUMNS, PortfolioStore, identify, load_holdings
+from .portfolio import HOLDINGS_COLUMNS, PortfolioStore, enrich, identify, load_holdings
 from .providers import DataProvider, ModelProvider, OpenAIModel, SuppliedDataProvider
 from .research import ResearchProvider, ReviewedResearchProvider
 from .schemas import (
@@ -23,9 +24,10 @@ from .schemas import (
     CSVRequest,
     FinancialEvidence,
     IdentifyHolding,
+    RefreshPrices,
     SavedDecision,
-    SavedPortfolio,
     SaveDecisionRequest,
+    SavedPortfolio,
     Snapshot,
 )
 
@@ -75,10 +77,11 @@ def create_app(
     def portfolio_csv(request: CSVRequest) -> Snapshot:
         try:
             return load_csv(request)
-        except (ValueError, csv.Error):
+        except (ValueError, csv.Error) as exc:
+            msg = str(exc)
             raise HTTPException(
                 422,
-                "Invalid portfolio CSV. Check the template columns, row types, dates, quantities and references.",
+                f"Invalid portfolio CSV: {msg}" if msg else "Invalid portfolio CSV. Check the template columns, row types, dates, quantities and references.",
             ) from None
 
     @app.get("/api/portfolio/holdings-template")
@@ -87,16 +90,22 @@ def create_app(
                         headers={"Content-Disposition": 'attachment; filename="holdings-template.csv"'})
 
     @app.get("/api/portfolio", response_model=SavedPortfolio | None)
-    def current_portfolio() -> SavedPortfolio | None:
-        return portfolios.get()
+    async def current_portfolio() -> SavedPortfolio | None:
+        # A portfolio saved before the resolver improved is upgraded in place; holdings, costs and rules are untouched.
+        current = portfolios.get()
+        if current is None:
+            return None
+        upgraded = await enrich(current, market_data())
+        return portfolios.save(upgraded) if upgraded != current else current
 
     @app.post("/api/portfolio/import", response_model=SavedPortfolio)
-    def import_portfolio(request: CSVRequest) -> SavedPortfolio:
+    async def import_portfolio(request: CSVRequest) -> SavedPortfolio:
         try:
             imported = load_holdings(request, reference_identities())
         except (ValueError, csv.Error) as exc:
             message = exc.errors()[0]["msg"].removeprefix("Value error, ") if isinstance(exc, ValidationError) else str(exc)
             raise HTTPException(422, f"Invalid portfolio CSV: {message}") from None
+        imported = await enrich(imported, market_data())
         # New holdings replace the old ones; the user's rules stay.
         current = portfolios.get()
         return portfolios.save(imported.model_copy(update={"settings": current.settings if current else None}))
@@ -106,21 +115,38 @@ def create_app(
         return portfolios.save(request)
 
     @app.post("/api/portfolio/identify", response_model=SavedPortfolio)
-    def identify_holding(request: IdentifyHolding) -> SavedPortfolio:
+    async def identify_holding(request: IdentifyHolding) -> SavedPortfolio:
         current = portfolios.get()
         if current is None:
             raise HTTPException(404, "No saved portfolio.")
         try:
-            return portfolios.save(identify(current, request, reference_identities()))
+            answered = identify(current, request, reference_identities())
         except ValueError as exc:
             message = exc.errors()[0]["msg"].removeprefix("Value error, ") if isinstance(exc, ValidationError) else str(exc)
             raise HTTPException(422, message) from None
+        return portfolios.save(await enrich(answered, market_data()))
 
-    def reference_identities() -> FinancialEvidence | None:
+    @app.post("/api/market/refresh")
+    async def refresh_prices(request: RefreshPrices) -> dict[str, Any]:
+        """Fills the local quote cache for the saved holdings. Analyses only read that cache."""
+        current = portfolios.get()
+        provider = market_data()
+        if current is None or not isinstance(provider, PersonalFinancialProvider):
+            raise HTTPException(404, "No saved portfolio.")
+        result = await provider.refresh_quotes(current.snapshot.positions, force=request.force)
+        cached = provider.cache.get() if provider.cache else {}
+        result["quotes"] = {position.id: cached[symbol].model_dump(mode="json") for position in current.snapshot.positions
+                            if (symbol := eodhd_symbol(position)) and symbol in cached}
+        return result
+
+    def market_data() -> FinancialProvider | None:
         try:
-            return getattr(financial or PersonalFinancialProvider.from_environment(), "reference", None)
+            return financial or PersonalFinancialProvider.from_environment()
         except (ValueError, OSError):
             return None
+
+    def reference_identities() -> FinancialEvidence | None:
+        return getattr(market_data(), "reference", None)
 
     @app.post("/api/analyze", response_model=AnalysisResult)
     async def analysis(request: AnalysisRequest) -> AnalysisResult:
@@ -138,12 +164,17 @@ def create_app(
             return await analyze(request, provider, source, secret=config.api_key, financial=financial_source, research=research_source, discovery=discovery)
         except (ValueError, OSError):
             raise HTTPException(503, "Backend financial source configuration is invalid.") from None
-        except InvalidReview:
+        except InvalidReview as exc:
+            import logging
+            logging.error("InvalidReview in /api/analyze: %s", exc, exc_info=True)
             raise HTTPException(
                 502,
                 "The model did not produce a valid portfolio review. No recommendation was completed.",
             ) from None
-        except OpenAIError:
+
+        except OpenAIError as exc:
+            import logging
+            logging.error("OpenAI request failed: type=%s status=%s request_id=%s", type(exc).__name__, getattr(exc, "status_code", None), getattr(exc, "request_id", None))
             raise HTTPException(
                 502, "The model service could not complete the review. Try again."
             ) from None
@@ -173,6 +204,15 @@ def create_app(
         if record is None:
             raise HTTPException(404, "Decision not found.")
         return record
+
+    @app.delete("/api/decisions/{decision_id}", status_code=204)
+    def delete_decision(decision_id: str) -> None:
+        if not decisions.delete(decision_id):
+            raise HTTPException(404, "Decision not found.")
+
+    @app.delete("/api/decisions")
+    def clear_decisions() -> dict[str, int]:
+        return {"deleted": decisions.clear()}
 
     @app.post("/api/decisions/{decision_id}/confirm", response_model=SavedDecision)
     def confirm_decision_action(decision_id: str, request: ConfirmActionRequest) -> SavedDecision:

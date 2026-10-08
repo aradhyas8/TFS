@@ -3,12 +3,13 @@ import { doneLabel, fullDate, money, pct, shortDate } from "./format";
 
 type Props = {
   snapshot: Snapshot | null; unresolved: UnresolvedHolding[]; settings: PortfolioSettings; result: Analysis | null;
-  decisions: SavedDecision[]; currentId: string | null; running: boolean;
+  decisions: SavedDecision[]; currentId: string | null; running: string | null;
   onNew: () => void; onHoldings: () => void; onOpen: (decision: SavedDecision) => void;
+  onDelete: (decision: SavedDecision) => void; onClearAll: () => void;
 };
 
 /** Left rail: which portfolio and which decisions am I working with? */
-export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, onNew, onHoldings, onOpen }: Props) {
+export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, onNew, onHoldings, onOpen, onDelete, onClearAll }: Props) {
   const review = result?.portfolio;
   const rules = [settings.single_company_cap && `cap ${pct(settings.single_company_cap)}`, settings.active_budget && `active ${pct(settings.active_budget)}`].filter(Boolean);
   return <nav className="rail" aria-label="Portfolio and decisions" id="rail">
@@ -39,15 +40,20 @@ export default function Rail({ snapshot, unresolved, settings, result, decisions
     </button> : <div className="portfolio"><span className="lbl">Portfolio</span><span className="cap">No saved portfolio yet. Import a CSV to start.</span></div>}
 
     <div className="decisions">
-      <span className="lbl">Decisions</span>
-      {running && <div className="ditem" aria-current="true"><span>New cash</span><span className="cap">Now · analyzing</span></div>}
+      <span className="lbl dhead"><span>Decisions</span>
+        {decisions.length > 0 && <button type="button" className="link cap" onClick={onClearAll}>Clear all</button>}</span>
+      {running && <div className="ditem" aria-current="true"><span>{running}</span><span className="cap">Now · analyzing</span></div>}
       {decisions.length === 0 && !running && <span className="cap" style={{ padding: "0 12px" }}>Saved decisions appear here.</span>}
-      {decisions.slice(0, 8).map(decision => <button type="button" className="ditem" key={decision.id} aria-current={decision.id === currentId}
-        onClick={() => onOpen(decision)}>
-        <span className="title"><span>{decision.question}</span>{!decision.confirmed_action && <span className="dot" aria-label="Not confirmed" />}</span>
-        <span className="cap">{shortDate(decision.saved_at)} · {decision.confirmed_action ? `you: ${doneLabel(decision.confirmed_action.action)}` : "not confirmed"}</span>
-      </button>)}
-      <a href="/" className="ditem">Classic view</a>
+      {decisions.map(decision => <div className="drow" key={decision.id}>
+        <button type="button" className="ditem" aria-current={decision.id === currentId} onClick={() => onOpen(decision)}>
+          <span className="title"><span>{decision.question}</span>{!decision.confirmed_action && <span className="dot" aria-label="Not confirmed" />}</span>
+          <span className="cap">{shortDate(decision.saved_at)} · {decision.confirmed_action ? `you: ${doneLabel(decision.confirmed_action.action)}` : "not confirmed"}</span>
+        </button>
+        <button type="button" className="ddel" aria-label={`Delete decision: ${decision.question}`} title="Delete" onClick={() => onDelete(decision)}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>)}
+      <a href="/classic" className="ditem">Classic view</a>
     </div>
   </nav>;
 }

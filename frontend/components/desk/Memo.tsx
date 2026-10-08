@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
-import { actionLabel, type Analysis, type DecisionAction, type NewCashInput, type SavedDecision, type Snapshot } from "../../lib/contracts";
-import { answerSentence, clock, doneLabel, durationLabel, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
+import { actionLabel, NEW_CASH_DESTINATION, type Analysis, type DecisionAction, type NewCashInput, type SavedDecision, type Snapshot } from "../../lib/contracts";
+import { answerSentence, clock, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
 
 export type Tab = "evidence" | "scenarios" | "holdings" | "guardrails";
 type Cite = { numbers: Map<string, number>; onCite: (id: string) => void };
@@ -26,19 +26,21 @@ function Expandable({ title, count, children }: { title: string; count: string; 
 
 const Bullets = ({ items }: { items: string[] }) => <ul className="bullets">{items.map((item, index) => <li key={index}>{item}</li>)}</ul>;
 
-export function Echo({ question, newCash, snapshot }: { question: string; newCash: NewCashInput; snapshot: Snapshot | null }) {
+export function Echo({ question, newCash, snapshot }: { question: string; newCash: NewCashInput | null; snapshot: Snapshot | null }) {
+  if (!newCash) return <div className="echo"><span className="q">{question}</span>
+    <span className="cap n">Portfolio review · your whole portfolio as of {fullDate(snapshot?.as_of)}</span></div>;
   return <div className="echo"><span className="q">{question}</span>
     <span className="cap n">{newCashLabel(newCash, snapshot) || "New cash"}
       {newCash.confirmed ? " · confirmed new money" : " · not confirmed"}{newCash.risk_context ? " · loss tolerance given" : " · no loss tolerance given"}</span></div>;
 }
 
-export function Waiting({ startedAt, now, past, scope, onStop }: { startedAt: number; now: number; past: number[]; scope: string[]; onStop: () => void }) {
+export function Waiting({ title, startedAt, now, past, scope, onStop }: { title: string; startedAt: number; now: number; past: number[]; scope: string[]; onStop: () => void }) {
   const elapsed = now - startedAt;
   const history = past.length ? `Your last ${past.length === 1 ? "run" : `${past.length} runs`} took ${durationLabel(Math.min(...past))}${past.length > 1 ? ` to ${durationLabel(Math.max(...past))}` : ""}.` : "Most runs finish in 1–3 minutes.";
   return <div className="memo">
     <Row label="Working" kind="working">
       <div role="status" aria-live="polite" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <span className="serif" style={{ fontSize: 26, lineHeight: "34px" }}>Analyzing your new cash.</span>
+        <span className="serif" style={{ fontSize: 26, lineHeight: "34px" }}>{title}</span>
         <span className="n" style={{ color: "var(--text-2)" }}>Started {clock(new Date(startedAt).toISOString())} · <span style={{ color: "var(--text)" }}>{durationLabel(elapsed)}</span> so far. {history}</span>
         {elapsed > 180_000 && <span className="amber">Taking longer than usual. It will keep going for up to 10 minutes.</span>}
       </div>
@@ -93,8 +95,11 @@ function Impact({ result, snapshot }: { result: Analysis; snapshot: Snapshot | n
   </Row>;
 }
 
-function ConfirmForm({ target, onConfirm }: { target: string; onConfirm: (action: DecisionAction, notes: string | undefined) => Promise<void> }) {
-  const [action, setAction] = useState<DecisionAction>("add");
+const CASH_CHOICES = (target: string): [DecisionAction, string][] => [["add", `Added to ${target}`], ["no_action", "Kept it as cash"]];
+const REVIEW_CHOICES: [DecisionAction, string][] = [["no_action", "Left the portfolio as it is"], ["reduce", "Trimmed a holding"], ["add", "Added to a holding"]];
+
+function ConfirmForm({ choices, onConfirm }: { choices: [DecisionAction, string][]; onConfirm: (action: DecisionAction, notes: string | undefined) => Promise<void> }) {
+  const [action, setAction] = useState<DecisionAction>(choices[0][0]);
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -108,9 +113,9 @@ function ConfirmForm({ target, onConfirm }: { target: string; onConfirm: (action
   }}>
     <fieldset style={{ border: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }} disabled={busy}>
       <legend className="cap" style={{ paddingBottom: 6 }}>What did you do?</legend>
-      <label className="check" style={{ alignItems: "center", minHeight: 36 }}><input type="radio" name="did" checked={action === "add"} onChange={() => setAction("add")} /><span>Added to {target}</span>
-        {action === "add" && <input className="in n" aria-label="Amount added (optional)" placeholder="Amount" value={amount} onChange={event => setAmount(event.target.value)} style={{ width: 120, minHeight: 36, marginLeft: 8 }} />}</label>
-      <label className="check" style={{ alignItems: "center", minHeight: 36 }}><input type="radio" name="did" checked={action === "no_action"} onChange={() => setAction("no_action")} /><span>Kept it as cash</span></label>
+      {choices.map(([value, label]) => <label key={value} className="check" style={{ alignItems: "center", minHeight: 36 }}>
+        <input type="radio" name="did" checked={action === value} onChange={() => setAction(value)} /><span>{label}</span>
+        {value === "add" && action === "add" && <input className="in n" aria-label="Amount added (optional)" placeholder="Amount" value={amount} onChange={event => setAmount(event.target.value)} style={{ width: 120, minHeight: 36, marginLeft: 8 }} />}</label>)}
     </fieldset>
     <label className="field"><span className="cap">Note for future you · optional</span>
       <input className="in" maxLength={1000} value={note} onChange={event => setNote(event.target.value)} placeholder="e.g. split into two buys around the next results" /></label>
@@ -196,7 +201,92 @@ export function Answer({ result, sent, snapshot, cite, saved, onTab, onRerun, on
       {saved && <Row label="Saved">
         {saved.confirmed_action ? <span className="body">Saved and recorded. <span className="m">You: {doneLabel(saved.confirmed_action.action)}.</span></span> : <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <p className="body" style={{ color: "var(--text)" }} data-testid="saved-message">Saved to Decisions with its {saved.evidence_references.length} source{saved.evidence_references.length === 1 ? "" : "s"} and the {shortDate(saved.as_of)} snapshot. When you&apos;ve acted, record what you did.</p>
-          <ConfirmForm target={targetName} onConfirm={onConfirm} />
+          <ConfirmForm choices={CASH_CHOICES(targetName)} onConfirm={onConfirm} />
+        </div>}
+      </Row>}
+    </div>
+  </div>;
+}
+
+type ReviewProps = {
+  result: Analysis; snapshot: Snapshot | null; cite: Cite; saved: SavedDecision | null; onTab: (tab: Tab) => void;
+  onConfirm: (action: DecisionAction, notes: string | undefined) => Promise<void>;
+};
+
+/** A whole-portfolio review. Every value and weight is the backend's; this only orders and formats them. */
+export function ReviewAnswer({ result, snapshot, cite, saved, onTab, onConfirm }: ReviewProps) {
+  const { recommendation: rec, portfolio: review } = result;
+  const currency = review.reporting_currency;
+  const rows = review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION);
+  const ranked = [...rows].sort((a, b) => (b.weight === null ? -1 : Number(b.weight)) - (a.weight === null ? -1 : Number(a.weight)));
+  const scale = Math.max(...rows.map(row => Number(row.weight ?? 0)), 0.01);
+  const guardrails = review.guardrails;
+  const over = guardrails ? guardrails.companies.filter(company => company.status === "breached").length + (guardrails.active.status === "breached" ? 1 : 0) : 0;
+  const rules = !guardrails ? <span className="m">No rules set</span> : over ? <span><span className="amber">●</span> {over === 1 ? "Breaks one of your rules" : `Breaks ${over} of your rules`}</span>
+    : <span><span className="sage">●</span> Within your rules</span>;
+  const capOf = (companyId: string) => guardrails?.companies.find(company => company.company_id === companyId);
+  // The backend already groups missing values by cause; per-holding detail stays in Holdings.
+  const unknowns = review.qualifications;
+  const label = (row: (typeof rows)[number]) => row.supplied.kind === "cash" ? `Cash ${row.supplied.currency} · ${snapshot?.accounts.find(a => a.id === row.supplied.account_id)?.name ?? ""}`
+    : `${row.supplied.ticker || positionName(row.supplied, row.supplied.id)} · ${snapshot?.accounts.find(a => a.id === row.supplied.account_id)?.name ?? ""}`;
+  return <div>
+    <Echo question={result.question} newCash={null} snapshot={snapshot} />
+    <div className="memo" aria-label="Analyst memo" role="region">
+      <Row label="Recommendation" kind="rec">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <h2 className="display">{rec.preferred_action === "review_only" && over ? `Your portfolio breaks ${over === 1 ? "one" : over} of your rules.` : answerSentence(rec.preferred_action, rec.amount, "", null)}</h2>
+          <span className="cap n meta"><span>{review.complete ? `Valued ${fullDate(review.as_of)}` : "Some values are unknown"}</span>{rules}</span>
+        </div>
+      </Row>
+      <Row label="Why"><p className="body">{rec.reason}<Cites ids={rec.evidence_ids || []} cite={cite} /></p></Row>
+      <Row label="Portfolio today">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <span className="n" data-testid="review-total">{review.total_value === null ? <>Total unknown <span className="m">· known {money(review.known_value, currency)}</span></> : money(review.total_value, currency)}
+            <span className="m"> · holdings {money(review.holdings_value, currency)} · cash {money(review.cash_value, currency)} · {review.accounts.length} account{review.accounts.length === 1 ? "" : "s"}</span></span>
+          <div className="weights" role="list" aria-label="Weights">
+            {ranked.slice(0, 8).map(row => {
+              const company = row.identity?.company_id || row.supplied.company_id;
+              const breached = company ? capOf(company)?.status === "breached" : false;
+              return <div className="wrow n" role="listitem" key={row.supplied.id}>
+                <span className="wname">{label(row)}</span>
+                {row.weight === null ? <div className="bar unknown" aria-hidden="true" /> : <div className="bar" aria-hidden="true"><div className={`chg${breached ? " over" : ""}`} style={{ left: 0, width: `${(Number(row.weight) / scale) * 100}%` }} /></div>}
+                <span className={breached ? "amber" : ""}>{row.weight === null ? "Unknown" : pct(row.weight)}</span>
+              </div>;
+            })}
+          </div>
+          {ranked.length > 8 && <button type="button" className="link cap" style={{ alignSelf: "flex-start" }} onClick={() => onTab("holdings")}>All {ranked.length} positions in Holdings →</button>}
+        </div>
+      </Row>
+      <Row label="Exposure">
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {review.direct_companies.length ? <span>Largest companies you own directly: {[...review.direct_companies].sort((a, b) => Number(b.weight ?? -1) - Number(a.weight ?? -1)).slice(0, 3)
+            .map(company => `${company.company_name} ${company.weight === null ? "Unknown" : pct(company.weight)}`).join(" · ")}.</span>
+            : <span className="m">No directly held companies are identified yet.</span>}
+          {!!review.currency_exposure?.length && <span>By currency: {review.currency_exposure.map(row => `${row.currency} ${row.weight === null ? "Unknown" : pct(row.weight)}`).join(" · ")}.</span>}
+          <span>Inside your funds: <span className={review.indirect_exposure === "full" || review.indirect_exposure === "none" ? "" : "amber"}>{{ full: "fully looked through", partial: "partly looked through", stale: "looked through with stale holdings", unknown: "unknown", none: "you hold no funds" }[review.indirect_exposure] || review.indirect_exposure}</span>
+            {["partial", "stale", "unknown"].includes(review.indirect_exposure) && <span className="m">. Indirect exposure is not assumed to be zero.</span>}</span>
+          {review.company_overlap.filter(row => row.indirect_value !== "0").slice(0, 3).map(row => <span className="cap n" key={row.company_id}>{row.company_name}: {row.total_weight === null ? "Unknown" : pct(row.total_weight)} in total, including {row.indirect_weight === null ? "an unknown share" : pct(row.indirect_weight)} through funds</span>)}
+        </div>
+      </Row>
+      <Row label="Risks">
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <p className="body">{rec.downside}</p>
+          {unknowns.length > 0 && <Expandable title="What's unknown" count={`${unknowns.length}`}><Bullets items={unknowns} /></Expandable>}
+        </div>
+      </Row>
+      {rec.alternatives.length > 0 && <Row label="Alternatives"><div className="alts">
+        {rec.alternatives.map((alt, index) => <div className="alt" key={index}><span>{actionLabel(alt.action)}</span><span className="m">{alt.reason}</span></div>)}
+      </div></Row>}
+      <Reasoning assumptions={rec.assumptions} uncertainty={rec.uncertainty} change={rec.what_could_change} extra={<>
+        <button type="button" className="more" onClick={() => onTab("guardrails")}><span>Guardrails <span className="m">· {guardrails ? `${guardrails.companies.length} compan${guardrails.companies.length === 1 ? "y" : "ies"} checked` : "no rules set"}</span></span><span className="arrow" aria-hidden="true">→</span></button>
+        <button type="button" className="more" onClick={() => onTab("evidence")}><span>Evidence <span className="m">· prices, rates and fund holdings used</span></span><span className="arrow" aria-hidden="true">→</span></button>
+        <button type="button" className="more" onClick={() => onTab("scenarios")}><span>Scenarios <span className="m">· {result.comparison ? `${result.comparison.horizon_years}-year comparison` : "none for a review"}</span></span><span className="arrow" aria-hidden="true">→</span></button>
+      </>} />
+      <Row label="Notes"><Expandable title="Calculation basis" count="how values were computed"><p className="cap">{review.calculation_basis}</p></Expandable></Row>
+      {saved && <Row label="Saved">
+        {saved.confirmed_action ? <span className="body">Saved and recorded. <span className="m">You: {doneLabel(saved.confirmed_action.action)}.</span></span> : <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <p className="body" style={{ color: "var(--text)" }} data-testid="saved-message">Saved to Decisions with the {shortDate(saved.as_of)} portfolio. When you&apos;ve acted, record what you did.</p>
+          <ConfirmForm choices={REVIEW_CHOICES} onConfirm={onConfirm} />
         </div>}
       </Row>}
     </div>
@@ -230,7 +320,7 @@ export function Historical({ decision, snapshot, cite, onRerun, onConfirm }: His
       </div></Row>}
       <Row label="Downside"><p className="body">{reasoning.downside}</p></Row>
       <Reasoning assumptions={reasoning.assumptions} uncertainty={reasoning.uncertainty} change={reasoning.what_could_change} />
-      {decision.confirmed_action ? <DidRow decision={decision} /> : <Row label="You did"><ConfirmForm target={target} onConfirm={onConfirm} /></Row>}
+      {decision.confirmed_action ? <DidRow decision={decision} /> : <Row label="You did"><ConfirmForm choices={conclusion.preferred_action === "review_only" ? REVIEW_CHOICES : CASH_CHOICES(target)} onConfirm={onConfirm} /></Row>}
     </div>
   </div>;
 }

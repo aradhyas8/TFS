@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { post, type Analysis, type GuardrailReview, type PortfolioSettings, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { NEW_CASH_DESTINATION, post, type Analysis, type GuardrailReview, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import type { Tab } from "./Memo";
 import { fullDate, money, pct, positionName, shortDate } from "./format";
 
@@ -27,6 +27,7 @@ type Props = {
   snapshot: Snapshot | null; setSnapshot: Dispatch<SetStateAction<Snapshot | null>>; averageCosts: Record<string, string>; unresolved: UnresolvedHolding[];
   onImported: (saved: SavedPortfolio) => void; settings: PortfolioSettings; setSettings: Dispatch<SetStateAction<PortfolioSettings>>;
   result: Analysis | null; decision: SavedDecision | null; running: boolean; onError: (message: string) => void;
+  prices: PriceRefresh | null; refreshing: boolean; onRefreshPrices: () => void;
 };
 
 const TABS: { id: Tab; label: string }[] = [{ id: "evidence", label: "Evidence" }, { id: "scenarios", label: "Scenarios" }, { id: "holdings", label: "Holdings" }, { id: "guardrails", label: "Guardrails" }];
@@ -62,7 +63,8 @@ function EvidenceTab({ items, missing, numbers, focus, result, decision, snapsho
   const target = snapshot?.positions.find(row => row.id === targetId);
   return <>
     {decision && <p className="cap">As saved on {shortDate(decision.saved_at)}. Sources may have been updated since.</p>}
-    {items.length === 0 && <p className="cap">{decision ? "No sources were saved with this decision." : "No filings were researched for this answer. The analyst used your snapshot and the screen below."}</p>}
+    {items.length === 0 && <p className="cap">{decision ? "No sources were saved with this decision." : result?.allocation ? "No filings were researched for this answer. The analyst used your snapshot and the screen below."
+      : "No filings were researched for this answer. The values rest on the prices and rates below."}</p>}
     {items.length > 0 && <div className="ev-list" style={{ margin: "0 -8px" }}>{items.map(item => <div ref={item.id === focus ? focused : undefined} key={item.id} className={`ev${item.id === focus ? " focus" : ""}`}>
       <span className="num">{numbers.get(item.id)}</span>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -75,6 +77,7 @@ function EvidenceTab({ items, missing, numbers, focus, result, decision, snapsho
     {missing.length > 0 && <div className="pgroup"><span className="lbl">Looked for, not found</span>
       {missing.map(item => <div key={item.id} className="ev"><span className="m">—</span><div><div className="m">{item.title}</div><div className="cap">{item.source} · {shortDate(item.date)}</div></div></div>)}
       <p className="cap">Missing sources are listed so you can judge what the answer couldn&apos;t see.</p></div>}
+    {result && !decision && <Valuation result={result} />}
     {target?.mark && <div className="pgroup pnote"><span className="lbl">Your price</span>
       <span className="n">{target.ticker || positionName(target, target.id)} {money(target.mark.value, target.currency)}</span>
       <span className="cap">{target.mark.source} · {shortDate(target.mark.as_of)}</span></div>}
@@ -87,13 +90,28 @@ function EvidenceTab({ items, missing, numbers, focus, result, decision, snapsho
   </>;
 }
 
+/** Each position's dated price and the FX used, as returned with the review. Unknown stays unknown. */
+function Valuation({ result }: { result: Analysis }) {
+  const rows = result.portfolio.positions.filter(row => row.supplied.kind !== "cash" && row.supplied.id !== NEW_CASH_DESTINATION);
+  const rates = [...new Map(result.portfolio.positions.filter(row => row.fx_used).map(row => [`${row.fx_used!.from_currency}${row.fx_used!.to_currency}`, row.fx_used!])).values()];
+  if (!rows.length && !rates.length) return null;
+  return <div className="pgroup pnote"><span className="lbl">Prices and rates used</span>
+    <ul className="plist n" style={{ listStyle: "none" }} aria-label="Prices and rates used">
+      {rows.map(row => <li key={row.supplied.id} className="pv"><span>{row.supplied.ticker || row.supplied.id}</span>
+        <span className={row.quote_used ? "" : "amber"}>{row.quote_used ? <>{money(row.quote_used.value, row.quote_used.currency)} <span className="m">· {row.quote_used.source} · {shortDate(row.quote_used.as_of)} · {row.quote_used.status}</span></> : "No price"}</span></li>)}
+      {rates.map(fx => <li key={`${fx.from_currency}${fx.to_currency}`} className="pv"><span>{fx.from_currency}/{fx.to_currency}</span><span>{fx.rate} <span className="m">· {fx.source} · {shortDate(fx.as_of)}</span></span></li>)}
+    </ul>
+    {result.portfolio.company_overlap.some(row => row.contributing_funds.length) && <span className="cap">Fund holdings: {[...new Set(result.portfolio.company_overlap.flatMap(row => row.contributing_funds.map(fund => `${fund.ticker || fund.position_id} (${fund.source}, ${shortDate(fund.as_of)})`)))].join(" · ")}</span>}
+  </div>;
+}
+
 function ScenariosTab({ result, snapshot }: { result: Analysis; snapshot: Snapshot | null }) {
   const stocks = result.allocation?.stocks || [];
   const comparison = result.comparison;
   const currency = result.portfolio.reporting_currency;
   const altName = (alt: NonNullable<typeof comparison>["alternatives"][number]["selection"]) => alt.kind === "no_action" ? "No action" : alt.kind === "cash" ? "Keep as cash" :
     alt.kind === "short_bill" ? "Short-term bills" : snapshot?.positions.find(row => row.id === alt.position_id)?.ticker || alt.position_id || alt.id;
-  if (!stocks.length && !comparison) return <p className="cap">No scenarios were produced for this answer.</p>;
+  if (!stocks.length && !comparison) return <p className="cap">{result.allocation ? "No scenarios were produced for this answer." : "A portfolio review describes where you stand today; it doesn't project scenarios. /new-cash compares futures for new money."}</p>;
   return <>
     {stocks.map(stock => {
       const row = snapshot?.positions.find(position => position.id === stock.position_id);
@@ -149,12 +167,13 @@ function GuardrailsTab({ result, snapshot }: { result: Analysis; snapshot: Snaps
     <div>
       {review.companies.map(company => {
         const before = current?.companies.find(c => c.company_id === company.company_id);
-        const wasOver = before?.status === "breached" && company.status === "breached";
+        // "Over before this cash" only means something when an amount was tested against today.
+        const wasOver = !!top && before?.status === "breached" && company.status === "breached";
         return <div className="g" key={company.company_id}>
           <div className="pv n"><span>Single company · {company.company_name}</span>
             <span>{wasOver ? <span className="amber">Over, before this cash</span> : statusWord(company.status)} · {pct(company.current_weight)} / {pct(company.cap)}</span></div>
           {company.status === "breached" && <span className="cap">{wasOver ? "Already over before this cash. This trade doesn't fix it." : company.explanation}
-            {" "}<a href="/">/rebalance</a></span>}
+            {" "}<a href="/classic">/rebalance</a></span>}
         </div>;
       })}
       <div className="g"><div className="pv n"><span>Active picks</span><span>{statusWord(review.active.status)} · {pct(review.active.weight)} / {pct(review.active.budget)}</span></div>
@@ -176,13 +195,28 @@ function RulesSummary({ settings }: { settings: PortfolioSettings }) {
 
 const EXCHANGES = [["XNAS", "Nasdaq"], ["XNYS", "NYSE"], ["XASE", "NYSE American"], ["XTSE", "TSX"], ["XTSX", "TSX Venture"], ["NEOE", "Cboe Canada"], ["XCNQ", "CSE"]];
 
+/** Where analysis prices come from. Delayed or cached quotes are never called live. */
+function PriceStatus({ prices, refreshing, disabled, onRefresh }: { prices: PriceRefresh | null; refreshing: boolean; disabled: boolean; onRefresh: () => void }) {
+  const quotes = Object.values(prices?.quotes ?? {});
+  const latest = quotes.map(q => q.captured_at).filter((t): t is string => !!t).sort().at(-1);
+  const cached = quotes.some(q => q.status === "cached");
+  return <div className="pgroup pnote" aria-label="Prices" role="group">
+    <span className="lbl">Prices</span>
+    <span className="cap">{quotes.length ? `${quotes.length} delayed quote${quotes.length === 1 ? "" : "s"} (about 15–20 min) from EODHD, fetched ${new Date(latest ?? "").toLocaleString()}${cached ? "; some are from an earlier day" : ""}. Not live.` : "No cached prices yet."}
+      {prices?.message ? ` ${prices.message}` : ""}{prices?.remaining != null ? ` ${prices.remaining} EODHD requests left today.` : ""}</span>
+    <span><button type="button" className="btn secondary small" disabled={refreshing || disabled} onClick={onRefresh}>{refreshing ? "Refreshing…" : "Refresh prices"}</button></span>
+  </div>;
+}
+
 /** Asks only for what is missing: the exchange, the security type, or both. */
 function Identify({ row, snapshot, disabled, onImported, onError }: { row: UnresolvedHolding; snapshot: Snapshot; disabled: boolean;
   onImported: (saved: SavedPortfolio) => void; onError: (message: string) => void }) {
   const [listing, setListing] = useState("");
   const [kind, setKind] = useState("");
   const [busy, setBusy] = useState(false);
-  const ready = (row.listing || listing) && (row.kind || kind);
+  // When the lookup found several listings, only the exchange is asked; the type comes from the lookup.
+  const choices = row.candidates?.length ? EXCHANGES.filter(([code]) => row.candidates.includes(code)) : EXCHANGES;
+  const ready = (row.listing || listing) && (row.kind || kind || row.candidates?.length);
   async function save() {
     setBusy(true); onError("");
     try { onImported(await post<SavedPortfolio>("/api/portfolio/identify", { account_id: row.account_id, ticker: row.ticker, listing: listing || null, kind: kind || null })); }
@@ -194,8 +228,8 @@ function Identify({ row, snapshot, disabled, onImported, onError }: { row: Unres
     <div className="rules">
       {!row.listing && <label className="field"><span className="cap">Exchange</span>
         <select className="in" aria-label={`Exchange for ${row.ticker}`} value={listing} disabled={disabled || busy} onChange={event => setListing(event.target.value)}>
-          <option value="">Choose</option>{EXCHANGES.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></label>}
-      {!row.kind && <label className="field"><span className="cap">Type</span>
+          <option value="">Choose</option>{choices.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></label>}
+      {!row.kind && !row.candidates?.length && <label className="field"><span className="cap">Type</span>
         <select className="in" aria-label={`Type for ${row.ticker}`} value={kind} disabled={disabled || busy} onChange={event => setKind(event.target.value)}>
           <option value="">Choose</option><option value="stock">Stock</option><option value="etf">ETF</option></select></label>}
     </div>
@@ -212,12 +246,13 @@ function PercentInput({ label, value, onChange }: { label: string; value: string
     onChange={event => { const next = event.target.value.replace(/[^0-9.]/g, ""); setText(next); onChange(next === "" || Number.isNaN(Number(next)) ? null : String(Number(next) / 100)); }} /></label>;
 }
 
-function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, result, decision, running, onError }: Props) {
+function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, result, decision, running, onError, prices, refreshing, onRefreshPrices }: Props) {
   if (!snapshot) return <p className="cap">Import a portfolio to see holdings.</p>;
   const review = result?.portfolio;
   const editable = !running;
   return <>
     {decision && <p className="cap">Today&apos;s portfolio. Historical weights weren&apos;t saved with this decision.</p>}
+    <PriceStatus prices={prices} refreshing={refreshing} disabled={running} onRefresh={onRefreshPrices} />
     {unresolved.length > 0 && <div className="pgroup needs-id" aria-label="Holdings to identify" role="group">
       <span className="lbl amber">Needs you · {unresolved.length} holding{unresolved.length === 1 ? "" : "s"} to identify</span>
       <span className="cap">These couldn&apos;t be matched to a listing or type, so they aren&apos;t in the analysis yet. Nothing is assumed.</span>
@@ -261,7 +296,7 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
           <option value="">Not set</option><option value="true">Yes</option><option value="false">No</option></select></label>
     </fieldset>
     <ImportCsv snapshot={snapshot} onImported={onImported} onError={onError} disabled={!editable} label="Replace with a new CSV" />
-    <p className="cap">Need to edit individual positions or set a target mix? Use the <a href="/">classic view</a>.</p>
+    <p className="cap">Need to edit individual positions or set a target mix? Use the <a href="/classic">classic view</a>.</p>
   </>;
 }
 
@@ -289,6 +324,6 @@ export function ImportCsv({ snapshot, onImported, onError, disabled, label }: {
       <input type="file" accept=".csv,text/csv" aria-label="Load portfolio CSV" disabled={disabled || busy}
         onChange={event => { const file = event.target.files?.[0]; if (file) void load(file); event.target.value = ""; }} />
     </label>
-    <span className="cap">Columns: account, ticker, shares, and optionally average_cost and type (stock or etf). Use .TO, .V, .NE or .CN for Canadian listings. Cash rows are optional. <a href="/api/portfolio/holdings-template" download>Template</a> · the <a href="/api/portfolio/template" download>full template</a> also works.</span>
+    <span className="cap">Columns: account, ticker, shares, and optionally average_cost, currency (USD or CAD) and type. Exchange, name and current price are looked up; currency avoids a question when a ticker trades in both countries. Cash rows are optional. <a href="/api/portfolio/holdings-template" download>Template</a> · the <a href="/api/portfolio/template" download>full template</a> also works.</span>
   </div>;
 }

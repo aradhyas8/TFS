@@ -3,7 +3,7 @@ import path from "node:path";
 
 test("named Canadian stock completes SEDAR+ research, company cases and cash comparison in the shared journey", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.goto("/");
+  await page.goto("/classic");
   await page.getByLabel("As-of date").fill("2026-09-30");
   await page.getByLabel("Reporting currency", { exact: true }).fill("CAD");
   await page.getByLabel("Load portfolio CSV").setInputFiles(path.resolve("../examples/portfolio.csv"));
@@ -35,7 +35,7 @@ test("named Canadian stock completes SEDAR+ research, company cases and cash com
 
 test("missing Canadian stock research returns a completed conditional answer with unknown cases", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.goto("/");
+  await page.goto("/classic");
   await page.getByLabel("As-of date", { exact: true }).fill("2026-09-30");
   await page.getByLabel("Load portfolio CSV").setInputFiles(path.resolve("../examples/portfolio.csv"));
   await expect(page.getByRole("group", { name: "Position 2", exact: true })).toBeVisible();

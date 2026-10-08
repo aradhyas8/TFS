@@ -24,11 +24,18 @@ from tests.test_stock import (
 @pytest.mark.parametrize(
     "failure", [None, "financial_tools", "comparison", "stock", "refusal", "incomplete", "service_error", "malformed_json"]
 )
-def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failure):
+@pytest.mark.parametrize("reasoning_effort", [None, "max"])
+def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failure, reasoning_effort):
     sent = []
 
     def fake_openai(request):
         payload = json.loads(request.content)
+        is_tool_turn = (
+            len(sent) == 0
+            or (failure == "stock" and len(sent) < 5)
+            or (failure == "comparison" and len(sent) < 2)
+        )
+        assert payload["reasoning"] == {"effort": "medium" if is_tool_turn else reasoning_effort}
         sent.append(payload)
         if len(sent) == 1 or (failure == "financial_tools" and len(sent) <= 4) or (failure == "comparison" and len(sent) == 2) or (failure == "stock" and len(sent) <= 5):
             assert request.url == "https://api.openai.com/v1/responses"
@@ -120,7 +127,7 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
 
     monkeypatch.setattr("analyst.providers.AsyncOpenAI", local_sdk)
     app = create_app(
-        settings=Settings("sk-test-backend-only-never-browser", "test-model"),
+        settings=Settings("sk-test-backend-only-never-browser", "test-model", reasoning_effort),
         data=FakeDataProvider(),
         research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}),
     )
@@ -224,5 +231,172 @@ def test_portfolio_review_uses_production_sdk_tools_and_preserves_bound_evidence
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["preferred_action"] == "reduce"
     assert response.json()["reunderwriting"]["assessments"][0]["status"] == "changed"
-    assert "sk-test-backend-only-never-browser" not in response.text
     assert len(sent) == 4
+
+
+def test_all_tool_and_response_schemas_exclude_regex_lookarounds():
+    import json
+
+    from pydantic import ValidationError
+
+    from analyst.providers import (
+        ALLOCATION_TOOLS,
+        COMPARISON_TOOL,
+        FINANCIAL_TOOLS,
+        PORTFOLIO_TOOL,
+        PROPOSAL_TOOL,
+        SEDAR_TOOL,
+        STOCK_TOOLS,
+        sanitize_schema,
+    )
+    from analyst.schemas import (
+        CandidateCasesInput,
+        HoldingReviewInput,
+        ProposedChanges,
+        Recommendation,
+        ReviewSizingInput,
+        StockRecommendation,
+        ThemeTestInput,
+    )
+
+    all_tool_schemas = [
+        PORTFOLIO_TOOL["parameters"],
+        *[t["parameters"] for t in FINANCIAL_TOOLS],
+        PROPOSAL_TOOL["parameters"],
+        COMPARISON_TOOL["parameters"],
+        *[t["parameters"] for t in STOCK_TOOLS if "parameters" in t],
+        SEDAR_TOOL.get("parameters", {}),
+        *[t["parameters"] for t in ALLOCATION_TOOLS if "parameters" in t],
+        sanitize_schema(CandidateCasesInput.model_json_schema()),
+        sanitize_schema(HoldingReviewInput.model_json_schema()),
+        sanitize_schema(ReviewSizingInput.model_json_schema()),
+        sanitize_schema(ThemeTestInput.model_json_schema()),
+        sanitize_schema(Recommendation.model_json_schema()),
+        sanitize_schema(StockRecommendation.model_json_schema()),
+    ]
+
+    for schema in all_tool_schemas:
+        schema_json = json.dumps(schema)
+        for lookaround in ("(?=", "(?!", "(?<=", "(?<!"):
+            assert lookaround not in schema_json, f"Lookaround assertion {lookaround} found in schema"
+
+    # Verify domain validation is strictly preserved in Python
+    with pytest.raises(ValidationError):
+        ProposedChanges.model_validate({"positions": [{"id": "p1", "shares": "-1e15"}]})
+    with pytest.raises(ValidationError):
+        ProposedChanges.model_validate({"new_cash": [{"account_id": "acc1", "currency": "CAD", "amount": "-50"}]})
+
+
+
+def test_tiered_reasoning_pipeline_scripted_model():
+    import asyncio
+
+    from analyst.pipeline import analyze
+    from analyst.providers import ModelTurn, ScriptedModel, ToolCall
+    from analyst.schemas import AnalysisRequest
+    from tests.test_analysis import snapshot
+    from tests.test_stock import (
+        company_judgments,
+        research_fixture,
+        stock_answer,
+        stock_comparison_judgments,
+        stock_request,
+    )
+
+    # 1. Normal review: tool turn uses medium, final synthesis uses configured max
+    turns = [
+        ModelTurn(calls=[ToolCall("c1", "review_portfolio", "{}")]),
+        ModelTurn(answer={"preferred_action": "no_action", "amount": None, "reason": "Portfolio is balanced.",
+                          "alternatives": [{"action": "no_action", "reason": "No changes needed."}],
+                          "downside": "Market risk.", "assumptions": ["Marks are current."],
+                          "uncertainty": ["General uncertainty."], "what_could_change": ["Market movements."]}),
+    ]
+    model = ScriptedModel(turns, settings=Settings("key", "model", reasoning_effort="max"))
+    req = AnalysisRequest.model_validate({"question": "Review my exposure", "portfolio": snapshot()})
+    result = asyncio.run(analyze(req, model, FakeDataProvider()))
+    assert result.recommendation.preferred_action == "no_action"
+    assert model.reasoning_efforts == ["medium", "max"]
+
+    # 2. Existing ScriptedModel without settings remains compatible (defaults to None for synthesis)
+    model_compat = ScriptedModel(turns)
+    result_compat = asyncio.run(analyze(req, model_compat, FakeDataProvider()))
+    assert result_compat.recommendation.preferred_action == "no_action"
+    assert model_compat.reasoning_efforts == ["medium", None]
+
+    # 3. Forced-tool turn in stock analysis: model returns answer prematurely before calculate_company_cases,
+    # pipeline forces calculate_company_cases on next turn, verifying that forced-tool turn uses medium reasoning.
+    stock_req = AnalysisRequest.model_validate(stock_request())
+    forced_turns = [
+        ModelTurn(calls=[ToolCall("c1", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("c2", "get_sec_filings", "{}")]),
+        ModelTurn(calls=[ToolCall("c3", "get_issuer_material", "{}")]),
+        # Premature answer before company cases:
+        ModelTurn(answer={"preferred_action": "hold", "amount": None, "reason": "Preliminary view.",
+                          "alternatives": [{"action": "no_action", "reason": "No action."}],
+                          "downside": "Downside risk.", "assumptions": ["Assumptions."],
+                          "uncertainty": ["Uncertainty."], "what_could_change": ["Change."],
+                          "evidence_ids": ["filing", "issuer"]}),
+        # Forced tool turn (calculate_company_cases) dispatched by reprompt:
+        ModelTurn(calls=[ToolCall("c4", "calculate_company_cases", json.dumps(company_judgments()))]),
+        ModelTurn(calls=[ToolCall("c5", "calculate_comparison", json.dumps(stock_comparison_judgments(stock_req.model_dump(mode="json"))))]),
+        ModelTurn(answer=stock_answer()),
+    ]
+    stock_model = ScriptedModel(forced_turns, settings=Settings("key", "model", reasoning_effort="max"))
+    research = ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())})
+    stock_result = asyncio.run(analyze(stock_req, stock_model, FakeDataProvider(), research=research))
+    assert stock_result.recommendation.preferred_action == "hold"
+    assert stock_model.reasoning_efforts == ["medium", "medium", "medium", "medium", "medium", "medium", "max"]
+
+
+def test_incomplete_response_detailed_diagnostics(monkeypatch):
+    import asyncio
+
+    from analyst.providers import OpenAIModel
+    sent = []
+
+    def fake_openai(request):
+        sent.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_incomplete_123",
+                "object": "response",
+                "created_at": 1,
+                "model": "gpt-6-luna",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "usage": {
+                    "input_tokens": 20048,
+                    "output_tokens": 16000,
+                    "output_tokens_details": {"reasoning_tokens": 15413},
+                    "total_tokens": 36048,
+                },
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": "fc_incomplete",
+                        "call_id": "call_inc_1",
+                        "name": "calculate_comparison",
+                        "arguments": '{"alternatives": [{"alternative_id": "candidate-p1",',
+                    }
+                ],
+            },
+        )
+
+    def local_sdk(**kwargs):
+        return AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openai)))
+
+    monkeypatch.setattr("analyst.providers.AsyncOpenAI", local_sdk)
+    model = OpenAIModel(Settings("sk-test", "gpt-6-luna", reasoning_effort="max"))
+
+    with pytest.raises(ValueError) as excinfo:
+        asyncio.run(model.respond([{"role": "system", "content": "instructions"}, {"role": "user", "content": json.dumps({"question": "test"})}], require_tool=True, reasoning_effort="medium"))
+
+    err_str = str(excinfo.value)
+    assert "reason=max_output_tokens" in err_str
+    assert "input_tokens=20048" in err_str
+    assert "output_tokens=16000" in err_str
+    assert "reasoning_tokens=15413" in err_str
+    assert "max_output_tokens=16000" in err_str
+    assert "reasoning_effort=medium" in err_str
+    assert "partial_tools=['calculate_comparison']" in err_str

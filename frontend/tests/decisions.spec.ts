@@ -3,7 +3,7 @@ import path from "node:path";
 
 test("save and revisit a dated decision with historical evidence, reasoning, and user-confirmed action", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.goto("/");
+  await page.goto("/classic");
   await page.getByLabel("As-of date").fill("2026-09-30");
   await page.getByLabel("Reporting currency", { exact: true }).fill("CAD");
   await page.getByLabel("Load portfolio CSV").setInputFiles(path.resolve("../examples/portfolio.csv"));
@@ -98,7 +98,7 @@ test("save and revisit a dated decision with historical evidence, reasoning, and
 
 test("existing analysis journey works without saving", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.goto("/");
+  await page.goto("/classic");
   await page.getByLabel("As-of date").fill("2026-09-30");
   await page.getByLabel("Reporting currency", { exact: true }).fill("CAD");
   await page.getByLabel("Load portfolio CSV").setInputFiles(path.resolve("../examples/portfolio.csv"));

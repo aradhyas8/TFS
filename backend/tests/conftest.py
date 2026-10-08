@@ -4,7 +4,7 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def no_live_services(monkeypatch):
+def no_live_services(monkeypatch, tmp_path):
     original_connect = socket.socket.connect
 
     def blocked(sock, address):
@@ -17,6 +17,9 @@ def no_live_services(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-backend-only-never-browser")
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
     monkeypatch.setenv("BOC_FX_ENABLED", "false")
+    monkeypatch.setenv("EODHD_API_KEY", "")
+    monkeypatch.setenv("MARKET_DATA_DIR", str(tmp_path / "market"))
+    monkeypatch.setenv("SEC_USER_AGENT", "")
     monkeypatch.delenv("FINANCIAL_REFERENCE_FILE", raising=False)
 
     monkeypatch.delenv("RESEARCH_REFERENCE_FILE", raising=False)

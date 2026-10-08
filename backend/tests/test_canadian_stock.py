@@ -366,3 +366,55 @@ async def test_canadian_stock_in_portfolio_review_reunderwriting():
     assert result.research["p_can"].company_id == "shopify"
     assert result.research["p_can"].documents[0].authority == "sedar_plus"
     assert not any("p_can: listing-specific cases are unavailable" in q for q in result.qualifications)
+
+
+def test_canadian_stock_calculate_comparison_before_company_cases_returns_error_and_recovers():
+    fixture = canadian_research_fixture()
+    source = ReviewedResearchProvider({"acme:XTSE": CompanyResearch.model_validate(fixture)})
+    req = canadian_stock_request()
+    bound = AnalysisRequest.model_validate(req).model_dump(mode="json")
+    turns = [
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        # Premature comparison call before company cases
+        ModelTurn(calls=[ToolCall("comparison_premature", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
+        # Follow the guidance in the error message
+        ModelTurn(calls=[ToolCall("sedar", "get_sedar_filings", "{}")]),
+        ModelTurn(calls=[ToolCall("issuer", "get_issuer_material", "{}")]),
+        ModelTurn(calls=[ToolCall("company", "calculate_company_cases", json.dumps(company_judgments()))]),
+        ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
+        ModelTurn(answer=canadian_stock_answer()),
+    ]
+    model = ScriptedModel(turns)
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post(
+        "/api/analyze", json=req
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["stock"]["position_id"] == "p2"
+    assert result["recommendation"]["preferred_action"] == "hold"
+
+
+def test_canadian_stock_premature_answer_reprompts_for_stock_tools():
+    fixture = canadian_research_fixture()
+    source = ReviewedResearchProvider({"acme:XTSE": CompanyResearch.model_validate(fixture)})
+    req = canadian_stock_request()
+    bound = AnalysisRequest.model_validate(req).model_dump(mode="json")
+    turns = [
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        # Premature answer before company cases
+        ModelTurn(answer=canadian_stock_answer()),
+        # Model receives reprompt to run get_sedar_filings and company cases
+        ModelTurn(calls=[ToolCall("sedar", "get_sedar_filings", "{}")]),
+        ModelTurn(calls=[ToolCall("issuer", "get_issuer_material", "{}")]),
+        ModelTurn(calls=[ToolCall("company", "calculate_company_cases", json.dumps(company_judgments()))]),
+        ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
+        ModelTurn(answer=canadian_stock_answer()),
+    ]
+    model = ScriptedModel(turns)
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post(
+        "/api/analyze", json=req
+    )
+    assert response.status_code == 200, response.text
+    assert "Stock analysis requires primary research and company cases" in str(model.requests[2])
+    assert "get_sedar_filings" in str(model.requests[2])
+

@@ -42,7 +42,7 @@ def test_unknown_tickers_stay_unresolved_with_only_known_fields(tmp_path):
     unresolved = {row["ticker"]: row for row in imported(client(tmp_path)).json()["unresolved"]}
     # A bare ticker gets no assumed listing, type or currency.
     assert unresolved["AAPL"] == {"account_id": "tfsa", "ticker": "AAPL", "shares": "10", "average_cost": None,
-                                       "currency": None, "listing": None, "kind": None}
+                                       "currency": None, "listing": None, "kind": None, "candidates": []}
     # A suffix fixes listing and currency; only the type is still missing.
     assert (unresolved["VFV.TO"]["listing"], unresolved["VFV.TO"]["currency"], unresolved["VFV.TO"]["kind"]) == ("XTSE", "CAD", None)
 
