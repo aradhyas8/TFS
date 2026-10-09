@@ -747,19 +747,42 @@ def test_retaining_all_holdings_is_valid_prose(prose):
     "All your savings should go into one bank.",
     "Buy 10 shares of Ford.",
     "Add 30% to Broadcom.",
+    "Add thirty percent to Broadcom.",
+    # Known gap closed: a trade size reached through its object, which no workflow produced or validated.
+    "Reduce Broadcom by 25%.",
+    "Trim Shopify to 5% of the portfolio.",
+    "Sell a quarter of your Broadcom shares.",
+    "Sell half of your holdings.",
+    "Sell 25% in FY2025.",
+    "Returns are guaranteed.",
+    "There is a high probability of gains.",
 ])
-def test_blanket_and_sized_trade_language_is_still_rejected(prose):
+def test_blanket_sized_and_guaranteed_language_is_still_rejected(prose):
     from analyst.pipeline import InvalidReview, validate_prose
-    for mode in ({}, {"stock": True, "explanatory": True}):
+    for mode in ({}, {"stock": True}, {"stock": True, "explanatory": True}):
         with pytest.raises(InvalidReview):
             validate_prose(prose, **mode)
 
 
-@pytest.mark.parametrize("prose", ["Add thirty percent to Broadcom.", "Reduce Broadcom by 25%."])
-def test_numeric_trade_prose_is_rejected_outside_explanatory_mode(prose):
-    from analyst.pipeline import InvalidReview, validate_prose
-    with pytest.raises(InvalidReview):
-        validate_prose(prose)
+@pytest.mark.parametrize("prose", [
+    "Revenue grew in the latest quarter.",
+    "The half-year filing reports lower free cash flow.",
+    "Ford reported a net loss in FY2025.",
+    "Margins improved in Q3 2026 versus the prior quarter.",
+    "The 10-K for fiscal 2025 and the 6-K dated 2026-07-31 report earnings.",
+    "Quarterly results were mixed and the first half showed weaker demand.",
+])
+def test_descriptive_fiscal_periods_do_not_consume_a_correction(prose):
+    from analyst.pipeline import validate_prose
+    for mode in ({}, {"stock": True}, {"stock": True, "explanatory": True}):
+        validate_prose(prose, **mode)
+
+
+@pytest.mark.parametrize("prose", ["Tariffs could reduce margins by two percent.", "Buybacks could reduce the share count by three percent.",
+                                   "Management may reduce operating expenses by five percent."])
+def test_company_operating_changes_are_not_position_sizes(prose):
+    from analyst.pipeline import validate_prose
+    validate_prose(prose, stock=True, explanatory=True)
 
 
 def test_a_model_withheld_direction_with_valid_citations_is_not_reported_as_uncited():

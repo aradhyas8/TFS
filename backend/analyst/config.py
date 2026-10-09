@@ -15,6 +15,8 @@ class Settings:
     request_timeout: float = 170.0
     # OpenAI by default; LLM_PROVIDER=openrouter points the same Responses client at OpenRouter for development.
     base_url: str = "https://api.openai.com/v1"
+    # "chatgpt_plan": the same Responses client and request with an OAuth token from Sign in with ChatGPT, streamed.
+    provider: str = "openai"
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -29,8 +31,16 @@ class Settings:
         if timeout <= 0 or timeout > 170:
             raise ValueError("Invalid OpenAI timeout.")
         provider = os.environ.get("LLM_PROVIDER", "openai").strip().lower() or "openai"
-        if provider not in {"openai", "openrouter"}:
+        if provider not in {"openai", "openrouter", "chatgpt_plan"}:
             raise ValueError("Invalid LLM provider.")
+        if provider == "chatgpt_plan":
+            from .chatgpt_plan import PlanError, access_token
+            try:
+                token = access_token()  # refreshed (and the refresh token rotated) when near expiry
+            except PlanError:
+                token = ""  # not signed in or the grant is unusable: the API reports the model as unconfigured
+            return cls(api_key=token, model=os.environ.get("CHATGPT_PLAN_MODEL", ""), reasoning_effort=cast(ReasoningEffort, effort),
+                       request_timeout=timeout, provider="chatgpt_plan")
         if provider == "openrouter":
             return cls(api_key=os.environ.get("OPENROUTER_API_KEY", ""), model=os.environ.get("OPENROUTER_MODEL", ""),
                        reasoning_effort=cast(ReasoningEffort, effort), request_timeout=timeout, base_url="https://openrouter.ai/api/v1")

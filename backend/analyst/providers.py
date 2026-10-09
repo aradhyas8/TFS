@@ -9,6 +9,7 @@ from openai import AsyncOpenAI, omit
 from openai.types.responses import FunctionToolParam, ResponseInputParam, ToolChoiceFunctionParam
 from openai.types.responses.response_create_params import ToolChoice
 
+from .chatgpt_plan import stream_response
 from .config import Settings
 from .schemas import (
     AllocationJudgment,
@@ -192,7 +193,8 @@ class OpenAIModel:
             api_key=settings.api_key,
             base_url=settings.base_url,
             timeout=settings.request_timeout,
-            max_retries=2,
+            # ChatGPT plan: never retry automatically (a usage-limited request must not be resent).
+            max_retries=0 if settings.provider == "chatgpt_plan" else 2,
         )
 
     async def respond(
@@ -233,7 +235,7 @@ class OpenAIModel:
         effort = cast(Any, reasoning_effort if reasoning_effort is not None else self.settings.reasoning_effort)
         openrouter = "openrouter.ai" in self.settings.base_url
         t0 = time.monotonic()
-        response = await self.client.responses.create(
+        params: dict[str, Any] = dict(
             model=self.settings.model,
             reasoning={"effort": effort},
             input=cast(ResponseInputParam, messages),
@@ -256,6 +258,13 @@ class OpenAIModel:
             # OpenRouter only: pin the first-party OpenAI endpoint, honour every parameter, never fall back to another host.
             extra_body={"provider": {"only": ["openai"], "allow_fallbacks": False, "require_parameters": True}} if openrouter else None,
         )
+        if self.settings.provider == "chatgpt_plan":
+            # Plan route transport only: max_output_tokens is unsupported there, and responses are streamed under one
+            # deadline per turn. Tools, forced choice, parallel_tool_calls=False, strict schemas and store=false are unchanged.
+            del params["max_output_tokens"]
+            response = await stream_response(self.client, params, self.settings.request_timeout)
+        else:
+            response = await self.client.responses.create(**params)
         duration = time.monotonic() - t0
         tool_names = [item.name for item in response.output if item.type == "function_call"]
         usage = response.usage

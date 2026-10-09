@@ -122,6 +122,26 @@ BLANKET_TRADE = (
     r"(?:all|everything)\b|"
     r"\b(?:all\s+(?:of\s+)?(?:your\s+|my\s+|the\s+)?(?:cash|funds|money|savings|capital)|everything)\s+(?:\w+\s+){0,2}?into\b"
 )
+# Reporting language that names a period or filing is not a quantitative claim: "the latest quarter", "the half-year
+# filing", "FY2025", "Q3 2026", "fiscal 2025", "2025-12-31", "the 10-K". Fractions of a position ("a quarter of", "sell half") stay.
+DESCRIPTIVE_PERIOD = (
+    r"\b(?:FY|fiscal(?:\s+year)?|calendar\s+year|years?\s+ended|in|during|for|since|through|versus|vs\.?)\s*'?(?:19|20)\d{2}(?:\s*[-/]\s*(?:19|20)?\d{2})?\b|"
+    r"\bFY\s*'?\d{2,4}\b|\b(?:Q[1-4]|H[12])(?:\s*(?:FY\s*)?'?(?:(?:19|20)\d{2}|\d{2}))?\b|\b(?:19|20)\d{2}-\d{2}-\d{2}\b|"
+    r"\b(?:10-K|10-Q|20-F|40-F|6-K|8-K)(?:/A)?\b|"
+    r"(?<!\ba )(?<!\bone )\bquarter(?:s|ly)?\b(?!\s+of\b)|"
+    r"\bhalf[- ]years?(?:ly)?\b|\b(?:first|second|latest|prior|last|previous|interim)\s+half\b(?!\s+of\b)"
+)
+# Operating metrics a company changes ("reduce margins by two percent") are not position sizes.
+_METRIC = (r"(?:margins?|revenues?|sales|costs?|expenses?|earnings|eps|growth|debt|capex|spending|prices?|pricing|dividends?|payouts?|"
+           r"leverage|loss(?:es)?|flows?|headcount|inventor(?:y|ies)|output|production|volumes?|rates?|guidance|buybacks?|repurchases?|count)")
+_AMOUNT = r"(?:[$€£¥]?\d[\d,.]*\s*(?:%|percent|shares?|units?)|[a-z]+(?:[- ][a-z]+)?\s+percent)"
+# A trade verb with a size, directly or through its object: "add 30%", "add thirty percent", "reduce Broadcom by 25%".
+SIZED_TRADE = (
+    r"\b(?:buy|sell|add|trim|reduce|increase|deploy|invest|allocate|purchase)\s+(?:about |roughly |around |up to |another )?"
+    r"(?:[$€£¥]?\d[\d,.]*\s*(?:%|percent|shares?|units?)?|[a-z]+(?:[- ][a-z]+)?\s+percent|half|a quarter|a third)(?![\w-])|"
+    rf"\b(?:buy|sell|add|trim|reduce|increase|deploy|invest|allocate|purchase)\s+(?:(?!{_METRIC}\b)[\w&.'-]+\s+){{1,3}}?"
+    rf"(?:by|to)\s+(?:about |roughly |around |up to )?{_AMOUNT}(?![\w-])"
+)
 
 
 def validate_prose(prose: str, *, stock: bool = False, explanatory: bool = False) -> None:
@@ -135,9 +155,7 @@ def validate_prose(prose: str, *, stock: bool = False, explanatory: bool = False
     if explanatory:
         quantitative = (
             r"\b(?:probability|probabilities|guaranteed|double|triple)\b|"
-            rf"{BLANKET_TRADE}|"
-            r"\b(?:buy|sell|add|trim|reduce|increase|deploy|invest|allocate|purchase)\s+(?:about |roughly |around |up to |another )?"
-            r"(?:[$€£¥]?\d[\d,.]*\s*(?:%|percent|shares?|units?)?|half|a quarter|a third)(?![\w-])"
+            rf"{BLANKET_TRADE}|{SIZED_TRADE}"
         )
     execution = r"(?:buy|buying|bought|sell|selling|sold|purchase[ds]?|purchasing|trade[ds]?|trading|allocate[ds]?|allocating|invest(?:ed|ing)?|rebalance[ds]?|rebalancing)"
     adjustment = r"(?:increase|reduce|trim|exit|deploy|put|shift|transfer|add)"
@@ -177,6 +195,7 @@ def validate_prose(prose: str, *, stock: bool = False, explanatory: bool = False
     )
     prose_for_quant = re.sub(negated_probability, "", prose_for_quant, flags=re.I)
     prose_for_quant = re.sub(retained_all, "", prose_for_quant, flags=re.I)
+    prose_for_quant = re.sub(DESCRIPTIVE_PERIOD, "", prose_for_quant, flags=re.I)
     m = re.search(quantitative, prose_for_quant, re.I)
     if m:
         logging.error("validate_prose failed (quantitative): matched %r in %r", m.group(0), prose)
