@@ -131,7 +131,9 @@ def test_unknown_current_facts_do_not_support_direction():
     assert result["reunderwriting"]["assessments"][0]["status"] == "unknown"
     assert result["reunderwriting"]["assessments"][0]["action"] == "wait_for_inputs"
     assert result["reunderwriting"]["stocks"][0]["cases"][0]["terminal_price"] is None
-    assert result["recommendation"]["preferred_action"] == "wait_for_inputs"
+    assert "Company cases could not be calculated" in result["reunderwriting"]["assessments"][0]["change_reason"]
+    # The unresolved holding no longer forces the portfolio answer; the model's own synthesis stands.
+    assert result["recommendation"]["preferred_action"] == "review_only"
 
 
 def sizing_review_request():
@@ -556,3 +558,216 @@ def test_reunderwriting_forced_tool_forces_reunderwrite_holding_after_premature_
         "reunderwrite_holding" in str(msg) and "numeric" in str(msg)
         for msg in reprompt_messages
     )
+
+
+def bad_cash_conversion():
+    # earnings_exit with an FCF-only driver: calculate_company_cases rejects it.
+    bad = assessment()
+    for case in bad["judgments"]["cases"]:
+        case["cash_conversion"] = ["0.8"] * 5
+    return bad
+
+
+def run_review_turns(thesis_calls):
+    request = review_request()
+    comparison = {"scope_position_ids": [row["id"] for row in request["portfolio"]["positions"]],
+                  "alternatives": [{"id": "company-p1", "kind": "stock", "position_id": "p1"},
+                                   {"id": "cash", "kind": "cash", "position_id": "c1"},
+                                   {"id": "keep", "kind": "no_action", "position_id": None}]}
+    model = ScriptedModel([
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        *[ModelTurn(calls=[ToolCall(f"thesis-{index}", "reunderwrite_holding", json.dumps(args))]) for index, args in enumerate(thesis_calls)],
+        ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(stock_comparison_judgments({**request, "comparison": comparison})))]),
+        ModelTurn(answer=review_answer())])
+    return TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json={**request, "comparison": comparison})
+
+
+def test_a_rejected_holding_judgment_is_returned_once_to_correct():
+    response = run_review_turns([bad_cash_conversion(), assessment()])
+    assert response.status_code == 200, response.text
+    assert [row["position_id"] for row in response.json()["reunderwriting"]["assessments"]] == ["p1"]
+
+
+def test_a_holding_judgment_rejected_twice_still_fails_closed():
+    assert run_review_turns([bad_cash_conversion(), bad_cash_conversion()]).status_code == 502
+
+
+def test_a_rejected_review_answer_is_returned_once_to_correct():
+    request = review_request()
+    comparison = {"scope_position_ids": [row["id"] for row in request["portfolio"]["positions"]],
+                  "alternatives": [{"id": "company-p1", "kind": "stock", "position_id": "p1"},
+                                   {"id": "cash", "kind": "cash", "position_id": "c1"},
+                                   {"id": "keep", "kind": "no_action", "position_id": None}]}
+    invented = {**review_answer(), "evidence_ids": ["review-p1-filing", "quote-p1"]}
+    def run(*answers):
+        model = ScriptedModel([
+            ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+            ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(assessment()))]),
+            ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(stock_comparison_judgments({**request, "comparison": comparison})))]),
+            *[ModelTurn(answer=answer) for answer in answers]])
+        return TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+            {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json={**request, "comparison": comparison})
+    corrected = run(invented, review_answer())
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["recommendation"]["evidence_ids"] == ["review-p1-filing", "review-p1-issuer"]
+    assert run(invented, invented).status_code == 502
+
+
+def test_an_unresolved_holding_does_not_block_a_decision_on_the_others():
+    request = review_request()
+    request["portfolio"]["positions"].append({"id": "p9", "account_id": "tfsa", "kind": "stock", "ticker": "BANK", "listing": "XNYS",
+        "company_id": "bank", "company_name": "Bank", "shares": "1", "currency": "USD", "mark": {"value": "40", "as_of": "2026-09-30", "source": "Broker display"}})
+    bank = json.loads(json.dumps(review_research_fixture()).replace('"acme"', '"bank"'))
+    bank["facts"][0]["value"] = None  # its cases can't be calculated
+    comparison = {"scope_position_ids": [row["id"] for row in request["portfolio"]["positions"]],
+                  "alternatives": [{"id": "company-p1", "kind": "stock", "position_id": "p1"},
+                                   {"id": "cash", "kind": "cash", "position_id": "c1"},
+                                   {"id": "keep", "kind": "no_action", "position_id": None}]}
+    bound = {**request, "comparison": comparison}
+    unresolved = assessment()
+    unresolved["position_id"] = unresolved["assessment"]["position_id"] = "p9"
+    unresolved["assessment"].update(action="hold", status="unknown", evidence_ids=["review-p9-filing"])
+    model = ScriptedModel([
+        ModelTurn(calls=[ToolCall("p", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("t1", "reunderwrite_holding", json.dumps(assessment()))]),
+        ModelTurn(calls=[ToolCall("t9", "reunderwrite_holding", json.dumps(unresolved))]),
+        ModelTurn(calls=[ToolCall("c", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
+        ModelTurn(answer={**review_answer(), "evidence_ids": ["review-p1-filing"]})])  # one supporting document is enough
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture()), "bank": CompanyResearch.model_validate(bank)}))).post("/api/analyze", json=bound)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert {row["position_id"]: row["action"] for row in result["reunderwriting"]["assessments"]} == {"p1": "reduce", "p9": "wait_for_inputs"}
+    assert result["recommendation"]["preferred_action"] == "reduce"
+    # The final synthesis was told which holdings are resolved, which aren't, their weights and why.
+    holdings = json.loads(next(item["output"] for item in model.requests[-1] if item.get("type") == "function_call_output" and item["call_id"] == "c"))["holdings"]
+    assert [row["position_id"] for row in holdings["resolved"]] == ["p1"]
+    assert holdings["unresolved"][0]["position_id"] == "p9"
+    assert holdings["unresolved"][0]["company_weight"] is not None
+    assert "left unchanged pending evidence" in holdings["unresolved"][0]["why"]
+
+
+def test_a_single_sec_filing_supports_a_rebalance_holding():
+    one_source = assessment()
+    one_source["assessment"]["evidence_ids"] = ["review-p1-filing"]
+    response, _ = run_review(judgment=one_source, answer={**review_answer(), "evidence_ids": ["review-p1-filing"]})
+    assert response.status_code == 200, response.text
+    assert response.json()["reunderwriting"]["assessments"][0]["action"] == "reduce"
+    assert response.json()["recommendation"]["preferred_action"] == "reduce"
+
+
+def test_an_unsized_add_stays_directional_without_cash():
+    added = assessment()
+    added["assessment"].update(action="add", current_thesis="Demand evidence supports a larger position.")
+    response, _ = run_review(judgment=added, answer={**review_answer(), "preferred_action": "add", "reason": "Current demand evidence supports adding, funded by trimming elsewhere."})
+    assert response.status_code == 200, response.text
+    assert response.json()["recommendation"]["preferred_action"] == "add"
+    assert response.json()["recommendation"]["amount"] is None
+
+
+def two_company_review(thesis_calls):
+    """Acme (p1) and Other (p2), each with distinctive research, re-underwritten through the given scripted calls."""
+    from analyst.schemas import AnalysisRequest
+    request = review_request()
+    request["portfolio"]["positions"][1].update(listing="XNYS", currency="USD", ticker="OTHER", company_id="other", company_name="Other company")
+    request["portfolio_review"]["prior_theses"].append({"company_id": "other", "as_of": "2025-12-31", "thesis": "Steady demand."})
+    bound = AnalysisRequest.model_validate(request).model_dump(mode="json")
+    other = review_research_fixture()
+    other["company_id"] = "other"
+    for doc in other["documents"]:
+        doc["company_id"] = "other"
+        doc["excerpt"] = "Other company excerpt marker."
+    model = ScriptedModel([ModelTurn(calls=[ToolCall("p", "review_portfolio", "{}")]),
+                           *[ModelTurn(calls=[ToolCall(f"t{index}", "reunderwrite_holding", json.dumps(args))]) for index, args in enumerate(thesis_calls)],
+                           ModelTurn(calls=[ToolCall("c", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
+                           ModelTurn(answer={**recommendation(), "preferred_action": "reduce", "evidence_ids": ["review-p1-filing", "review-p2-filing"]})])
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture()), "other": CompanyResearch.model_validate(other)}))).post("/api/analyze", json=request)
+    return response, model
+
+
+def second_assessment():
+    second = assessment()
+    second["position_id"] = second["assessment"]["position_id"] = "p2"
+    second["assessment"]["evidence_ids"] = ["review-p2-filing", "review-p2-issuer"]
+    return second
+
+
+def test_python_forces_each_required_holding_once_in_queue_order():
+    response, model = two_company_review([assessment(), second_assessment()])
+    assert response.status_code == 200, response.text
+    assert [row["position_id"] for row in response.json()["reunderwriting"]["assessments"]] == ["p1", "p2"]
+    # review_portfolio, then one forced reunderwrite_holding per queued holding, then the forced comparison.
+    assert model.forced_tools[1:4] == ["reunderwrite_holding", "reunderwrite_holding", "calculate_comparison"]
+
+
+def test_a_holding_out_of_queue_order_is_returned_once_and_counts_as_its_correction():
+    response, _ = two_company_review([second_assessment(), assessment(), second_assessment()])
+    assert response.status_code == 200, response.text
+    assert [row["position_id"] for row in response.json()["reunderwriting"]["assessments"]] == ["p1", "p2"]
+    # The required holding's single correction is spent: a second out-of-order call fails closed.
+    assert two_company_review([second_assessment(), second_assessment()])[0].status_code == 502
+
+
+def test_each_turn_carries_only_the_next_holdings_research_and_normalized_results():
+    response, model = two_company_review([assessment(), second_assessment()])
+    assert response.status_code == 200, response.text
+    first, second, comparison, final = (json.dumps(model.requests[index]) for index in (1, 2, 3, 4))
+    assert "orders softened" in first and "Other company excerpt marker" not in first
+    # p1's raw research is not replayed once its normalized result replaces it in the call history.
+    assert "Other company excerpt marker" in second and "orders softened" not in second
+    for later in (comparison, final):
+        assert "orders softened" not in later and "Other company excerpt marker" not in later
+    # Every completed step stays visible as a tool call with its normalized output, so none is redone.
+    calls = [item["name"] for item in model.requests[4] if item.get("type") == "function_call"]
+    assert calls == ["review_portfolio", "reunderwrite_holding", "reunderwrite_holding", "calculate_comparison"]
+    outputs = [json.loads(item["output"]) for item in model.requests[4] if item.get("type") == "function_call_output"]
+    assert "next_holding" not in outputs[0] and outputs[1]["position_id"] == "p1" and outputs[1]["cases"]
+    assert outputs[2]["available_evidence_ids"] == ["review-p2-filing", "review-p2-issuer"]
+
+
+@pytest.mark.parametrize("prose", [
+    "The tool therefore leaves all holdings unchanged pending evidence.",
+    "All holdings stay unchanged pending evidence.",
+    "Keeping all holdings while evidence is gathered retains the current concentration.",
+    "Everything else in the portfolio remains unchanged.",
+])
+def test_retaining_all_holdings_is_valid_prose(prose):
+    from analyst.pipeline import validate_prose
+    validate_prose(prose)
+    validate_prose(prose, stock=True, explanatory=True)
+
+
+@pytest.mark.parametrize("prose", [
+    "Invest all your cash in Broadcom.",
+    "Put everything into Shopify.",
+    "Sell all your holdings and wait.",
+    "Move all of the portfolio into cash.",
+    "All your savings should go into one bank.",
+    "Buy 10 shares of Ford.",
+    "Add 30% to Broadcom.",
+])
+def test_blanket_and_sized_trade_language_is_still_rejected(prose):
+    from analyst.pipeline import InvalidReview, validate_prose
+    for mode in ({}, {"stock": True, "explanatory": True}):
+        with pytest.raises(InvalidReview):
+            validate_prose(prose, **mode)
+
+
+@pytest.mark.parametrize("prose", ["Add thirty percent to Broadcom.", "Reduce Broadcom by 25%."])
+def test_numeric_trade_prose_is_rejected_outside_explanatory_mode(prose):
+    from analyst.pipeline import InvalidReview, validate_prose
+    with pytest.raises(InvalidReview):
+        validate_prose(prose)
+
+
+def test_a_model_withheld_direction_with_valid_citations_is_not_reported_as_uncited():
+    waiting = assessment()
+    waiting["assessment"].update(action="wait_for_inputs", status="unknown")
+    request = review_request()
+    request["portfolio_review"]["prior_theses"] = []
+    response, _ = run_review(request, waiting, {**review_answer(), "preferred_action": "review_only", "evidence_ids": []})
+    assert response.status_code == 200, response.text
+    reason = response.json()["reunderwriting"]["assessments"][0]["change_reason"]
+    assert "did not cite" not in reason and "cites available evidence" in reason

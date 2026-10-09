@@ -241,7 +241,7 @@ Field mapping:
 
 ## Portfolio Review (shipped)
 
-Direction D is now the app's normal shell. It answers at `/`, and `/new-cash` serves the same page. The classic page moved to `/classic`. Stock analysis, rebalance and theme discovery still link there.
+Direction D is now the app's normal shell. It answers at `/`, and `/new-cash` serves the same page. The classic page moved to `/classic`. Theme discovery still links there.
 
 - **Opening the app.** The saved portfolio, rules and decisions load automatically. The rail shows the holdings, the exact portfolio date and the rules. A first-time user sees the import.
 - **Asking.** An ordinary question typed into the composer runs the existing portfolio review against the saved portfolio. No slash command is needed; the button reads "Ask". `/review` is only a shortcut that fills in "Review my portfolio". A starter of the same name runs it in one click. The request is the plain review contract: question, saved snapshot and saved rules. No new backend fields.
@@ -267,6 +267,17 @@ Panel for a review:
 - **Scenarios:** says a review doesn't project scenarios and points to /new-cash.
 - **Holdings:** valued positions and weights.
 - **Guardrails:** "Your portfolio today (no amount was tested)", with plain Over/Within status. "Over, before this cash" appears only when an amount was tested.
+
+## Rebalance (shipped)
+
+Rebalance reuses the existing whole-portfolio re-underwriting (`portfolio_review` plus the default `portfolioReviewComparison`) against the saved portfolio. One request, one model run that re-checks every held company; no per-holding Stock Analysis is started. No prior theses or risk context are sent, so the backend withholds sizing and the answer is directional unless Python can check a size.
+
+- **Routing.** `/rebalance` and plain change questions ("Should I rebalance…", "What should I reduce?", "How would you restructure my portfolio?", "Am I too concentrated?") run it. Descriptive questions ("How concentrated is my portfolio?") stay a Portfolio Review; a question naming one holding's trade ("Should I trim ACME?") stays Stock Analysis.
+- **Memo rows, in order:** Recommendation (sentence, "Change recommended / No change recommended / Undecided", reason) · Portfolio today (total, weights, exposure) · What I would change (Reduce / Add / Keep / Undecided, from the holding assessments) · Before → after · Why (concentration, valuation, thesis quality, portfolio fit, your guardrails) · Trade-offs and risks · Alternatives · Would change this · Notes.
+- **No trades are manufactured.** Positions move only when the answer is add/reduce/exit (per the holding assessments) or when the backend returns review-only because a configured cap is breached (then the guardrail's reduction-to-cash path is shown). `no_action` shows "Nothing" and every weight unchanged.
+- **Sizes.** Proposed weights appear only from the backend's checked `size_review` previews; otherwise the table says "direction only" and lists the backend's missing inputs.
+- **Panel:** Evidence | Proposed portfolio | Holdings | Guardrails, opened on Proposed portfolio.
+- The saved portfolio is never modified by the analysis.
 
 ## 11. Extending to the other workflows
 

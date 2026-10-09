@@ -1,19 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { del, get, post, put, type Analysis, type DecisionAction, type NewCashInput, type PortfolioSettings, type Position, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { del, get, portfolioReviewComparison, post, put, type Analysis, type DecisionAction, type NewCashInput, type PortfolioSettings, type Position, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import Rail from "../../components/desk/Rail";
 import Composer from "../../components/desk/Composer";
 import Panel, { evidenceFor, ImportCsv } from "../../components/desk/Panel";
-import { Answer, Clarify, Echo, Failure, Historical, ReviewAnswer, StockAnswer, Waiting, type Tab } from "../../components/desk/Memo";
+import { Answer, Clarify, Echo, Failure, Historical, RebalanceAnswer, ReviewAnswer, StockAnswer, Waiting, type Tab } from "../../components/desk/Memo";
 import { route, type Route } from "../../components/desk/route";
 import { clock, fullDate, newCashLabel, pct, shortDate } from "../../components/desk/format";
 
-/** A question and its workflow: new cash with its input, Stock Analysis of one holding (position ID), else a portfolio review.
+/** A question and its workflow: new cash with its input, Stock Analysis of one holding (position ID), a rebalance, else a portfolio review.
  *  Each one is a fresh analysis of the saved portfolio; nothing from an earlier answer is carried over. */
-type Sent = { question: string; newCash: NewCashInput | null; stock?: string | null };
+type Sent = { question: string; newCash: NewCashInput | null; stock?: string | null; rebalance?: boolean };
 const EMPTY_CASH: NewCashInput = { amount: null, cash_position_id: null, account_id: null, currency: null, confirmed: false, risk_context: null };
-const durationsKey = (sent: Sent | null) => sent?.newCash ? "desk.newCashDurations" : sent?.stock ? "desk.stockDurations" : "desk.reviewDurations";
+const durationsKey = (sent: Sent | null) => sent?.newCash ? "desk.newCashDurations" : sent?.stock ? "desk.stockDurations" : sent?.rebalance ? "desk.rebalanceDurations" : "desk.reviewDurations";
 const TITLE = "Analyst";
 // The last answer, so a reload doesn't lose it. Per-browser convenience; Save puts it in Decisions.
 const ANSWER_KEY = "desk.lastAnswer";
@@ -109,11 +109,14 @@ export default function DeskPage() {
     try {
       // Saved holdings are the current portfolio: priced by the provider today, unless the user dated their own marks or FX.
       const dated = snapshot.positions.some(row => row.mark) || snapshot.fx.length > 0;
-      const analysis = await post<Analysis>("/api/analyze", { question: sent.question, portfolio: dated ? snapshot : { ...snapshot, as_of: new Date().toLocaleDateString("en-CA") }, new_cash: sent.newCash ?? undefined,
-        stock: sent.stock ? { position_id: sent.stock } : undefined, settings: storedSettings(settings) ?? undefined });
+      const portfolio = dated ? snapshot : { ...snapshot, as_of: new Date().toLocaleDateString("en-CA") };
+      // A rebalance is the existing whole-portfolio re-underwriting: no prior theses or risk context unless the user gives them, so no sizing is invented.
+      const analysis = await post<Analysis>("/api/analyze", { question: sent.question, portfolio, new_cash: sent.newCash ?? undefined,
+        stock: sent.stock ? { position_id: sent.stock } : undefined, settings: storedSettings(settings) ?? undefined,
+        ...(sent.rebalance ? { portfolio_review: { prior_theses: [], risk_context: null }, comparison: portfolioReviewComparison(portfolio) } : {}) });
       if (runId.current !== id) return;
       if (analysis.status !== "completed") throw new Error("The analysis was not completed.");
-      setAnswer({ ...sent, analysis }); setTab("evidence"); setFocus(null);
+      setAnswer({ ...sent, analysis }); setTab(sent.rebalance ? "proposed" : "evidence"); setFocus(null);
       try { localStorage.setItem(ANSWER_KEY, JSON.stringify({ ...sent, analysis })); } catch { /* too large or blocked: kept in memory only */ }
       const durations = [...pastDurations(sent), Date.now() - startedAt].slice(-3);
       try { localStorage.setItem(durationsKey(sent), JSON.stringify(durations)); } catch { /* per-viewer convenience only */ }
@@ -144,7 +147,7 @@ export default function DeskPage() {
   function ask(text: string) {
     const next = route(text, snapshot);
     if (next.kind === "clarify") { setClarify(next); setReopened(null); setCollapsed(false); return; }
-    void analyze({ question: next.question, newCash: null, stock: next.kind === "stock" ? next.position.id : null });
+    void analyze({ question: next.question, newCash: null, stock: next.kind === "stock" ? next.position.id : null, rebalance: next.kind === "rebalance" });
   }
   const analyzeStock = (position: Position, question: string) => void analyze({ question, newCash: null, stock: position.id });
   // Clicking a holding offers its Stock Analysis in the composer; sending it is one more click.
@@ -182,7 +185,7 @@ export default function DeskPage() {
   const tickerOf = (id: string | null | undefined) => id ? snapshot?.positions.find(row => row.id === id)?.ticker || answer?.analysis.portfolio.positions.find(row => row.supplied.id === id)?.supplied.ticker || id : null;
   const sentStock = tickerOf(sent?.stock);
   const sentLabel = sent?.newCash && newCashLabel(sent.newCash, snapshot);
-  const ctxLabel = reopened ? `Decision · ${shortDate(reopened.saved_at)}` : sentLabel ? `New cash · ${sentLabel}` : sent ? sent.newCash ? "New cash" : sentStock ? `Stock analysis · ${sentStock}` : "Portfolio review"
+  const ctxLabel = reopened ? `Decision · ${shortDate(reopened.saved_at)}` : sentLabel ? `New cash · ${sentLabel}` : sent ? sent.newCash ? "New cash" : sentStock ? `Stock analysis · ${sentStock}` : sent.rebalance ? "Rebalance" : "Portfolio review"
     : workflow ? "New cash" : "New analysis";
   const holdingsCount = snapshot?.positions.filter(row => row.kind !== "cash").length ?? 0;
   const hasFund = snapshot?.positions.some(row => row.kind === "etf" && row.etf_role === "diversified");
@@ -192,6 +195,10 @@ export default function DeskPage() {
     `${sentStock}'s latest filings and issuer material, with their dates`,
     "Downside, base and upside cases calculated in Python from the reported facts",
     `Its value and weight in your portfolio as of ${fullDate(snapshot.as_of)}, against a fund, cash and doing nothing`, rulesLine,
+  ] : run?.rebalance ? [
+    `${portfolioLine}, valued with dated prices and exchange rates`,
+    "Each company you own re-checked against its filings on hand, in one run rather than one analysis per holding",
+    `Reducing, keeping or adding, against ${hasFund ? "a diversified fund, " : ""}cash and changing nothing`, rulesLine,
   ] : run?.newCash ? [
     `${portfolioLine}, plus the new cash`, rulesLine,
     "A bounded screen of what you could add to, then filings for candidates that could change the answer",
@@ -205,9 +212,11 @@ export default function DeskPage() {
   let center;
   if (reopened) center = <Historical decision={reopened} snapshot={snapshot} cite={cite} onConfirm={(action, notes) => confirm(reopened, action, notes)}
     onRerun={() => { setReopened(null); setWorkflow(reopened.conclusion.preferred_action === "review_only" ? null : "new-cash"); setQuestion(reopened.question); setCollapsed(false); setTab("holdings"); }} />;
-  else if (run) center = <><Echo question={run.question} newCash={run.newCash} snapshot={snapshot} stock={sentStock} /><Waiting title={run.newCash ? "Analyzing your new cash." : run.stock ? `Analyzing ${sentStock}.` : "Reviewing your portfolio."} startedAt={run.startedAt} now={now} past={past} scope={scope} onStop={stopWaiting} /></>;
+  else if (run) center = <><Echo question={run.question} newCash={run.newCash} snapshot={snapshot} stock={sentStock} rebalance={run.rebalance} /><Waiting title={run.newCash ? "Analyzing your new cash." : run.stock ? `Analyzing ${sentStock}.` : run.rebalance ? "Checking whether anything should change." : "Reviewing your portfolio."} startedAt={run.startedAt} now={now} past={past} scope={scope} onStop={stopWaiting} /></>;
   else if (clarify) center = <Clarify {...clarify} onStock={position => analyzeStock(position, clarify.question)} onReview={() => review(clarify.question.startsWith("/") ? "Review my portfolio" : clarify.question)} />;
-  else if (failure) center = <><Echo question={failure.question} newCash={failure.newCash} snapshot={snapshot} stock={sentStock} /><Failure message={failure.message} onRetry={() => analyze(failure)} /></>;
+  else if (failure) center = <><Echo question={failure.question} newCash={failure.newCash} snapshot={snapshot} stock={sentStock} rebalance={failure.rebalance} /><Failure message={failure.message} onRetry={() => analyze(failure)} /></>;
+  else if (answer?.analysis.reunderwriting) center = <RebalanceAnswer key={answer.analysis.portfolio.reviewed_at} result={answer.analysis} snapshot={snapshot} cite={cite} saved={saved} onTab={openTab}
+    onConfirm={(action, notes) => saved ? confirm(saved, action, notes) : Promise.resolve()} />;
   else if (answer?.analysis.stock && !answer.analysis.allocation) center = <StockAnswer key={answer.analysis.portfolio.reviewed_at} result={answer.analysis} snapshot={snapshot} cite={cite} saved={saved} onTab={openTab}
     onConfirm={(action, notes) => saved ? confirm(saved, action, notes) : Promise.resolve()} />;
   else if (answer && !answer.analysis.allocation) center = <ReviewAnswer key={answer.analysis.portfolio.reviewed_at} result={answer.analysis} snapshot={snapshot} cite={cite} saved={saved} onTab={openTab}
@@ -231,14 +240,14 @@ export default function DeskPage() {
       : <div className="starters">
         <button type="button" className="starter" disabled={unresolved.length > 0} onClick={() => { setQuestion("Review my portfolio"); review("Review my portfolio"); }}><span>Review my portfolio</span><span className="m">Exposure, concentration, fund overlap and your rules</span></button>
         <button type="button" className="starter" onClick={() => { setWorkflow("new-cash"); setCollapsed(false); document.getElementById("ask")?.focus(); }}><span>/new-cash</span><span className="m">Decide where new money should go</span></button>
-        <a className="starter" href="/classic"><span>/rebalance</span><span className="m">Recheck holdings against your rules · classic view</span></a>
+        <button type="button" className="starter" disabled={unresolved.length > 0} onClick={() => void analyze({ question: "Should I rebalance my portfolio?", newCash: null, rebalance: true })}><span>/rebalance</span><span className="m">Should anything change? Reduce, keep or add, within your rules</span></button>
         <button type="button" className="starter" disabled={unresolved.length > 0} onClick={() => { setWorkflow(null); setQuestion("/stock "); document.getElementById("ask")?.focus(); }}><span>/stock</span><span className="m">Analyze one company you own. Or just ask: &ldquo;What do you think about {snapshot.positions.find(row => row.kind === "stock")?.ticker || "AVGO"}?&rdquo;</span></button>
       </div>}
   </div>;
 
   return <div className={`desk${panelOpen ? " panel-open" : ""}${railOpen ? " rail-open" : ""}`}>
     <a className="skip" href="#details">Skip to details</a>
-    <Rail snapshot={snapshot} unresolved={unresolved} settings={settings} result={result} decisions={decisions} currentId={reopened?.id ?? saved?.id ?? null} running={run ? run.newCash ? "New cash" : run.stock ? `Stock analysis · ${sentStock}` : "Portfolio review" : null}
+    <Rail snapshot={snapshot} unresolved={unresolved} settings={settings} result={result} decisions={decisions} currentId={reopened?.id ?? saved?.id ?? null} running={run ? run.newCash ? "New cash" : run.stock ? `Stock analysis · ${sentStock}` : run.rebalance ? "Rebalance" : "Portfolio review" : null}
       onNew={startOver} onHoldings={() => { openTab("holdings"); setRailOpen(false); }} onOpen={decision => { setReopened(decision); setClarify(null); setTab("evidence"); setFocus(null); setRailOpen(false); }} onStock={offerStock}
       onDelete={decision => void deleteDecision(decision)} onClearAll={() => void clearDecisions()} />
     <main className="center">

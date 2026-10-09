@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, omit
 from openai.types.responses import FunctionToolParam, ResponseInputParam, ToolChoiceFunctionParam
 from openai.types.responses.response_create_params import ToolChoice
 
@@ -48,6 +48,7 @@ class ModelProvider(Protocol):
         require_tool: bool,
         forced_tool: str | None = None,
         reasoning_effort: str | None = None,
+        final: bool = False,
     ) -> ModelTurn: ...
 
 
@@ -79,6 +80,8 @@ class ScriptedModel:
         self.turns = list(turns)
         self.requests: list[list[dict[str, Any]]] = []
         self.reasoning_efforts: list[str | None] = []
+        self.forced_tools: list[str | None] = []
+        self.finals: list[bool] = []
         self.settings = settings
 
     async def respond(
@@ -88,9 +91,12 @@ class ScriptedModel:
         require_tool: bool,
         forced_tool: str | None = None,
         reasoning_effort: str | None = None,
+        final: bool = False,
     ) -> ModelTurn:
         self.requests.append(copy.deepcopy(messages))
         self.reasoning_efforts.append(reasoning_effort)
+        self.forced_tools.append(forced_tool)
+        self.finals.append(final)
         if not self.turns:
             raise ValueError("Scripted model has no remaining turn.")
         return self.turns.pop(0)
@@ -184,7 +190,7 @@ class OpenAIModel:
         self.settings = settings
         self.client = AsyncOpenAI(
             api_key=settings.api_key,
-            base_url="https://api.openai.com/v1",
+            base_url=settings.base_url,
             timeout=settings.request_timeout,
             max_retries=2,
         )
@@ -196,6 +202,7 @@ class OpenAIModel:
         require_tool: bool,
         forced_tool: str | None = None,
         reasoning_effort: str | None = None,
+        final: bool = False,
     ) -> ModelTurn:
         choice: ToolChoiceFunctionParam = {"type": "function", "name": forced_tool if forced_tool else "review_portfolio"}
         request = json.loads(messages[1]["content"])
@@ -224,14 +231,17 @@ class OpenAIModel:
             for tool in raw_tools
         ]
         effort = cast(Any, reasoning_effort if reasoning_effort is not None else self.settings.reasoning_effort)
+        openrouter = "openrouter.ai" in self.settings.base_url
         t0 = time.monotonic()
         response = await self.client.responses.create(
             model=self.settings.model,
             reasoning={"effort": effort},
             input=cast(ResponseInputParam, messages),
-            tools=tools,
-            tool_choice=cast(ToolChoice, choice if (require_tool or forced_tool) else "auto"),
-            parallel_tool_calls=False,
+            # The final synthesis request offers no callable tools; the strict answer schema below is unchanged.
+            tools=omit if final else tools,
+            tool_choice=omit if final else cast(ToolChoice, choice if (require_tool or forced_tool) else "auto"),
+            # OpenRouter cannot route parallel_tool_calls with require_parameters; the pipeline still rejects multiple calls.
+            parallel_tool_calls=omit if final or openrouter else False,
             text={
                 "format": {
                     "type": "json_schema",
@@ -243,6 +253,8 @@ class OpenAIModel:
             max_output_tokens=16000,
             store=False,
             include=["reasoning.encrypted_content"],
+            # OpenRouter only: pin the first-party OpenAI endpoint, honour every parameter, never fall back to another host.
+            extra_body={"provider": {"only": ["openai"], "allow_fallbacks": False, "require_parameters": True}} if openrouter else None,
         )
         duration = time.monotonic() - t0
         tool_names = [item.name for item in response.output if item.type == "function_call"]
@@ -252,7 +264,7 @@ class OpenAIModel:
         details = getattr(usage, "output_tokens_details", None) if usage else None
         reasoning_tok = getattr(details, "reasoning_tokens", None) if details else None
         logging.info(
-            "OPENAI RESPONSE id=%s model=%s reasoning_effort=%s status=%s duration=%.2fs tools=%s usage=(in=%s, out=%s, reasoning=%s)",
+            "OPENAI RESPONSE id=%s model=%s reasoning_effort=%s status=%s duration=%.2fs tools=%s usage=(in=%s, out=%s, reasoning=%s) cost=%s",
             response.id,
             response.model,
             effort,
@@ -262,6 +274,7 @@ class OpenAIModel:
             in_tok,
             out_tok,
             reasoning_tok,
+            getattr(usage, "cost", None),
         )
         if response.status != "completed":
             inc_reason = getattr(response.incomplete_details, "reason", None) if response.incomplete_details else None

@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { actionLabel, NEW_CASH_DESTINATION, type Analysis, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot } from "../../lib/contracts";
-import { answerSentence, caseCurrency, clock, compact, POSITION_LABEL, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
+import { accountName, answerSentence, caseCurrency, clock, compact, POSITION_LABEL, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
 
-export type Tab = "evidence" | "scenarios" | "holdings" | "guardrails";
+export type Tab = "evidence" | "scenarios" | "proposed" | "holdings" | "guardrails";
 type Cite = { numbers: Map<string, number>; onCite: (id: string) => void };
 
 export function Row({ label, kind = "", children }: { label: string; kind?: string; children: ReactNode }) {
@@ -26,7 +26,9 @@ function Expandable({ title, count, children }: { title: string; count: string; 
 
 const Bullets = ({ items }: { items: string[] }) => <ul className="bullets">{items.map((item, index) => <li key={index}>{item}</li>)}</ul>;
 
-export function Echo({ question, newCash, snapshot, stock }: { question: string; newCash: NewCashInput | null; snapshot: Snapshot | null; stock?: string | null }) {
+export function Echo({ question, newCash, snapshot, stock, rebalance }: { question: string; newCash: NewCashInput | null; snapshot: Snapshot | null; stock?: string | null; rebalance?: boolean }) {
+  if (rebalance) return <div className="echo"><span className="q">{question}</span>
+    <span className="cap n">Rebalance · your whole saved portfolio as of {fullDate(snapshot?.as_of)}. Nothing in it is changed.</span></div>;
   if (stock) return <div className="echo"><span className="q">{question}</span>
     <span className="cap n">Stock analysis · {stock} against your saved portfolio as of {fullDate(snapshot?.as_of)}</span></div>;
   if (!newCash) return <div className="echo"><span className="q">{question}</span>
@@ -218,19 +220,12 @@ type ReviewProps = {
 /** A whole-portfolio review. Every value and weight is the backend's; this only orders and formats them. */
 export function ReviewAnswer({ result, snapshot, cite, saved, onTab, onConfirm }: ReviewProps) {
   const { recommendation: rec, portfolio: review } = result;
-  const currency = review.reporting_currency;
-  const rows = review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION);
-  const ranked = [...rows].sort((a, b) => (b.weight === null ? -1 : Number(b.weight)) - (a.weight === null ? -1 : Number(a.weight)));
-  const scale = Math.max(...rows.map(row => Number(row.weight ?? 0)), 0.01);
   const guardrails = review.guardrails;
   const over = guardrails ? guardrails.companies.filter(company => company.status === "breached").length + (guardrails.active.status === "breached" ? 1 : 0) : 0;
   const rules = !guardrails ? <span className="m">No rules set</span> : over ? <span><span className="amber">●</span> {over === 1 ? "Breaks one of your rules" : `Breaks ${over} of your rules`}</span>
     : <span><span className="sage">●</span> Within your rules</span>;
-  const capOf = (companyId: string) => guardrails?.companies.find(company => company.company_id === companyId);
   // The backend already groups missing values by cause; per-holding detail stays in Holdings.
   const unknowns = review.qualifications;
-  const label = (row: (typeof rows)[number]) => row.supplied.kind === "cash" ? `Cash ${row.supplied.currency} · ${snapshot?.accounts.find(a => a.id === row.supplied.account_id)?.name ?? ""}`
-    : `${row.supplied.ticker || positionName(row.supplied, row.supplied.id)} · ${snapshot?.accounts.find(a => a.id === row.supplied.account_id)?.name ?? ""}`;
   return <div>
     <Echo question={result.question} newCash={null} snapshot={snapshot} />
     <div className="memo" aria-label="Analyst memo" role="region">
@@ -241,35 +236,8 @@ export function ReviewAnswer({ result, snapshot, cite, saved, onTab, onConfirm }
         </div>
       </Row>
       <Row label="Why"><p className="body">{rec.reason}<Cites ids={rec.evidence_ids || []} cite={cite} /></p></Row>
-      <Row label="Portfolio today">
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <span className="n" data-testid="review-total">{review.total_value === null ? <>Total unknown <span className="m">· known {money(review.known_value, currency)}</span></> : money(review.total_value, currency)}
-            <span className="m"> · holdings {money(review.holdings_value, currency)} · cash {money(review.cash_value, currency)} · {review.accounts.length} account{review.accounts.length === 1 ? "" : "s"}</span></span>
-          <div className="weights" role="list" aria-label="Weights">
-            {ranked.slice(0, 8).map(row => {
-              const company = row.identity?.company_id || row.supplied.company_id;
-              const breached = company ? capOf(company)?.status === "breached" : false;
-              return <div className="wrow n" role="listitem" key={row.supplied.id}>
-                <span className="wname">{label(row)}</span>
-                {row.weight === null ? <div className="bar unknown" aria-hidden="true" /> : <div className="bar" aria-hidden="true"><div className={`chg${breached ? " over" : ""}`} style={{ left: 0, width: `${(Number(row.weight) / scale) * 100}%` }} /></div>}
-                <span className={breached ? "amber" : ""}>{row.weight === null ? "Unknown" : pct(row.weight)}</span>
-              </div>;
-            })}
-          </div>
-          {ranked.length > 8 && <button type="button" className="link cap" style={{ alignSelf: "flex-start" }} onClick={() => onTab("holdings")}>All {ranked.length} positions in Holdings →</button>}
-        </div>
-      </Row>
-      <Row label="Exposure">
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {review.direct_companies.length ? <span>Largest companies you own directly: {[...review.direct_companies].sort((a, b) => Number(b.weight ?? -1) - Number(a.weight ?? -1)).slice(0, 3)
-            .map(company => `${company.company_name} ${company.weight === null ? "Unknown" : pct(company.weight)}`).join(" · ")}.</span>
-            : <span className="m">No directly held companies are identified yet.</span>}
-          {!!review.currency_exposure?.length && <span>By currency: {review.currency_exposure.map(row => `${row.currency} ${row.weight === null ? "Unknown" : pct(row.weight)}`).join(" · ")}.</span>}
-          <span>Inside your funds: <span className={review.indirect_exposure === "full" || review.indirect_exposure === "none" ? "" : "amber"}>{{ full: "fully looked through", partial: "partly looked through", stale: "looked through with stale holdings", unknown: "unknown", none: "you hold no funds" }[review.indirect_exposure] || review.indirect_exposure}</span>
-            {["partial", "stale", "unknown"].includes(review.indirect_exposure) && <span className="m">. Indirect exposure is not assumed to be zero.</span>}</span>
-          {review.company_overlap.filter(row => row.indirect_value !== "0").slice(0, 3).map(row => <span className="cap n" key={row.company_id}>{row.company_name}: {row.total_weight === null ? "Unknown" : pct(row.total_weight)} in total, including {row.indirect_weight === null ? "an unknown share" : pct(row.indirect_weight)} through funds</span>)}
-        </div>
-      </Row>
+      <Row label="Portfolio today"><Weights result={result} snapshot={snapshot} onTab={onTab} /></Row>
+      <Row label="Exposure"><Exposure review={review} /></Row>
       <Row label="Risks">
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <p className="body">{rec.downside}</p>
@@ -288,6 +256,230 @@ export function ReviewAnswer({ result, snapshot, cite, saved, onTab, onConfirm }
       {saved && <Row label="Saved">
         {saved.confirmed_action ? <span className="body">Saved and recorded. <span className="m">You: {doneLabel(saved.confirmed_action.action)}.</span></span> : <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <p className="body" style={{ color: "var(--text)" }} data-testid="saved-message">Saved to Decisions with the {shortDate(saved.as_of)} portfolio. When you&apos;ve acted, record what you did.</p>
+          <ConfirmForm choices={REVIEW_CHOICES} onConfirm={onConfirm} />
+        </div>}
+      </Row>}
+    </div>
+  </div>;
+}
+
+type Review = Analysis["portfolio"];
+type Valued = Review["positions"][number];
+const holdingLabel = (row: Valued, snapshot: Snapshot | null) => row.supplied.kind === "cash" ? `Cash ${row.supplied.currency} · ${accountName(snapshot, row.supplied.account_id)}`
+  : `${row.supplied.ticker || positionName(row.supplied, row.supplied.id)} · ${accountName(snapshot, row.supplied.account_id)}`;
+const byWeight = (rows: Valued[]) => [...rows].sort((a, b) => (b.weight === null ? -1 : Number(b.weight)) - (a.weight === null ? -1 : Number(a.weight)));
+
+/** Total, then up to eight position weight bars; a position over its cap is amber and an unknown weight is a dashed bar. */
+function Weights({ result, snapshot, onTab }: { result: Analysis; snapshot: Snapshot | null; onTab: (tab: Tab) => void }) {
+  const review = result.portfolio;
+  const currency = review.reporting_currency;
+  const rows = review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION);
+  const ranked = byWeight(rows);
+  const scale = Math.max(...rows.map(row => Number(row.weight ?? 0)), 0.01);
+  const capOf = (companyId: string) => review.guardrails?.companies.find(company => company.company_id === companyId);
+  return <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <span className="n" data-testid="review-total">{review.total_value === null ? <>Total unknown <span className="m">· known {money(review.known_value, currency)}</span></> : money(review.total_value, currency)}
+      <span className="m"> · holdings {money(review.holdings_value, currency)} · cash {money(review.cash_value, currency)} · {review.accounts.length} account{review.accounts.length === 1 ? "" : "s"}</span></span>
+    <div className="weights" role="list" aria-label="Weights">
+      {ranked.slice(0, 8).map(row => {
+        const company = row.identity?.company_id || row.supplied.company_id;
+        const breached = company ? capOf(company)?.status === "breached" : false;
+        return <div className="wrow n" role="listitem" key={row.supplied.id}>
+          <span className="wname">{holdingLabel(row, snapshot)}</span>
+          {row.weight === null ? <div className="bar unknown" aria-hidden="true" /> : <div className="bar" aria-hidden="true"><div className={`chg${breached ? " over" : ""}`} style={{ left: 0, width: `${(Number(row.weight) / scale) * 100}%` }} /></div>}
+          <span className={breached ? "amber" : ""}>{row.weight === null ? "Unknown" : pct(row.weight)}</span>
+        </div>;
+      })}
+    </div>
+    {ranked.length > 8 && <button type="button" className="link cap" style={{ alignSelf: "flex-start" }} onClick={() => onTab("holdings")}>All {ranked.length} positions in Holdings →</button>}
+  </div>;
+}
+
+/** Largest direct companies, currency mix and what's known inside funds. Unknown is never shown as zero. */
+function Exposure({ review }: { review: Review }) {
+  return <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+    {review.direct_companies.length ? <span>Largest companies you own directly: {[...review.direct_companies].sort((a, b) => Number(b.weight ?? -1) - Number(a.weight ?? -1)).slice(0, 3)
+      .map(company => `${company.company_name} ${company.weight === null ? "Unknown" : pct(company.weight)}`).join(" · ")}.</span>
+      : <span className="m">No directly held companies are identified yet.</span>}
+    {!!review.currency_exposure?.length && <span>By currency: {review.currency_exposure.map(row => `${row.currency} ${row.weight === null ? "Unknown" : pct(row.weight)}`).join(" · ")}.</span>}
+    <span>Inside your funds: <span className={review.indirect_exposure === "full" || review.indirect_exposure === "none" ? "" : "amber"}>{{ full: "fully looked through", partial: "partly looked through", stale: "looked through with stale holdings", unknown: "unknown", none: "you hold no funds" }[review.indirect_exposure] || review.indirect_exposure}</span>
+      {["partial", "stale", "unknown"].includes(review.indirect_exposure) && <span className="m">. Indirect exposure is not assumed to be zero.</span>}</span>
+    {review.company_overlap.filter(row => row.indirect_value !== "0").slice(0, 3).map(row => <span className="cap n" key={row.company_id}>{row.company_name}: {row.total_weight === null ? "Unknown" : pct(row.total_weight)} in total, including {row.indirect_weight === null ? "an unknown share" : pct(row.indirect_weight)} through funds</span>)}
+  </div>;
+}
+
+type Move = "lower" | "exit" | "higher" | "same" | "undecided";
+export type PlanRow = { row: Valued; label: string; ticker: string; move: Move; after: string[]; why: string | null; toCap: string | null };
+const MOVE: Record<Move, string> = { lower: "Lower", exit: "Sell", higher: "Higher", same: "Unchanged", undecided: "Undecided" };
+const CHANGES = ["add", "reduce", "exit"];
+
+/** Which way each position would move, from the backend only: the holding assessments when the answer is a change,
+ *  the Python previews when sizing passed, and the deterministic reduction path when a configured cap is breached.
+ *  With no change recommended, nothing moves. */
+export function rebalancePlan(result: Analysis, snapshot: Snapshot | null): PlanRow[] {
+  const rw = result.reunderwriting!;
+  const action = result.recommendation.preferred_action;
+  const changing = CHANGES.includes(action);
+  const companyOf = (row: Valued) => row.identity?.company_id || row.supplied.company_id || null;
+  const assessed = new Map<string, (typeof rw.assessments)[number]>();
+  for (const a of rw.assessments) assessed.set(rw.research[a.position_id]?.company_id || result.portfolio.positions.find(p => p.supplied.id === a.position_id)?.supplied.company_id || a.position_id, a);
+  const breached = new Map((result.portfolio.guardrails?.companies || []).filter(c => c.status === "breached").map(c => [c.company_id, c]));
+  const moved = new Set<string>();
+  const plan = byWeight(result.portfolio.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION)).map(row => {
+    const company = companyOf(row);
+    const a = company ? assessed.get(company) : undefined;
+    let move: Move = "same";
+    let toCap: string | null = null;
+    if (changing && a && CHANGES.includes(a.action)) move = a.action === "add" ? "higher" : a.action === "exit" ? "exit" : "lower";
+    else if (action === "review_only" && company && breached.has(company)) {
+      move = "lower";
+      // The company's reduction is shown once, on its largest lot.
+      if (!moved.has(company)) toCap = breached.get(company)!.reduction_to_cash;
+    } else if (a?.action === "wait_for_inputs" || (action === "wait_for_inputs" && a)) move = "undecided";
+    if (company && move !== "same") moved.add(company);
+    const after = rw.previews.map(preview => preview.positions.find(p => p.supplied.id === row.supplied.id)?.weight).filter((w): w is string => !!w);
+    return { row, label: holdingLabel(row, snapshot), ticker: row.supplied.ticker || positionName(row.supplied, row.supplied.id), move, after, why: a ? a.current_thesis : null, toCap };
+  });
+  // Sale proceeds land in, and purchases come from, cash in the same account; its weight moves the other way.
+  for (const item of plan) {
+    if (item.row.supplied.kind !== "cash" || item.move !== "same") continue;
+    const same = plan.filter(other => other.row.supplied.account_id === item.row.supplied.account_id && other.row.supplied.kind !== "cash");
+    if (same.some(other => other.move === "lower" || other.move === "exit")) item.move = "higher";
+    else if (same.some(other => other.move === "higher")) item.move = "lower";
+  }
+  return plan;
+}
+
+const joinNames = (names: string[]) => names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+
+/** Current weight, proposed weight (or direction) and approximate change for every position. */
+export function BeforeAfter({ result, plan }: { result: Analysis; plan: PlanRow[] }) {
+  const currency = result.portfolio.reporting_currency;
+  return <table className="matrix" aria-label="Before and after">
+    <thead><tr><th scope="col">Position</th><th scope="col">Now</th><th scope="col">Proposed</th><th scope="col">Change</th></tr></thead>
+    <tbody>{plan.map(item => {
+      const after = item.after.map(Number);
+      const lo = after.length ? Math.min(...after) : null, hi = after.length ? Math.max(...after) : null;
+      const now = item.row.weight === null ? null : Number(item.row.weight);
+      const delta = lo !== null && hi !== null && now !== null ? [lo - now, hi - now].map(d => `${d > 0 ? "+" : d < 0 ? "−" : ""}${pct(String(Math.abs(d)))}`) : null;
+      return <tr key={item.row.supplied.id} className={item.move === "same" ? "m" : ""}>
+        <th scope="row">{item.label}</th>
+        <td>{pct(item.row.weight)}</td>
+        <td>{lo !== null && hi !== null ? lo === hi ? pct(String(lo)) : `${pct(String(lo))}–${pct(String(hi))}` : MOVE[item.move]}</td>
+        <td>{delta ? delta[0] === delta[1] ? delta[0] : `${delta[0]} to ${delta[1]}` : item.toCap ? `about ${money(item.toCap, currency)} to cash` : item.move === "same" || item.move === "undecided" ? "—" : "direction only"}</td>
+      </tr>;
+    })}</tbody>
+  </table>;
+}
+
+function rebalanceSentence(action: string, plan: PlanRow[], amount: Analysis["recommendation"]["amount"], over: number): string {
+  const names = (moves: Move[]) => [...new Set(plan.filter(item => item.row.supplied.kind !== "cash" && moves.includes(item.move)).map(item => item.ticker))];
+  if (action === "review_only" && over) return `Your portfolio breaks ${over === 1 ? "one" : over} of your rules: bring ${joinNames(names(["lower"])) || "it"} back within ${over === 1 ? "it" : "them"}.`;
+  if (CHANGES.includes(action)) {
+    const sized = amount ? plan.find(item => item.row.supplied.id === amount.position_id) : undefined;
+    const by = (move: Move, word: string) => amount && sized?.move === move ? ` ${word} ${range(amount.minimum, amount.maximum, amount.currency)}` : "";
+    const parts = [
+      names(["exit"]).length ? `sell ${joinNames(names(["exit"]))}` : "",
+      names(["lower"]).length ? `reduce ${joinNames(names(["lower"]))}${by("lower", "by")}` : "",
+      names(["higher"]).length ? `add to ${joinNames(names(["higher"]))}${by("higher", "with")}` : "",
+    ].filter(Boolean).join("; ");
+    return parts ? `${parts[0].toUpperCase()}${parts.slice(1)}. Keep the rest.` : `${actionLabel(action)}.`;
+  }
+  if (action === "wait_for_inputs") return "Not enough to decide on a rebalance yet.";
+  return "No change. Keep your portfolio as it is.";
+}
+
+/** Rebalance in Direction D: whether anything should change, then what, by how much where Python could check it, and why.
+ *  Nothing here changes the saved holdings. */
+export function RebalanceAnswer({ result, snapshot, cite, saved, onTab, onConfirm }: ReviewProps) {
+  const { recommendation: rec, portfolio: review } = result;
+  const rw = result.reunderwriting!;
+  const plan = rebalancePlan(result, snapshot);
+  const guardrails = review.guardrails;
+  const breaches = guardrails ? guardrails.companies.filter(c => c.status === "breached") : [];
+  const over = breaches.length + (guardrails?.active.status === "breached" ? 1 : 0);
+  const changing = CHANGES.includes(rec.preferred_action) || (rec.preferred_action === "review_only" && over > 0);
+  const verdict = changing ? "Change recommended" : rec.preferred_action === "wait_for_inputs" ? "Undecided" : "No change recommended";
+  const rules = !guardrails ? <span className="m">No rules set</span> : over ? <span><span className="amber">●</span> {over === 1 ? "Breaks one of your rules" : `Breaks ${over} of your rules`}</span>
+    : <span><span className="sage">●</span> Within your rules</span>;
+  const tickerOf = (id: string) => plan.find(item => item.row.supplied.id === id)?.ticker || id;
+  const stocks = rw.stocks.filter((stock, index) => rw.stocks.findIndex(other => other.research.company_id === stock.research.company_id) === index);
+  const sized = plan.some(item => item.after.length);
+  const fund = result.comparison?.alternatives.find(alt => alt.selection.kind === "etf");
+  const reduced = plan.filter(item => item.row.supplied.kind !== "cash" && (item.move === "lower" || item.move === "exit"));
+  const added = plan.filter(item => item.row.supplied.kind !== "cash" && item.move === "higher");
+  const kept = plan.filter(item => item.row.supplied.kind !== "cash" && item.move === "same");
+  const undecided = plan.filter(item => item.move === "undecided");
+  const moving = [...reduced, ...added].map(item => rw.assessments.find(a => a.current_thesis === item.why)).filter((a, i, all): a is NonNullable<typeof a> => !!a && all.indexOf(a) === i);
+  const notes = [...rw.qualifications, ...review.qualifications];
+  const group = (title: string, items: PlanRow[], testid: string) => items.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 4 }} data-testid={testid}>
+    <span className="lbl">{title}</span>
+    {items.map(item => <span key={item.row.supplied.id}>{item.label}{item.why && <span className="m"> · {item.why}</span>}</span>)}</div>;
+
+  return <div>
+    <Echo question={result.question} newCash={null} snapshot={snapshot} rebalance />
+    <div className="memo" aria-label="Rebalance" role="region">
+      <Row label="Recommendation" kind="rec">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <h2 className="display">{rebalanceSentence(rec.preferred_action, plan, rec.amount, over)}</h2>
+          <span className="cap n meta"><span data-testid="rebalance-verdict">{verdict}</span><span>{actionLabel(rec.preferred_action)}</span>{rules}</span>
+          <p className="body">{rec.reason}<Cites ids={rec.evidence_ids || []} cite={cite} /></p>
+        </div>
+      </Row>
+      <Row label="Portfolio today"><div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <Weights result={result} snapshot={snapshot} onTab={onTab} /><Exposure review={review} /></div></Row>
+      <Row label="What I would change">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {!changing && <span>{rec.preferred_action === "wait_for_inputs" ? "Nothing yet. The open questions below have to be settled first." : "Nothing. No trade is proposed just because you asked."}</span>}
+          {group(rec.preferred_action === "review_only" ? "Reduce to meet your rules" : "Reduce", reduced, "plan-reduce")}
+          {group("Add", added, "plan-add")}
+          {group("Keep", kept, "plan-keep")}
+          {group("Undecided", undecided, "plan-undecided")}
+          {reduced.length > 0 && <span className="cap">Sale proceeds stay as cash in the same account unless you choose otherwise{fund ? `; ${tickerOf(fund.selection.position_id || "")} was compared as a diversified home for them` : ""}.</span>}
+        </div>
+      </Row>
+      <Row label="Before → after">
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <BeforeAfter result={result} plan={plan} />
+          {sized ? <span className="cap">Proposed weights are Python previews of both ends of the range, checked against your rules. They are hypothetical, not orders.</span>
+            : changing ? <div data-testid="sizing-withheld" style={{ display: "flex", flexDirection: "column", gap: 4 }}><span>Direction only: no exact size could be justified, so none is invented.</span>
+              {rw.missing_inputs.length > 0 && <Bullets items={[...new Set(rw.missing_inputs)]} />}</div>
+            : <span className="cap">No trades proposed, so every weight stays where it is.</span>}
+          <button type="button" className="link cap" style={{ alignSelf: "flex-start" }} onClick={() => onTab("proposed")}>Inspect in Proposed portfolio →</button>
+        </div>
+      </Row>
+      <Row label="Why">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }} data-testid="rebalance-why">
+          <div><span className="lbl">Concentration</span><p className="body">{review.direct_companies.length ? [...review.direct_companies].sort((a, b) => Number(b.weight ?? -1) - Number(a.weight ?? -1)).slice(0, 3)
+            .map(c => `${c.company_name} ${pct(c.weight)}`).join(" · ") : "No directly held companies"}{breaches.length ? `. Over your cap: ${breaches.map(c => `${c.company_name} ${pct(c.current_weight)} vs ${pct(c.cap)}`).join(" · ")}.` : "."}</p></div>
+          <div><span className="lbl">Valuation</span>{stocks.length ? stocks.map(stock => <p className="body" key={stock.position_id}>{tickerOf(stock.position_id)}: {stock.valuation?.price
+            ? `price ${money(stock.valuation.price, stock.valuation.currency)} is ${POSITION_LABEL[stock.valuation.position]}` : `base case ${money(stock.cases.find(c => c.name === "base")?.present_value_per_share, caseCurrency(stock, stock.reporting_currency))} a share; no usable price to compare`}.</p>)
+            : <p className="body m">No company was valued in this run.</p>}</div>
+          <div><span className="lbl">Thesis quality</span>{rw.assessments.length ? rw.assessments.map(a => <p className="body" key={a.position_id}>{tickerOf(a.position_id)} · {actionLabel(a.action).toLowerCase()} · {a.status === "unknown" ? "no prior thesis to compare" : `thesis ${a.status}`}: {a.current_thesis} {a.change_reason}<Cites ids={a.evidence_ids} cite={cite} /></p>)
+            : <p className="body m">No held company had research to re-check; their outcomes stay unknown.</p>}</div>
+          <div><span className="lbl">Portfolio fit and diversification</span><p className="body">{result.comparison ? `Compared ${result.comparison.alternatives.length} options over ${result.comparison.horizon_years} years: ${result.comparison.alternatives.map(alt => alt.selection.kind === "no_action" ? "changing nothing" : alt.selection.kind === "cash" ? "cash" : tickerOf(alt.selection.position_id || "")).join(", ")}. ` : ""}
+            Fund look-through is {review.indirect_exposure === "none" ? "not needed (no funds)" : review.indirect_exposure}.</p></div>
+          <div><span className="lbl">Your guardrails</span><p className="body">{!guardrails ? "None set. This view doesn't depend on them; no limit was assumed or checked."
+            : `${guardrails.settings.single_company_cap ? `Company cap ${pct(guardrails.settings.single_company_cap)}` : "No company cap"} · ${guardrails.settings.active_budget ? `active picks ${pct(guardrails.settings.active_budget)} (now ${pct(guardrails.active.weight)}, ${guardrails.active.status.replaceAll("_", " ")})` : "no active budget"}. ${over ? "Any change has to bring the breach back within your limits." : "Every proposed change has to stay within them."}`}</p></div>
+        </div>
+      </Row>
+      <Row label="Trade-offs and risks"><div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <p className="body">{rec.downside}</p>
+        {moving.map(a => <p className="body" key={a.position_id}>{tickerOf(a.position_id)}: {a.downside}</p>)}
+        <Bullets items={rec.uncertainty} />
+      </div></Row>
+      {rec.alternatives.length > 0 && <Row label="Alternatives"><div className="alts">
+        {rec.alternatives.map((alt, index) => <div className="alt" key={index}><span>{actionLabel(alt.action)}</span><span className="m">{alt.reason}</span></div>)}
+      </div></Row>}
+      <Row label="Would change this"><Bullets items={rec.what_could_change} /></Row>
+      <Row label="Notes">
+        <Expandable title="Assumptions" count={`${rec.assumptions.length}`}><Bullets items={rec.assumptions} /></Expandable>
+        {notes.length > 0 && <Expandable title="Qualifications from the analyst" count={`${notes.length}`}><Bullets items={notes} /></Expandable>}
+        <Expandable title="Calculation basis" count="how values were computed"><p className="cap">{review.calculation_basis} {result.comparison?.calculation_basis}</p></Expandable>
+      </Row>
+      {saved && <Row label="Saved">
+        {saved.confirmed_action ? <span className="body">Saved and recorded. <span className="m">You: {doneLabel(saved.confirmed_action.action)}.</span></span> : <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <p className="body" style={{ color: "var(--text)" }} data-testid="saved-message">Saved to Decisions with its {saved.evidence_references.length} source{saved.evidence_references.length === 1 ? "" : "s"} and the {shortDate(saved.as_of)} portfolio. When you&apos;ve acted, record what you did.</p>
           <ConfirmForm choices={REVIEW_CHOICES} onConfirm={onConfirm} />
         </div>}
       </Row>}

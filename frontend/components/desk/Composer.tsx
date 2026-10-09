@@ -6,7 +6,7 @@ const WORKFLOWS = [
   { cmd: "/new-cash", text: "Decide where new money should go", live: true },
   { cmd: "/stock", text: "Analyze one company you own, e.g. /stock AVGO", live: true },
   { cmd: "/review", text: "Exposure, concentration and fund overlap", live: true },
-  { cmd: "/rebalance", text: "Recheck each thesis against your rules", live: false },
+  { cmd: "/rebalance", text: "Should anything change? Reduce, keep or add, within your rules", live: true },
   { cmd: "/theme", text: "Test an idea against a short list", live: false },
 ];
 
@@ -46,6 +46,7 @@ export default function Composer({ snapshot, unresolved, workflow, onWorkflow, q
     const rest = question.slice(item.cmd.length).trimStart();
     if (item.cmd === "/review") { onWorkflow(null); onQuestion(rest || "Review my portfolio"); return; }
     if (item.cmd === "/stock") { onWorkflow(null); onQuestion(`/stock ${rest}`); return; }
+    if (item.cmd === "/rebalance") { onWorkflow(null); onQuestion(`/rebalance ${rest}`); return; }
     onWorkflow("new-cash"); onQuestion(rest);
   }
   function keys(event: KeyboardEvent<HTMLInputElement>) {

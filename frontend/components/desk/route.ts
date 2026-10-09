@@ -4,11 +4,14 @@ import { isSupportedStock, type Position, type Snapshot } from "../../lib/contra
 
 export type Route =
   | { kind: "review"; question: string }
+  | { kind: "rebalance"; question: string }
   | { kind: "stock"; question: string; position: Position }
   | { kind: "clarify"; question: string; message: string; options: Position[]; review: boolean };
 
 // Words that make a question about the whole portfolio rather than one company.
 const PORTFOLIO = /\b(portfolio|holdings|exposure|allocation|allocate|concentration|overlap|rebalanc\w*|diversif\w*|my rules|cash|money)\b/i;
+// Only plain requests to change the portfolio's shape. "How concentrated am I?" describes, so it stays a review.
+const REBALANCE = /\brebalanc\w*|\brestructur\w*\b.*\b(?:portfolio|holdings)\b|^\s*what should i (?:reduce|trim|sell)\s*[?.!]*$|\btoo concentrated\b/i;
 // Phrases that ask about one company; the words after them name it.
 const INTENT = /\b(?:what do you think (?:about|of)|think (?:about|of)|thoughts on|opinion (?:on|of)|should i (?:add(?: more)?(?: to)?|buy(?: more)?|sell|trim|hold|keep|reduce|exit)|what changed (?:with|at|for|in)|what'?s (?:new|happening) (?:with|at)|how is|how's|analy[sz]e|outlook for|valuation of)\s+(.+?)\s*[?.!]*$/i;
 // Corporate-form words that say nothing about which company is meant.
@@ -71,12 +74,15 @@ export function route(raw: string, snapshot: Snapshot | null): Route {
   const stocks = (snapshot?.positions || []).filter(row => row.kind !== "cash" && (row.shares === undefined || row.shares === null || Number(row.shares) > 0));
   const command = question.match(/^\/(\w[\w-]*)\s*(.*)$/s);
   if (command?.[1].toLowerCase() === "review") return { kind: "review", question: command[2].trim() || "Review my portfolio" };
+  if (command?.[1].toLowerCase() === "rebalance") return { kind: "rebalance", question: command[2].trim() || "Should I rebalance my portfolio?" };
   if (command?.[1].toLowerCase() === "stock") {
     const reference = command[2].trim();
     if (!reference) return { kind: "clarify", question, options: stocks.filter(isSupportedStock), review: false, message: "Which holding should I analyze?" };
     const found = byTicker(reference, stocks, true);
     return resolved(question, found.length ? found : byName(reference, stocks), reference, stocks);
   }
+  // Rebalancing covers every holding, so a ticker in the question doesn't narrow it to Stock Analysis.
+  if (!command && REBALANCE.test(question)) return { kind: "rebalance", question };
   const tickers = companies(byTicker(question, stocks, false));
   const intent = question.match(INTENT);
   const subject = intent?.[1] || "";

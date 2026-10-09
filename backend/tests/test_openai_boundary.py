@@ -163,10 +163,14 @@ def test_new_cash_uses_production_sdk_tools_and_backend_only_amounts(monkeypatch
     def fake_openai(request):
         payload = json.loads(request.content)
         sent.append(payload)
+        assert payload["text"]["format"]["strict"] is True
         assert payload["text"]["format"]["schema"]["properties"]["amount"] == {"type": "null"}
-        names = {tool["name"] for tool in payload["tools"]}
-        assert {"review_portfolio", "scan_opportunities", "research_candidate", "calculate_company_cases", "calculate_comparison", "size_allocation"} <= names
-        assert "get_sec_filings" not in names
+        if len(sent) > len(turns):  # final synthesis after sizing: no callable tools, same strict answer schema
+            assert not {"tools", "tool_choice", "parallel_tool_calls"} & payload.keys()
+        else:
+            names = {tool["name"] for tool in payload["tools"]}
+            assert {"review_portfolio", "scan_opportunities", "research_candidate", "calculate_company_cases", "calculate_comparison", "size_allocation"} <= names
+            assert "get_sec_filings" not in names
         if len(sent) <= len(turns):
             name, arguments = turns[len(sent) - 1]
             output = [{"type": "function_call", "id": f"fc_{len(sent)}", "call_id": f"call_{len(sent)}",
@@ -400,3 +404,43 @@ def test_incomplete_response_detailed_diagnostics(monkeypatch):
     assert "max_output_tokens=16000" in err_str
     assert "reasoning_effort=medium" in err_str
     assert "partial_tools=['calculate_comparison']" in err_str
+
+
+def test_openrouter_is_an_opt_in_base_url_for_the_same_client(monkeypatch):
+    from analyst.config import Settings
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai"); monkeypatch.setenv("OPENAI_MODEL", "gpt-x")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or"); monkeypatch.setenv("OPENROUTER_MODEL", "vendor/model:free")
+    monkeypatch.setenv("LLM_PROVIDER", "")  # unset means OpenAI; set (not deleted) so a local .env cannot override it
+    default = Settings.from_environment()
+    assert (default.api_key, default.model, default.base_url) == ("sk-openai", "gpt-x", "https://api.openai.com/v1")
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    routed = Settings.from_environment()
+    assert (routed.api_key, routed.model, routed.base_url) == ("sk-or", "vendor/model:free", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("LLM_PROVIDER", "other")
+    with pytest.raises(ValueError):
+        Settings.from_environment()
+
+
+def test_openrouter_omits_parallel_flag_but_multiple_tool_calls_are_still_rejected(monkeypatch):
+    from tests.test_portfolio_review import review_request, review_research_fixture
+    sent = []
+
+    def fake_openrouter(request):
+        payload = json.loads(request.content)
+        sent.append(payload)
+        assert request.url == "https://openrouter.ai/api/v1/responses"
+        assert "parallel_tool_calls" not in payload
+        assert payload["provider"] == {"only": ["openai"], "allow_fallbacks": False, "require_parameters": True}
+        assert payload["tool_choice"] == {"type": "function", "name": "review_portfolio"}
+        output = [{"type": "function_call", "id": f"fc_{n}", "call_id": f"call_{n}", "name": "review_portfolio",
+                   "arguments": "{}", "status": "completed"} for n in (1, 2)]
+        return httpx.Response(200, json={"id": "gen-1", "object": "response", "created_at": 1, "model": "openai/test",
+            "status": "completed", "output": output, "parallel_tool_calls": True, "error": None, "incomplete_details": None})
+
+    monkeypatch.setattr("analyst.providers.AsyncOpenAI", lambda **kwargs: AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openrouter))))
+    settings = Settings("sk-or-test", "openai/test", base_url="https://openrouter.ai/api/v1")
+    response = TestClient(create_app(settings=settings, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=review_request())
+    assert response.status_code != 200
+    assert "recommendation" not in response.json()
+    assert len(sent) == 1

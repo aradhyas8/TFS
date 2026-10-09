@@ -77,15 +77,27 @@ class BrowserTestModel:
             return ModelTurn(answer=allocation_answer())
         if request.get("portfolio_review"):
             called = {item["name"] for item in messages if item.get("type") == "function_call"}
-            if "reunderwrite_holding" not in called:
+            # Desk rebalance journeys: a concentration question gets a "keep everything" answer; the rest reduce p1.
+            keep = "concentrated" in request["question"]
+            # The pipeline forces each holding and then the comparison; older calls are compacted out of messages.
+            if forced_tool == "reunderwrite_holding":
                 args = assessment()
                 if not request["portfolio_review"]["prior_theses"]:
                     args["assessment"]["status"] = "unknown"
+                if keep:
+                    args["assessment"].update(action="hold", current_thesis="Demand evidence is mixed but does not break the thesis.")
                 return ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(args))])
-            if "calculate_comparison" not in called:
+            if forced_tool == "calculate_comparison":
                 return ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(stock_comparison_judgments(request)))])
-            if request["question"] == "Review supported reduction" and "size_review" not in called:
-                return ModelTurn(calls=[ToolCall("sizing", "size_review", json.dumps({"position_id": "p1", "cash_position_id": "c2", "min_weight": "0.4", "max_weight": "0.5", "reason": "Weaker demand justifies lower issuer exposure and a retained reserve."}))])
+            if keep:
+                return ModelTurn(answer={**review_answer(), "preferred_action": "no_action", "evidence_ids": [],
+                    "reason": "No holding has evidence strong enough to justify a trade; changing nothing is the better choice.",
+                    "alternatives": [{"action": "clarify_inputs", "reason": "Supplying loss tolerance and prior theses could sharpen the view."}]})
+            if request["question"] in {"Review supported reduction", "What should I reduce?"} and "size_review" not in called:
+                rows = request["portfolio"]["positions"]
+                p1 = next(row for row in rows if row["id"] == "p1")
+                cash = next((row["id"] for row in rows if row["kind"] == "cash" and row["account_id"] == p1["account_id"] and row["currency"] == p1["currency"]), "c2")
+                return ModelTurn(calls=[ToolCall("sizing", "size_review", json.dumps({"position_id": "p1", "cash_position_id": cash, "min_weight": "0.4", "max_weight": "0.5", "reason": "Weaker demand justifies lower issuer exposure and a retained reserve."}))])
             answer = review_answer()
             answer.update(preferred_action="reduce", reason="Weaker demand warrants a conditional reduction despite prior ownership.",
                           alternatives=[{"action": "no_action", "reason": "Retaining exposure is conditional on the current demand evidence improving."}],

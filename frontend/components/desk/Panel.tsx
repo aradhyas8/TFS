@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { NEW_CASH_DESTINATION, post, type Analysis, type GuardrailReview, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
-import type { Tab } from "./Memo";
+import { BeforeAfter, rebalancePlan, type Tab } from "./Memo";
 import { caseCurrency, compact, fullDate, money, pct, positionName, shortDate } from "./format";
 
 export type Evidence = { id: string; title: string; source: string; date: string | null; url: string | null; excerpt: string | null; facts: string[]; available: boolean };
@@ -10,12 +10,14 @@ export function evidenceFor(result: Analysis | null, decision: SavedDecision | n
   let all: Evidence[] = [];
   if (decision) all = decision.evidence_references.map(ref => ({ id: ref.id, title: ref.title, source: ref.source, date: ref.as_of, url: ref.url, excerpt: ref.excerpt, facts: [], available: true }));
   else if (result) {
-    const stocks = [result.stock, ...(result.allocation?.stocks || [])].filter((s): s is NonNullable<typeof s> => !!s);
+    const stocks = [result.stock, ...(result.allocation?.stocks || []), ...(result.reunderwriting?.stocks || [])].filter((s): s is NonNullable<typeof s> => !!s);
     all = stocks.flatMap(stock => stock.research.documents.map(doc => ({
       id: doc.id, title: doc.title, source: doc.authority, date: doc.published_on, url: doc.url, excerpt: doc.excerpt, available: doc.available,
       facts: stock.research.facts.filter(fact => fact.document_ids.includes(doc.id)).map(fact => `${fact.metric}: ${fact.value ?? "Unknown"}${fact.unit && fact.unit !== "ratio" ? ` ${fact.unit}` : ""}${fact.period_end ? ` (period ending ${fact.period_end})` : ""}`),
     })));
     const cited = result.recommendation.evidence_ids || [];
+    // A company held in several accounts carries the same documents once per lot.
+    all = all.filter((item, index) => all.findIndex(other => other.id === item.id) === index);
     all.sort((a, b) => (cited.includes(a.id) ? cited.indexOf(a.id) : 1e6) - (cited.includes(b.id) ? cited.indexOf(b.id) : 1e6));
   }
   const items = all.filter(item => item.available), missing = all.filter(item => !item.available);
@@ -30,7 +32,9 @@ type Props = {
   prices: PriceRefresh | null; refreshing: boolean; onRefreshPrices: () => void;
 };
 
-const TABS: { id: Tab; label: string }[] = [{ id: "evidence", label: "Evidence" }, { id: "scenarios", label: "Scenarios" }, { id: "holdings", label: "Holdings" }, { id: "guardrails", label: "Guardrails" }];
+// A rebalance shows its before and after where other answers show scenarios.
+const tabsFor = (result: Analysis | null): { id: Tab; label: string }[] => [{ id: "evidence", label: "Evidence" },
+  result?.reunderwriting ? { id: "proposed", label: "Proposed portfolio" } : { id: "scenarios", label: "Scenarios" }, { id: "holdings", label: "Holdings" }, { id: "guardrails", label: "Guardrails" }];
 
 export default function Panel(props: Props) {
   const { tab, onTab, onClose, result, decision, running } = props;
@@ -38,7 +42,7 @@ export default function Panel(props: Props) {
   const waiting = running && !result;
   return <aside className="panel" aria-label="Details" id="details">
     <div className="tabs" role="tablist" aria-label="Detail views">
-      {TABS.map(item => <button key={item.id} type="button" role="tab" id={`tab-${item.id}`} aria-controls="tabpanel" className="tab" aria-selected={tab === item.id}
+      {tabsFor(result).map(item => <button key={item.id} type="button" role="tab" id={`tab-${item.id}`} aria-controls="tabpanel" className="tab" aria-selected={tab === item.id}
         onClick={() => onTab(item.id)}>{item.label}{item.id === "evidence" && evidence.items.length > 0 && <span className="m n">{evidence.items.length}</span>}</button>)}
       <button type="button" className="icon-btn panel-close" aria-label="Close details" onClick={onClose}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg></button>
@@ -46,13 +50,14 @@ export default function Panel(props: Props) {
     <div className="pbody" role="tabpanel" id="tabpanel" aria-labelledby={`tab-${tab}`}>
       {tab === "evidence" && (waiting ? <Pending what="Evidence" /> : <EvidenceTab {...evidence} focus={props.focus} result={result} decision={decision} snapshot={props.snapshot} />)}
       {tab === "scenarios" && (decision ? <NotSaved what="Scenarios" /> : waiting || !result ? <Pending what="Scenarios" /> : <ScenariosTab result={result} snapshot={props.snapshot} />)}
+      {tab === "proposed" && (waiting || !result?.reunderwriting ? <Pending what="The proposed portfolio" /> : <ProposedTab result={result} snapshot={props.snapshot} />)}
       {tab === "holdings" && <HoldingsTab {...props} />}
       {tab === "guardrails" && (decision ? <NotSaved what="Guardrail checks" /> : waiting || !result ? <RulesSummary settings={props.settings} /> : <GuardrailsTab result={result} snapshot={props.snapshot} />)}
     </div>
   </aside>;
 }
 
-const Pending = ({ what }: { what: string }) => <p className="cap">{what} open when the answer arrives.</p>;
+const Pending = ({ what }: { what: string }) => <p className="cap">{what} open{what.startsWith("The ") ? "s" : ""} when the answer arrives.</p>;
 const NotSaved = ({ what }: { what: string }) => <p className="cap">{what} weren&apos;t saved with this decision. Re-run with today&apos;s portfolio to see them.</p>;
 
 function EvidenceTab({ items, missing, numbers, focus, result, decision, snapshot }: ReturnType<typeof evidenceFor> & { focus: string | null; result: Analysis | null; decision: SavedDecision | null; snapshot: Snapshot | null }) {
@@ -172,6 +177,26 @@ function ScenariosTab({ result, snapshot }: { result: Analysis; snapshot: Snapsh
   </>;
 }
 
+/** Every position before and after the rebalance. Proposed weights exist only where Python previewed a checked size. */
+function ProposedTab({ result, snapshot }: { result: Analysis; snapshot: Snapshot | null }) {
+  const rw = result.reunderwriting!;
+  const plan = rebalancePlan(result, snapshot);
+  const moving = plan.filter(item => item.move !== "same" && item.move !== "undecided").length;
+  const undecided = plan.filter(item => item.move === "undecided").length;
+  return <>
+    <div><div>{moving ? `${moving} of ${plan.length} positions would move` : undecided ? `Undecided for ${undecided} of ${plan.length} positions; nothing moves yet` : "Nothing would move"}</div>
+      <div className="cap">Now: valued {shortDate(result.portfolio.reviewed_at)} from your portfolio as of {fullDate(result.portfolio.as_of)} · your saved holdings are not changed</div></div>
+    <BeforeAfter result={result} plan={plan} />
+    {rw.previews.length > 0 ? <div className="pgroup pnote"><span className="lbl">Checked size</span>
+      {rw.amount && <span className="n">{money(rw.amount.minimum, rw.amount.currency)} to {money(rw.amount.maximum, rw.amount.currency)} · {plan.find(item => item.row.supplied.id === rw.amount!.position_id)?.ticker}</span>}
+      <span className="cap">Both ends of the range: {rw.previews.map(p => p.status.replaceAll("_", " ")).join(" and ")}. Fractional-share previews at dated prices, not orders.</span>
+      {rw.sizing && <span className="cap">{rw.sizing.reason}</span>}</div>
+      : moving > 0 && <div className="pgroup pnote"><span className="lbl">Why there are no target weights</span>
+        {rw.missing_inputs.length ? <ul className="cap" style={{ paddingLeft: 16 }}>{[...new Set(rw.missing_inputs)].map(item => <li key={item}>{item}</li>)}</ul>
+          : <span className="cap">The analyst gave a direction without asking Python to size it.</span>}</div>}
+  </>;
+}
+
 function statusWord(status: string) {
   if (status === "within_limit") return <span className="sage">Within</span>;
   if (status === "breached") return <span className="amber">Over</span>;
@@ -180,7 +205,7 @@ function statusWord(status: string) {
 }
 
 function GuardrailsTab({ result, snapshot }: { result: Analysis; snapshot: Snapshot | null }) {
-  const previews = result.allocation?.previews || [];
+  const previews = result.allocation?.previews || result.reunderwriting?.previews || [];
   const top = previews.at(-1);
   const current = result.portfolio.guardrails;
   const review: GuardrailReview | null = top?.guardrails ?? current;
@@ -189,18 +214,18 @@ function GuardrailsTab({ result, snapshot }: { result: Analysis; snapshot: Snaps
   const addedCurrency = result.portfolio.positions.find(row => row.supplied.id === added?.cash_position_id)?.supplied.currency || currency;
   if (!review) return <p className="cap">You haven&apos;t set any rules, so nothing was checked. Set a company cap or active budget under Holdings.</p>;
   return <>
-    <div><div>{top && added ? `If ${money(added.amount, addedCurrency)} arrives and is invested at the top of the range` : "Your portfolio today (no amount was tested)"}</div>
+    <div><div>{top && added ? `If ${money(added.amount, addedCurrency)} arrives and is invested at the top of the range` : top ? "After the proposed change, at the top of the range" : "Your portfolio today (no amount was tested)"}</div>
       <div className="cap">Checked against the rules you set · {review.settings.indirect_cap_policy === "include_known_indirect" ? "includes known fund overlap" : "direct holdings only"}</div></div>
     <div>
       {review.companies.map(company => {
         const before = current?.companies.find(c => c.company_id === company.company_id);
         // "Over before this cash" only means something when an amount was tested against today.
-        const wasOver = !!top && before?.status === "breached" && company.status === "breached";
+        const wasOver = !!added && before?.status === "breached" && company.status === "breached";
         return <div className="g" key={company.company_id}>
           <div className="pv n"><span>Single company · {company.company_name}</span>
             <span>{wasOver ? <span className="amber">Over, before this cash</span> : statusWord(company.status)} · {pct(company.current_weight)} / {pct(company.cap)}</span></div>
           {company.status === "breached" && <span className="cap">{wasOver ? "Already over before this cash. This trade doesn't fix it." : company.explanation}
-            {" "}<a href="/classic">/rebalance</a></span>}
+            {!result.reunderwriting && " Ask “Should I rebalance my portfolio?” to see a path back."}</span>}
         </div>;
       })}
       <div className="g"><div className="pv n"><span>Active picks</span><span>{statusWord(review.active.status)} · {pct(review.active.weight)} / {pct(review.active.budget)}</span></div>
