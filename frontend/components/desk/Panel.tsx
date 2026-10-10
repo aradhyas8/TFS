@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { NEW_CASH_DESTINATION, post, type Analysis, type GuardrailReview, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { BENCHMARK_FUND, NEW_CASH_DESTINATION, post, type Analysis, type BenchmarkSetting, type CandidateResult, type GuardrailReview, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import { BeforeAfter, rebalancePlan, type Tab } from "./Memo";
 import { caseCurrency, compact, fullDate, money, pct, positionName, shortDate } from "./format";
 
@@ -28,6 +28,7 @@ type Props = {
   tab: Tab; onTab: (tab: Tab) => void; onClose: () => void; focus: string | null;
   snapshot: Snapshot | null; setSnapshot: Dispatch<SetStateAction<Snapshot | null>>; averageCosts: Record<string, string>; unresolved: UnresolvedHolding[];
   onImported: (saved: SavedPortfolio) => void; settings: PortfolioSettings; setSettings: Dispatch<SetStateAction<PortfolioSettings>>;
+  benchmark: BenchmarkSetting | null; setBenchmark: Dispatch<SetStateAction<BenchmarkSetting | null>>;
   result: Analysis | null; decision: SavedDecision | null; running: boolean; onError: (message: string) => void;
   prices: PriceRefresh | null; refreshing: boolean; onRefreshPrices: () => void;
 };
@@ -97,7 +98,7 @@ function EvidenceTab({ items, missing, numbers, focus, result, decision, snapsho
 
 /** Each position's dated price and the FX used, as returned with the review. Unknown stays unknown. */
 function Valuation({ result }: { result: Analysis }) {
-  const rows = result.portfolio.positions.filter(row => row.supplied.kind !== "cash" && row.supplied.id !== NEW_CASH_DESTINATION);
+  const rows = result.portfolio.positions.filter(row => row.supplied.kind !== "cash" && row.supplied.id !== NEW_CASH_DESTINATION && !row.supplied.id.startsWith("candidate-") && row.supplied.id !== BENCHMARK_FUND);
   const rates = [...new Map(result.portfolio.positions.filter(row => row.fx_used).map(row => [`${row.fx_used!.from_currency}${row.fx_used!.to_currency}`, row.fx_used!])).values()];
   if (!rows.length && !rates.length) return null;
   return <div className="pgroup pnote"><span className="lbl">Prices and rates used</span>
@@ -115,7 +116,7 @@ function ScenariosTab({ result, snapshot }: { result: Analysis; snapshot: Snapsh
   const comparison = result.comparison;
   const currency = result.portfolio.reporting_currency;
   const altName = (alt: NonNullable<typeof comparison>["alternatives"][number]["selection"]) => alt.kind === "no_action" ? "No action" : alt.kind === "cash" ? "Keep as cash" :
-    alt.kind === "short_bill" ? "Short-term bills" : snapshot?.positions.find(row => row.id === alt.position_id)?.ticker || alt.position_id || alt.id;
+    alt.kind === "short_bill" ? "Short-term bills" : snapshot?.positions.find(row => row.id === alt.position_id)?.ticker || result.portfolio.positions.find(row => row.supplied.id === alt.position_id)?.supplied.ticker || alt.position_id || alt.id;
   if (!stocks.length && !comparison) return <p className="cap">{result.allocation ? "No scenarios were produced for this answer." : "A portfolio review describes where you stand today; it doesn't project scenarios. /new-cash compares futures for new money."}</p>;
   return <>
     {stocks.map(stock => {
@@ -299,7 +300,103 @@ function PercentInput({ label, value, onChange }: { label: string; value: string
     onChange={event => { const next = event.target.value.replace(/[^0-9.]/g, ""); setText(next); onChange(next === "" || Number.isNaN(Number(next)) ? null : String(Number(next) / 100)); }} /></label>;
 }
 
-function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, result, decision, running, onError, prices, refreshing, onRefreshPrices }: Props) {
+function BenchmarkInput({ benchmark, onChange, disabled, onError }: {
+  benchmark: BenchmarkSetting | null; onChange: Dispatch<SetStateAction<BenchmarkSetting | null>>; disabled: boolean; onError: (message: string) => void;
+}) {
+  const [ticker, setTicker] = useState(benchmark?.ticker || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setTicker(benchmark?.ticker || "");
+  }, [benchmark?.ticker]);
+
+  async function resolve() {
+    const raw = ticker.trim();
+    if (!raw) {
+      setError("");
+      onChange(null);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const res = await post<CandidateResult>("/api/candidates", { ticker: raw });
+      if (res.unresolved?.reason === "not_found" || !res.position) {
+        setError(`I couldn't find "${raw}" as a US or Canadian ETF.`);
+        return;
+      }
+      if (res.unresolved?.reason === "multiple") {
+        setError(`"${raw}" matches more than one listing. Enter an exchange suffix like ${raw}.TO.`);
+        return;
+      }
+      if (!res.is_fund && res.position.kind !== "etf") {
+        setError(`${raw.toUpperCase()} is a stock, not an ETF. Choose a broad ETF as your benchmark.`);
+        return;
+      }
+      const resolvedTicker = res.position.ticker || raw.toUpperCase();
+      onChange({
+        ticker: resolvedTicker,
+        listing: res.position.listing || "unknown",
+        currency: res.position.currency,
+        name: res.position.company_name || null,
+      });
+      setTicker(resolvedTicker);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Benchmark lookup failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function clear() {
+    setError("");
+    setTicker("");
+    onChange(null);
+  }
+
+  return <div className="field" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+    <label className="field"><span className="cap">Benchmark fund (broad ETF)</span>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          className="in"
+          aria-label="Benchmark ETF"
+          placeholder="e.g. SPY, VOO, XIC"
+          value={ticker}
+          disabled={disabled || busy}
+          onChange={e => { setTicker(e.target.value.toUpperCase()); setError(""); }}
+          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); void resolve(); } }}
+        />
+        <button
+          type="button"
+          className="btn secondary small"
+          disabled={disabled || busy || !ticker.trim()}
+          onClick={() => void resolve()}
+        >
+          {busy ? "Checking…" : benchmark ? "Update" : "Set"}
+        </button>
+        {benchmark && (
+          <button
+            type="button"
+            className="link cap"
+            disabled={disabled || busy}
+            onClick={clear}
+          >
+            Clear
+          </button>
+        )}
+      </div>
+    </label>
+    {error && <span className="cap amber" role="alert">{error}</span>}
+    {benchmark && !error && (
+      <span className="cap n">
+        Current benchmark: {benchmark.ticker}{benchmark.name ? ` · ${benchmark.name}` : ""} ({benchmark.currency}, {benchmark.listing})
+      </span>
+    )}
+  </div>;
+}
+
+function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, benchmark, setBenchmark, result, decision, running, onError, prices, refreshing, onRefreshPrices }: Props) {
   if (!snapshot) return <p className="cap">Import a portfolio to see holdings.</p>;
   const review = result?.portfolio;
   const editable = !running;
@@ -312,7 +409,7 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
       {unresolved.map(row => <Identify key={`${row.account_id}:${row.ticker}`} row={row} snapshot={snapshot} disabled={!editable} onImported={onImported} onError={onError} />)}
     </div>}
     {snapshot.accounts.map(account => {
-      const rows = snapshot.positions.filter(row => row.account_id === account.id);
+      const rows = snapshot.positions.filter(row => row.account_id === account.id && row.id !== BENCHMARK_FUND);
       return <div className="pgroup" key={account.id}>
         <div className="pv"><span className="lbl">{account.name || "Account"}</span>
           {review && <span className="cap n">{money(review.accounts.find(a => a.id === account.id)?.total_value ?? null, review.reporting_currency)}</span>}</div>
@@ -347,6 +444,7 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
         <select className="in" value={settings.cash_is_deliberate_tilt === undefined || settings.cash_is_deliberate_tilt === null ? "" : String(settings.cash_is_deliberate_tilt)}
           onChange={event => setSettings(s => ({ ...s, cash_is_deliberate_tilt: event.target.value === "" ? null : event.target.value === "true" }))}>
           <option value="">Not set</option><option value="true">Yes</option><option value="false">No</option></select></label>
+      <BenchmarkInput benchmark={benchmark} onChange={setBenchmark} disabled={!editable} onError={onError} />
     </fieldset>
     <ImportCsv snapshot={snapshot} onImported={onImported} onError={onError} disabled={!editable} label="Replace with a new CSV" />
     <p className="cap">Need to edit individual positions or set a target mix? Use the <a href="/classic">classic view</a>.</p>

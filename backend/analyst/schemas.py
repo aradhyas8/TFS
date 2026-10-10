@@ -366,6 +366,14 @@ class StockInput(Contract):
 
 
 NEW_CASH_DESTINATION = "new-cash-destination"
+BENCHMARK_FUND = "benchmark-fund"
+
+
+class BenchmarkSetting(Contract):
+    ticker: Identifier
+    listing: Identifier
+    currency: Currency
+    name: Text | None = None
 
 
 class NewCashInput(Contract):
@@ -1472,6 +1480,7 @@ class SavedPortfolio(Contract):
     snapshot: Snapshot
     average_costs: dict[Identifier, Quantity] = Field(default_factory=dict)
     settings: PortfolioSettings | None = None
+    benchmark: BenchmarkSetting | None = None
     unresolved: list[UnresolvedHolding] = Field(default_factory=list, max_length=2000)
     saved_at: AwareDatetime | None = None
 
@@ -1482,6 +1491,8 @@ class SavedPortfolio(Contract):
             raise ValueError("Average cost must reference a held security.")
         if any(row.id == NEW_CASH_DESTINATION for row in self.snapshot.positions):
             raise ValueError("Reserved new-cash destination identifier.")
+        if any(row.id == BENCHMARK_FUND for row in self.snapshot.positions):
+            raise ValueError("Reserved benchmark fund identifier.")
         accounts = {account.id for account in self.snapshot.accounts}
         if any(row.account_id not in accounts for row in self.unresolved):
             raise ValueError("Every unresolved holding must reference a supplied account.")

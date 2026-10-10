@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { actionLabel, NEW_CASH_DESTINATION, type Analysis, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot } from "../../lib/contracts";
+import { actionLabel, BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot } from "../../lib/contracts";
 import { accountName, answerSentence, caseCurrency, clock, compact, POSITION_LABEL, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
 
 export type Tab = "evidence" | "scenarios" | "proposed" | "holdings" | "guardrails";
@@ -279,7 +279,7 @@ const byWeight = (rows: Valued[]) => [...rows].sort((a, b) => (b.weight === null
 function Weights({ result, snapshot, onTab }: { result: Analysis; snapshot: Snapshot | null; onTab: (tab: Tab) => void }) {
   const review = result.portfolio;
   const currency = review.reporting_currency;
-  const rows = review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION && !row.supplied.id.startsWith("candidate-"));
+  const rows = review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION && !row.supplied.id.startsWith("candidate-") && row.supplied.id !== BENCHMARK_FUND);
   const ranked = byWeight(rows);
   const scale = Math.max(...rows.map(row => Number(row.weight ?? 0)), 0.01);
   const capOf = (companyId: string) => review.guardrails?.companies.find(company => company.company_id === companyId);
@@ -303,7 +303,7 @@ function Weights({ result, snapshot, onTab }: { result: Analysis; snapshot: Snap
 
 /** Largest direct companies, currency mix and what's known inside funds. Unknown is never shown as zero. */
 function Exposure({ review }: { review: Review }) {
-  const direct = review.direct_companies.filter(c => !c.position_ids.some(id => id.startsWith("candidate-")));
+  const direct = review.direct_companies.filter(c => !c.position_ids.some(id => id.startsWith("candidate-") || id === BENCHMARK_FUND));
   return <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
     {direct.length ? <span>Largest companies you own directly: {[...direct].sort((a, b) => Number(b.weight ?? -1) - Number(a.weight ?? -1)).slice(0, 3)
       .map(company => `${company.company_name} ${company.weight === null ? "Unknown" : pct(company.weight)}`).join(" · ")}.</span>
@@ -332,7 +332,7 @@ export function rebalancePlan(result: Analysis, snapshot: Snapshot | null): Plan
   for (const a of rw.assessments) assessed.set(rw.research[a.position_id]?.company_id || result.portfolio.positions.find(p => p.supplied.id === a.position_id)?.supplied.company_id || a.position_id, a);
   const breached = new Map((result.portfolio.guardrails?.companies || []).filter(c => c.status === "breached").map(c => [c.company_id, c]));
   const moved = new Set<string>();
-  const plan = byWeight(result.portfolio.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION)).map(row => {
+  const plan = byWeight(result.portfolio.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION && !row.supplied.id.startsWith("candidate-") && row.supplied.id !== BENCHMARK_FUND)).map(row => {
     const company = companyOf(row);
     const a = company ? assessed.get(company) : undefined;
     let move: Move = "same";
@@ -409,7 +409,7 @@ export function RebalanceAnswer({ result, snapshot, cite, saved, onTab, onConfir
   const verdict = changing ? "Change recommended" : rec.preferred_action === "wait_for_inputs" ? "Undecided" : "No change recommended";
   const rules = !guardrails ? <span className="m">No rules set</span> : over ? <span><span className="amber">●</span> {over === 1 ? "Breaks one of your rules" : `Breaks ${over} of your rules`}</span>
     : <span><span className="sage">●</span> Within your rules</span>;
-  const tickerOf = (id: string) => plan.find(item => item.row.supplied.id === id)?.ticker || id;
+  const tickerOf = (id: string) => plan.find(item => item.row.supplied.id === id)?.ticker || review.positions.find(item => item.supplied.id === id)?.supplied.ticker || id;
   const stocks = rw.stocks.filter((stock, index) => rw.stocks.findIndex(other => other.research.company_id === stock.research.company_id) === index);
   const sized = plan.some(item => item.after.length);
   const fund = result.comparison?.alternatives.find(alt => alt.selection.kind === "etf");
@@ -561,7 +561,7 @@ export function StockAnswer({ result, snapshot, cite, saved, onTab, onConfirm }:
   const missing = stock.research.documents.filter(doc => !doc.available);
   const facts = stock.research.facts;
   const altName = (alt: NonNullable<typeof comparison>["alternatives"][number]["selection"]) => alt.kind === "no_action" ? "Keep things as they are" : alt.kind === "cash" ? "Hold cash" :
-    alt.kind === "short_bill" ? "Short-term bills" : alt.position_id === stock.position_id ? ticker : snapshot?.positions.find(row => row.id === alt.position_id)?.ticker || alt.position_id || alt.id;
+    alt.kind === "short_bill" ? "Short-term bills" : alt.position_id === stock.position_id ? ticker : snapshot?.positions.find(row => row.id === alt.position_id)?.ticker || review.positions.find(row => row.supplied.id === alt.position_id)?.supplied.ticker || alt.position_id || alt.id;
   const accounts = [...new Set(owned.map(row => snapshot?.accounts.find(account => account.id === row.supplied.account_id)?.name || row.supplied.account_id))];
   const shares = owned.reduce((sum, row) => sum + Number(row.supplied.shares || 0), 0);
   const notes = [...stock.qualifications, ...stock.research.issues];

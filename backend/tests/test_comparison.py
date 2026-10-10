@@ -227,3 +227,93 @@ def test_invalid_judgments_cannot_complete_a_comparison(fault):
     response, _ = run_comparison(paths=paths, skip=fault == "omit_tool")
     assert response.status_code == 502, response.text
     assert "comparison" not in response.json()
+
+
+def test_zero_share_diversified_etf_picked_up_by_default_comparison_builders():
+    from analyst.schemas import AnalysisRequest, BENCHMARK_FUND
+
+    # Portfolio with only a stock (no ETFs held) plus injected zero-share benchmark fund
+    req = {
+        "question": "Analyze ACME",
+        "stock": {"position_id": "p1"},
+        "portfolio": {
+            "as_of": "2026-09-30",
+            "reporting_currency": "CAD",
+            "accounts": [{"id": "a1", "name": "Broker"}],
+            "positions": [
+                {
+                    "id": "p1",
+                    "account_id": "a1",
+                    "kind": "stock",
+                    "currency": "USD",
+                    "ticker": "ACME",
+                    "listing": "XNAS",
+                    "shares": "10",
+                },
+                {
+                    "id": BENCHMARK_FUND,
+                    "account_id": "a1",
+                    "kind": "etf",
+                    "etf_role": "diversified",
+                    "currency": "USD",
+                    "ticker": "SPY",
+                    "listing": "XNYS",
+                    "shares": "0",
+                },
+            ],
+            "fx": [],
+        },
+    }
+    validated = AnalysisRequest.model_validate(req)
+    assert validated.comparison is not None
+    alt_fund = next(alt for alt in validated.comparison.alternatives if alt.id == "fund")
+    assert alt_fund.position_id == BENCHMARK_FUND
+    assert alt_fund.kind == "etf"
+
+    # When a held diversified ETF is already in the portfolio before benchmark, the held ETF takes precedence
+    req_with_held = {
+        "question": "Analyze ACME",
+        "stock": {"position_id": "p1"},
+        "portfolio": {
+            "as_of": "2026-09-30",
+            "reporting_currency": "CAD",
+            "accounts": [{"id": "a1", "name": "Broker"}],
+            "positions": [
+                {
+                    "id": "p1",
+                    "account_id": "a1",
+                    "kind": "stock",
+                    "currency": "USD",
+                    "ticker": "ACME",
+                    "listing": "XNAS",
+                    "shares": "10",
+                },
+                {
+                    "id": "held-etf",
+                    "account_id": "a1",
+                    "kind": "etf",
+                    "etf_role": "diversified",
+                    "currency": "USD",
+                    "ticker": "VOO",
+                    "listing": "XNYS",
+                    "shares": "25",
+                },
+                {
+                    "id": BENCHMARK_FUND,
+                    "account_id": "a1",
+                    "kind": "etf",
+                    "etf_role": "diversified",
+                    "currency": "USD",
+                    "ticker": "SPY",
+                    "listing": "XNYS",
+                    "shares": "0",
+                },
+            ],
+            "fx": [],
+        },
+    }
+    validated_held = AnalysisRequest.model_validate(req_with_held)
+    assert validated_held.comparison is not None
+    alt_held_fund = next(alt for alt in validated_held.comparison.alternatives if alt.id == "fund")
+    assert alt_held_fund.position_id == "held-etf"
+
