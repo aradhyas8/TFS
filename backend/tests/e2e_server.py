@@ -63,10 +63,9 @@ class BrowserTestModel:
         if request.get("theme"):
             from tests.test_theme import theme_turns
             scripted = theme_turns(request)
-            called = {item["name"] for item in messages if item.get("type") == "function_call"}
-            for turn in scripted[:-1]:
-                if turn.calls[0].name not in called:
-                    return turn
+            num_calls = sum(1 for item in messages if item.get("type") == "function_call")
+            if num_calls < len(scripted) - 1:
+                return scripted[num_calls]
             return scripted[-1]
         if request.get("new_cash"):
             called = {item["name"] for item in messages if item.get("type") == "function_call"}

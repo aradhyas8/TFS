@@ -7,6 +7,7 @@ export type Route =
   | { kind: "rebalance"; question: string }
   | { kind: "stock"; question: string; position: Position }
   | { kind: "candidate"; question: string; ticker: string }
+  | { kind: "theme"; question: string; name?: string }
   | { kind: "clarify"; question: string; message: string; options: Position[]; review: boolean; candidateListings?: CandidateListing[] };
 
 // Words that make a question about the whole portfolio rather than one company.
@@ -83,6 +84,7 @@ export function route(raw: string, snapshot: Snapshot | null): Route {
   const command = question.match(/^\/(\w[\w-]*)\s*(.*)$/s);
   if (command?.[1].toLowerCase() === "review") return { kind: "review", question: command[2].trim() || "Review my portfolio" };
   if (command?.[1].toLowerCase() === "rebalance") return { kind: "rebalance", question: command[2].trim() || "Should I rebalance my portfolio?" };
+  if (command?.[1].toLowerCase() === "theme") return { kind: "theme", question, name: command[2].trim() || undefined };
   if (command?.[1].toLowerCase() === "stock") {
     const reference = command[2].trim();
     if (!reference) return { kind: "clarify", question, options: stocks.filter(isSupportedStock), review: false, message: "Which holding should I analyze?" };
@@ -95,6 +97,10 @@ export function route(raw: string, snapshot: Snapshot | null): Route {
   }
   // Rebalancing covers every holding, so a ticker in the question doesn't narrow it to Stock Analysis.
   if (!command && REBALANCE.test(question)) return { kind: "rebalance", question };
+  if (!command && (/\btheme\b/i.test(question) || /\bworth a bet on\b/i.test(question))) {
+    const match = question.match(/\b(?:theme|worth a bet on)\s+(.+?)\s*[?.!]*$/i);
+    return { kind: "theme", question, name: match?.[1]?.trim() || undefined };
+  }
   if (!command && isCandidateTicker(question, false)) return { kind: "candidate", question, ticker: question.replace(/^\$/, "") };
   const tickers = companies(byTicker(question, stocks, false));
   const intent = question.match(INTENT);

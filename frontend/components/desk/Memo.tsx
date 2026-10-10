@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { actionLabel, BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot } from "../../lib/contracts";
+import { actionLabel, BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot, type ThemeInput } from "../../lib/contracts";
 import { accountName, answerSentence, caseCurrency, clock, compact, POSITION_LABEL, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
 
 export type Tab = "evidence" | "scenarios" | "proposed" | "holdings" | "guardrails";
@@ -32,11 +32,14 @@ function Expandable({ title, count, children }: { title: string; count: string; 
 
 const Bullets = ({ items }: { items: string[] }) => <ul className="bullets">{items.map((item, index) => <li key={index}>{item}</li>)}</ul>;
 
-export function Echo({ question, newCash, snapshot, stock, rebalance }: { question: string; newCash: NewCashInput | null; snapshot: Snapshot | null; stock?: string | null; rebalance?: boolean }) {
+export function Echo({ question, newCash, snapshot, stock, rebalance, theme }: { question: string; newCash: NewCashInput | null; snapshot: Snapshot | null; stock?: string | null; rebalance?: boolean; theme?: ThemeInput | null }) {
   if (rebalance) return <div className="echo"><span className="q">{question}</span>
     <span className="cap n">Rebalance · your whole saved portfolio as of {fullDate(snapshot?.as_of)}. Nothing in it is changed.</span></div>;
   if (stock) return <div className="echo"><span className="q">{question}</span>
     <span className="cap n">Stock analysis · {stock} against your saved portfolio as of {fullDate(snapshot?.as_of)}</span></div>;
+  if (theme) return <div className="echo"><span className="q">{question}</span>
+    <span className="cap n">Theme discovery · {theme.name || "Theme"} against your saved portfolio as of {fullDate(snapshot?.as_of)}
+      {theme.confirmed ? " · confirmed agreement" : " · awaiting agreement"}</span></div>;
   if (!newCash) return <div className="echo"><span className="q">{question}</span>
     <span className="cap n">Portfolio review · your whole portfolio as of {fullDate(snapshot?.as_of)}</span></div>;
   return <div className="echo"><span className="q">{question}</span>
@@ -675,6 +678,169 @@ export function StockAnswer({ result, snapshot, cite, saved, onTab, onConfirm }:
         {saved.confirmed_action ? <span className="body">Saved and recorded. <span className="m">You: {doneLabel(saved.confirmed_action.action)}.</span></span> : <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <p className="body" style={{ color: "var(--text)" }} data-testid="saved-message">Saved to Decisions with its {saved.evidence_references.length} source{saved.evidence_references.length === 1 ? "" : "s"} and the {shortDate(saved.as_of)} snapshot. When you&apos;ve acted, record what you did.</p>
           <ConfirmForm choices={STOCK_CHOICES} onConfirm={onConfirm} />
+        </div>}
+      </Row>}
+    </div>
+  </div>;
+}
+
+const THEME_CHOICES: [DecisionAction, string][] = [
+  ["no_action", "Took no action"],
+  ["add", "Added to candidate"],
+  ["hold", "Kept current holdings"],
+];
+
+export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onAgree, onConfirm }: {
+  result: Analysis; snapshot: Snapshot | null; cite: Cite; saved: SavedDecision | null; onTab: (tab: Tab) => void;
+  onAgree?: () => void; onConfirm: (action: DecisionAction, notes: string | undefined) => Promise<void>;
+}) {
+  const { recommendation: rec, portfolio: review, theme } = result;
+  if (!theme) return null;
+
+  const tickerOf = (id: string) => {
+    const s = snapshot?.positions.find(p => p.id === id);
+    if (s?.ticker) return s.ticker;
+    const r = review.positions.find(p => p.supplied.id === id);
+    if (r?.supplied.ticker) return r.supplied.ticker;
+    if (id.startsWith("candidate-")) {
+      const parts = id.replace("candidate-", "").split("-");
+      return parts[0];
+    }
+    return id;
+  };
+
+  const shortlistTickers = theme.context.shortlist.map(tickerOf).join(", ");
+
+  if (theme.status === "awaiting_agreement") {
+    return <div>
+      <Echo question={result.question} newCash={null} snapshot={snapshot} theme={theme.context} />
+      <div className="memo" aria-label="Analyst memo" role="region">
+        <Row label="Recommendation" kind="rec">
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <h2 className="display">Agree the theme mechanism and shortlist before researching.</h2>
+            <span className="cap n meta">
+              <span>Awaiting agreement · {theme.context.shortlist.length} candidate{theme.context.shortlist.length === 1 ? "" : "s"}</span>
+              <span className="amber">● Needs your agreement</span>
+            </span>
+          </div>
+        </Row>
+        <Row label="Needs you" kind="needs">
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <p className="body">Review the economic mechanism and candidate shortlist before live research begins.</p>
+            <div className="pgroup">
+              <span className="lbl">Theme</span>
+              <span className="body serif" style={{ fontSize: 18 }}>{theme.context.name || "Untitled theme"}</span>
+            </div>
+            <div className="pgroup">
+              <span className="lbl">Economic mechanism</span>
+              <p className="body">{theme.context.mechanism}</p>
+            </div>
+            <div className="pgroup">
+              <span className="lbl">Agreed shortlist</span>
+              <p className="body">{shortlistTickers || "None"}</p>
+              <span className="cap n">Maximum candidates: {theme.context.max_candidates} · Research calls bound: {theme.context.max_tool_calls}</span>
+            </div>
+            <div className="actions">
+              <button type="button" className="btn primary" onClick={onAgree}>Agree and research</button>
+              <span className="cap">Runs live research against primary SEC EDGAR filings</span>
+            </div>
+          </div>
+        </Row>
+      </div>
+    </div>;
+  }
+
+  const amountText = rec.amount ? range(rec.amount.minimum, rec.amount.maximum, rec.amount.currency) : null;
+  const sentence = rec.preferred_action === "no_action"
+    ? "Take no action on the theme candidates for now."
+    : answerSentence(rec.preferred_action, rec.amount, shortlistTickers, null);
+
+  const guardrails = review.guardrails;
+
+  const shortlistedEtfs = theme.context.shortlist.map(id => {
+    const p = snapshot?.positions.find(pos => pos.id === id) || review.positions.find(pos => pos.supplied.id === id)?.supplied;
+    return p?.kind === "etf" ? p : null;
+  }).filter((p): p is Position => !!p);
+
+  return <div>
+    <Echo question={result.question} newCash={null} snapshot={snapshot} theme={theme.context} />
+    <div className="memo" aria-label="Analyst memo" role="region">
+      <Row label="Recommendation" kind="rec">
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <h2 className="display">{amountText && sentence.includes(amountText) ? <>{sentence.split(amountText)[0]}<span className="amt">{amountText}</span>{sentence.split(amountText)[1]}</> : sentence}</h2>
+          <span className="cap n meta">
+            <span>{valuationDates(review)} · Completed theme research · {theme.tool_calls_used} of {theme.context.max_tool_calls} calls used</span>
+          </span>
+        </div>
+      </Row>
+      <Row label="Economic mechanism">
+        <p className="body">{theme.context.mechanism}</p>
+      </Row>
+      <Row label="Candidate verdicts">
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {theme.tests.map(test => {
+            const ticker = tickerOf(test.position_id);
+            const isEtf = shortlistedEtfs.some(e => e.id === test.position_id);
+            const etfMissingFacts = isEtf && test.conclusion === "unknown";
+            return <div key={test.position_id} className="pgroup" data-testid={`test-${test.position_id}`}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span className="serif" style={{ fontSize: 18 }}>{ticker}</span>
+                <span className={`verdict ${test.conclusion}`}>{test.conclusion}</span>
+              </div>
+              <p className="body">{test.explanation}<Cites ids={test.evidence_ids} cite={cite} /></p>
+              {etfMissingFacts && <span className="cap amber">Fund facts and dated sponsor holdings are missing; verdict and overlap remain unknown.</span>}
+            </div>;
+          })}
+          {shortlistedEtfs.filter(e => !theme.tests.some(t => t.position_id === e.id)).map(etf => (
+            <div key={etf.id} className="pgroup" data-testid={`test-${etf.id}`}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span className="serif" style={{ fontSize: 18 }}>{etf.ticker}</span>
+                <span className="verdict unknown">unknown</span>
+              </div>
+              <p className="body">No dated fund facts or sponsor holdings were available for this ETF.</p>
+              <span className="cap amber">Fund facts and dated sponsor holdings are missing; verdict and overlap remain unknown.</span>
+            </div>
+          ))}
+        </div>
+      </Row>
+      <Row label="Exposure">
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <Exposure review={review} />
+          {shortlistedEtfs.filter(etf => {
+            const test = theme.tests.find(t => t.position_id === etf.id);
+            return !test || test.conclusion === "unknown";
+          }).map(etf => <span className="cap n" key={etf.id}>
+            {etf.ticker}: look-through and overlap are unknown (no dated fund facts).
+          </span>)}
+        </div>
+      </Row>
+      <Row label="Guardrails">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <p className="body">{!guardrails ? "None set. Sizing was checked without user-defined portfolio limits."
+            : `${guardrails.settings.single_company_cap ? `Company cap ${pct(guardrails.settings.single_company_cap)}` : "No company cap"} · ${guardrails.settings.active_budget ? `active picks budget ${pct(guardrails.settings.active_budget)} (now ${pct(guardrails.active.weight)}, ${guardrails.active.status.replaceAll("_", " ")})` : "no active budget"}. Checked against limits.`}</p>
+          {theme.sizing && <p className="cap">Judged exposure range: {pct(theme.sizing.min_weight)} to {pct(theme.sizing.max_weight)}. {theme.sizing.reason}</p>}
+          <button type="button" className="link cap" style={{ alignSelf: "flex-start" }} onClick={() => onTab("guardrails")}>Inspect in Guardrails →</button>
+        </div>
+      </Row>
+      {rec.alternatives.length > 0 && <Row label="Alternatives"><div className="alts">
+        {rec.alternatives.map((alt, index) => <div className="alt" key={index}><span>{actionLabel(alt.action)}</span><span className="m">{alt.reason}</span></div>)}
+      </div></Row>}
+      <Row label="Risks"><p className="body">{rec.downside}</p></Row>
+      <Reasoning assumptions={rec.assumptions} uncertainty={rec.uncertainty} change={rec.what_could_change} extra={<>
+        <button type="button" className="more" onClick={() => onTab("scenarios")}><span>Scenarios <span className="m">· {theme.stocks.length} company case{theme.stocks.length === 1 ? "" : "s"}</span></span><span className="arrow" aria-hidden="true">→</span></button>
+        <button type="button" className="more" onClick={() => onTab("evidence")}><span>Evidence <span className="m">· {cite.numbers.size} source{cite.numbers.size === 1 ? "" : "s"}</span></span><span className="arrow" aria-hidden="true">→</span></button>
+        <button type="button" className="more" onClick={() => onTab("guardrails")}><span>Guardrails <span className="m">· checked against limits</span></span><span className="arrow" aria-hidden="true">→</span></button>
+      </>} />
+      <Row label="Notes">
+        <span className="cap">Research calls used: {theme.tool_calls_used} of {theme.context.max_tool_calls} maximum.</span>
+        {theme.missing_inputs.length > 0 && <Expandable title="Missing inputs" count={`${theme.missing_inputs.length}`}><Bullets items={theme.missing_inputs} /></Expandable>}
+        {theme.qualifications.length > 0 && <Expandable title="Qualifications" count={`${theme.qualifications.length}`}><Bullets items={theme.qualifications} /></Expandable>}
+        <Expandable title="Calculation basis" count="how values were computed"><p className="cap">{review.calculation_basis}</p></Expandable>
+      </Row>
+      {saved && <Row label="Saved">
+        {saved.confirmed_action ? <span className="body">Saved and recorded. <span className="m">You: {doneLabel(saved.confirmed_action.action)}.</span></span> : <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <p className="body" style={{ color: "var(--text)" }} data-testid="saved-message">Saved to Decisions with its sources and the {shortDate(saved.as_of)} snapshot. When you&apos;ve acted, record what you did.</p>
+          <ConfirmForm choices={THEME_CHOICES} onConfirm={onConfirm} />
         </div>}
       </Row>}
     </div>

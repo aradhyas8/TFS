@@ -42,10 +42,33 @@ def theme_turns(request=None, answer=None):
     from tests.test_stock import company_judgments, stock_comparison_judgments
 
     request = request or theme_request(True)
+    shortlist = []
+    positions = []
+    if isinstance(request, dict):
+        shortlist = request.get("theme", {}).get("shortlist", [])
+        positions = request.get("portfolio", {}).get("positions", [])
+    elif hasattr(request, "theme") and request.theme:
+        shortlist = request.theme.shortlist
+        if hasattr(request, "portfolio") and request.portfolio:
+            positions = [p.model_dump() if hasattr(p, "model_dump") else p for p in request.portfolio.positions]
+
+    if not shortlist:
+        shortlist = ["p1"]
+
+    target_id = "p1"
+    for sid in shortlist:
+        pos = next((p for p in positions if p.get("id") == sid), None)
+        if pos and pos.get("kind") == "stock":
+            target_id = sid
+            break
+    else:
+        target_id = shortlist[0]
+
+    evidence_ids = [f"theme-{target_id}-filing", f"theme-{target_id}-issuer"]
     answer = answer or {
         **recommendation(),
         "preferred_action": "no_action",
-        "evidence_ids": ["theme-p1-filing", "theme-p1-issuer"],
+        "evidence_ids": evidence_ids,
         "reason": "The automation mechanism is plausible, but reported revenue does not establish durable margin gains. Diversified fund exposure and retaining cash remain serious alternatives to company concentration.",
         "alternatives": [
             {
@@ -74,7 +97,7 @@ def theme_turns(request=None, answer=None):
             "research",
             "research_candidate",
             {
-                "position_id": "p1",
+                "position_id": target_id,
                 "reason": "Test whether automation demand improves issuer economics.",
             },
         ),
@@ -82,19 +105,37 @@ def theme_turns(request=None, answer=None):
             "mechanism",
             "test_theme_mechanism",
             {
-                "position_id": "p1",
+                "position_id": target_id,
                 "conclusion": "challenges",
                 "explanation": "Reported revenue does not establish that automation demand improves margins.",
-                "evidence_ids": ["theme-p1-filing", "theme-p1-issuer"],
+                "evidence_ids": [f"theme-{target_id}-filing", f"theme-{target_id}-issuer"],
             },
         ),
         (
             "cases",
             "calculate_company_cases",
-            {"position_id": "p1", "judgments": company_judgments()},
+            {"position_id": target_id, "judgments": company_judgments()},
         ),
-        ("comparison", "calculate_comparison", stock_comparison_judgments(request)),
     ]
+    for sid in shortlist:
+        if sid == target_id:
+            continue
+        pos = next((p for p in positions if p.get("id") == sid), None)
+        if pos and pos.get("kind") == "etf":
+            calls.append(
+                (
+                    f"mechanism_{sid}",
+                    "test_theme_mechanism",
+                    {
+                        "position_id": sid,
+                        "conclusion": "unknown",
+                        "explanation": "No dated sponsor holdings or fund facts were available for this ETF.",
+                        "evidence_ids": [],
+                    },
+                )
+            )
+
+    calls.append(("comparison", "calculate_comparison", stock_comparison_judgments(request)))
     return [
         ModelTurn(calls=[ToolCall(key, name, json.dumps(args))]) for key, name, args in calls
     ] + [ModelTurn(answer=answer)]
@@ -847,3 +888,82 @@ def test_theme_validation_requires_cash_only_when_portfolio_has_cash():
     ]
     with pytest.raises(ValidationError, match="Theme comparison requires no action."):
         AnalysisRequest.model_validate(req_no_cash)
+
+
+def test_theme_with_desk_candidate_and_benchmark_positions_runs_through_pipeline():
+    from analyst.providers import ModelTurn, ToolCall
+    from analyst.schemas import AnalysisRequest
+    from tests.test_analysis import recommendation
+    from tests.test_stock import company_judgments, stock_comparison_judgments
+
+    cand_id = "candidate-NVDA-XNAS"
+    bench_id = "benchmark-fund"
+
+    req = theme_request(confirmed=True)
+    req["portfolio"]["positions"].append({
+        "id": cand_id,
+        "account_id": req["portfolio"]["positions"][0]["account_id"],
+        "kind": "stock",
+        "currency": "USD",
+        "ticker": "NVDA",
+        "listing": "XNAS",
+        "company_id": "acme",
+        "company_name": "Acme",
+        "shares": "0",
+    })
+    # Replace existing fund with desk benchmark fund
+    req["portfolio"]["positions"] = [
+        p for p in req["portfolio"]["positions"] if p["id"] != "fund"
+    ]
+    req["portfolio"]["positions"].append({
+        "id": bench_id,
+        "account_id": req["portfolio"]["positions"][0]["account_id"],
+        "kind": "etf",
+        "etf_role": "diversified",
+        "currency": "USD",
+        "ticker": "SPY",
+        "listing": "NYSEARCA",
+        "company_name": "SPDR S&P 500 ETF Trust",
+        "shares": "0",
+    })
+    req["theme"].update(shortlist=[cand_id], max_candidates=1)
+    req.pop("comparison", None)
+
+    parsed = AnalysisRequest.model_validate(req)
+    fund_alt = next((alt for alt in parsed.comparison.alternatives if alt.kind == "etf"), None)
+    assert fund_alt is not None
+    assert fund_alt.position_id == bench_id
+
+    req_json = parsed.model_dump(mode="json")
+    answer = {
+        **recommendation(),
+        "preferred_action": "no_action",
+        "evidence_ids": [f"theme-{cand_id}-filing", f"theme-{cand_id}-issuer"],
+        "reason": "AI acceleration mechanism is plausible, but valuation does not justify adding.",
+    }
+    turns = [
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("research", "research_candidate", json.dumps({"position_id": cand_id, "reason": "Test AI mechanism."}))]),
+        ModelTurn(calls=[ToolCall("mechanism", "test_theme_mechanism", json.dumps({
+            "position_id": cand_id,
+            "conclusion": "supports",
+            "explanation": "Datacenter revenue grew significantly.",
+            "evidence_ids": [f"theme-{cand_id}-filing", f"theme-{cand_id}-issuer"],
+        }))]),
+        ModelTurn(calls=[ToolCall("cases", "calculate_company_cases", json.dumps({
+            "position_id": cand_id,
+            "judgments": company_judgments(),
+        }))]),
+        ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(stock_comparison_judgments(req_json)))]),
+        ModelTurn(answer=answer),
+    ]
+
+    response, _ = run_theme(req_json, turns)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["theme"]["status"] == "completed"
+    assert result["theme"]["researched"] == [cand_id]
+    assert result["theme"]["tests"][0]["position_id"] == cand_id
+    assert result["theme"]["tests"][0]["conclusion"] == "supports"
+    assert any(alt["selection"]["position_id"] == bench_id for alt in result["comparison"]["alternatives"])
+
