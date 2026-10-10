@@ -3,16 +3,20 @@
 import asyncio
 import json
 import socket
+from datetime import date
 from pathlib import Path
 from typing import Any
 
+from analyst import pipeline
 from analyst.api import create_app
 from analyst.config import Settings
 from analyst.decisions import DecisionStore
+from analyst.portfolio import PortfolioStore
 from analyst.financial_data import FakeFinancialProvider
 from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import (
+    NEW_CASH_DESTINATION,
     AnalysisRequest,
     CompanyResearch,
     FinancialEvidence,
@@ -45,7 +49,7 @@ socket.socket.connect = local_connect  # type: ignore[method-assign]
 
 
 class BrowserTestModel:
-    async def respond(self, messages: list[dict[str, Any]], *, require_tool: bool) -> ModelTurn:
+    async def respond(self, messages: list[dict[str, Any]], *, require_tool: bool, forced_tool: str | None = None, reasoning_effort: str | None = None) -> ModelTurn:
         if require_tool:
             if json.loads(messages[1]["content"])["question"] == "Slow model review":
                 await asyncio.sleep(31)
@@ -62,23 +66,40 @@ class BrowserTestModel:
             return scripted[-1]
         if request.get("new_cash"):
             called = {item["name"] for item in messages if item.get("type") == "function_call"}
-            for name, args in [("scan_opportunities", {}), ("calculate_comparison", comparison_judgments()),
-                               ("size_allocation", {"position_id": "fund", "min_weight": "0.55", "max_weight": "0.65",
+            rows = request["portfolio"]["positions"]
+            fund = next(row["id"] for row in rows if row.get("ticker") == "BROAD")
+            # Without an existing cash balance the fund is a larger share of the funded portfolio.
+            held_cash = any(row["kind"] == "cash" and row["id"] != NEW_CASH_DESTINATION for row in rows)
+            low, high = ("0.55", "0.65") if held_cash else ("0.6", "0.7")
+            for name, args in [("scan_opportunities", {}), ("calculate_comparison", comparison_judgments((fund, "cash", "keep"))),
+                               ("size_allocation", {"position_id": fund, "min_weight": low, "max_weight": high,
                                                     "reason": "Diversification and a retained reserve justify this exposure range."})]:
                 if name not in called:
                     return ModelTurn(calls=[ToolCall(name, name, json.dumps(args))])
             return ModelTurn(answer=allocation_answer())
         if request.get("portfolio_review"):
             called = {item["name"] for item in messages if item.get("type") == "function_call"}
-            if "reunderwrite_holding" not in called:
+            # Desk rebalance journeys: a concentration question gets a "keep everything" answer; the rest reduce p1.
+            keep = "concentrated" in request["question"]
+            # The pipeline forces each holding and then the comparison; older calls are compacted out of messages.
+            if forced_tool == "reunderwrite_holding":
                 args = assessment()
                 if not request["portfolio_review"]["prior_theses"]:
                     args["assessment"]["status"] = "unknown"
+                if keep:
+                    args["assessment"].update(action="hold", current_thesis="Demand evidence is mixed but does not break the thesis.")
                 return ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(args))])
-            if "calculate_comparison" not in called:
+            if forced_tool == "calculate_comparison":
                 return ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(stock_comparison_judgments(request)))])
-            if request["question"] == "Review supported reduction" and "size_review" not in called:
-                return ModelTurn(calls=[ToolCall("sizing", "size_review", json.dumps({"position_id": "p1", "cash_position_id": "c2", "min_weight": "0.4", "max_weight": "0.5", "reason": "Weaker demand justifies lower issuer exposure and a retained reserve."}))])
+            if keep:
+                return ModelTurn(answer={**review_answer(), "preferred_action": "no_action", "evidence_ids": [],
+                    "reason": "No holding has evidence strong enough to justify a trade; changing nothing is the better choice.",
+                    "alternatives": [{"action": "clarify_inputs", "reason": "Supplying loss tolerance and prior theses could sharpen the view."}]})
+            if request["question"] in {"Review supported reduction", "What should I reduce?"} and "size_review" not in called:
+                rows = request["portfolio"]["positions"]
+                p1 = next(row for row in rows if row["id"] == "p1")
+                cash = next((row["id"] for row in rows if row["kind"] == "cash" and row["account_id"] == p1["account_id"] and row["currency"] == p1["currency"]), "c2")
+                return ModelTurn(calls=[ToolCall("sizing", "size_review", json.dumps({"position_id": "p1", "cash_position_id": cash, "min_weight": "0.4", "max_weight": "0.5", "reason": "Weaker demand justifies lower issuer exposure and a retained reserve."}))])
             answer = review_answer()
             answer.update(preferred_action="reduce", reason="Weaker demand warrants a conditional reduction despite prior ownership.",
                           alternatives=[{"action": "no_action", "reason": "Retaining exposure is conditional on the current demand evidence improving."}],
@@ -169,6 +190,9 @@ class BrowserTestData(FakeDataProvider):
         for position in supplied.positions:
             if position.id == "fund" and position.mark and position.mark.source == "Fixture allocation":
                 financial.reference = allocation_evidence()
+            if position.ticker == "BROAD" and position.kind == "etf" and position.mark is None:
+                # A simple holdings import: the source fixture follows the application-made position ID.
+                financial.reference = FinancialEvidence.model_validate_json(allocation_evidence().model_dump_json().replace('"fund"', json.dumps(position.id)))
             if position.id == "p2" and position.mark and position.mark.source.startswith("Fixture "):
                 scenario = position.mark.source.removeprefix("Fixture ")
                 if scenario == "missing_research":
@@ -218,6 +242,11 @@ for _file in decision_store.directory.glob("*.json"):
     except OSError:
         pass
 
+# Browser fixtures are dated snapshots: value them on their own date, as the backend tests do.
+pipeline.market_today = lambda: date(2000, 1, 1)
+portfolio_store = PortfolioStore(Path(__file__).parent / "data" / "e2e_portfolio")
+portfolio_store.path.unlink(missing_ok=True)
+
 app = create_app(
     model=BrowserTestModel(),
     data=BrowserTestData(),
@@ -225,5 +254,13 @@ app = create_app(
     research=stock_research,
     settings=Settings("sk-test-backend-only-never-browser", "test-model"),
     store=decision_store,
+    portfolio_store=portfolio_store,
 )
+
+
+@app.delete("/api/test/portfolio")
+def forget_portfolio() -> None:
+    """Test server only: each browser journey starts without a saved portfolio or a leftover source fixture."""
+    portfolio_store.path.unlink(missing_ok=True)
+    financial.reference = FinancialEvidence()
 

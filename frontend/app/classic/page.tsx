@@ -1,16 +1,18 @@
 "use client";
 
 import { useEffect, useState, type FormEvent, type SetStateAction } from "react";
-import ThemeInputs from "../components/ThemeInputs";
-import type { ThemeInput } from "../lib/contracts";
-import PortfolioEditor from "../components/PortfolioEditor";
-import PortfolioReviewInputs from "../components/PortfolioReviewInputs";
-import NewCashInputs from "../components/NewCashInputs";
-import ReviewResult from "../components/ReviewResult";
-import GuardrailInputs from "../components/GuardrailInputs";
-import ComparisonInputs from "../components/ComparisonInputs";
-import SavedDecisionView from "../components/SavedDecisionView";
-import SavedDecisionsList from "../components/SavedDecisionsList";
+// Legacy styles stay on this page so they never leak into the Direction D route.
+import "../globals.css";
+import ThemeInputs from "../../components/ThemeInputs";
+import type { ThemeInput } from "../../lib/contracts";
+import PortfolioEditor from "../../components/PortfolioEditor";
+import PortfolioReviewInputs from "../../components/PortfolioReviewInputs";
+import NewCashInputs from "../../components/NewCashInputs";
+import ReviewResult from "../../components/ReviewResult";
+import GuardrailInputs from "../../components/GuardrailInputs";
+import ComparisonInputs from "../../components/ComparisonInputs";
+import SavedDecisionView from "../../components/SavedDecisionView";
+import SavedDecisionsList from "../../components/SavedDecisionsList";
 import {
   get,
   post,
@@ -26,7 +28,7 @@ import {
   type ProposedChanges,
   type ComparisonInput,
   type SavedDecision,
-} from "../lib/contracts";
+} from "../../lib/contracts";
 
 export default function Page() {
   const [snapshot, setSnapshot] = useState<Snapshot>({ as_of: "", reporting_currency: "CAD",

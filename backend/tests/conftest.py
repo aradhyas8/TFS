@@ -1,10 +1,11 @@
 import socket
+from datetime import date
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def no_live_services(monkeypatch):
+def no_live_services(monkeypatch, tmp_path):
     original_connect = socket.socket.connect
 
     def blocked(sock, address):
@@ -14,9 +15,17 @@ def no_live_services(monkeypatch):
         raise AssertionError("Automated tests must not make live network connections.")
 
     monkeypatch.setattr(socket.socket, "connect", blocked)
+    # Fixtures are dated snapshots: a current analysis values them on their own date unless a test sets the clock.
+    monkeypatch.setattr("analyst.pipeline.market_today", lambda: date(2000, 1, 1))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-backend-only-never-browser")
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
     monkeypatch.setenv("BOC_FX_ENABLED", "false")
+    monkeypatch.setenv("EODHD_API_KEY", "")
+    monkeypatch.setenv("OPENFIGI_ENABLED", "false")
+    monkeypatch.setenv("YFINANCE_ENABLED", "false")  # yfinance uses curl_cffi, which the socket guard cannot see
+    monkeypatch.setenv("MARKET_DATA_DIR", str(tmp_path / "market"))
+    monkeypatch.setenv("SEC_CACHE_DIR", str(tmp_path / "sec"))
+    monkeypatch.setenv("SEC_USER_AGENT", "")
     monkeypatch.delenv("FINANCIAL_REFERENCE_FILE", raising=False)
 
     monkeypatch.delenv("RESEARCH_REFERENCE_FILE", raising=False)

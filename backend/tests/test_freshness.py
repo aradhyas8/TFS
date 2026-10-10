@@ -99,7 +99,9 @@ def test_unusable_sources_leave_values_unknown_and_amount_unset(fault):
     elif fault == "stale":
         evidence["quotes"]["p1"]["status"] = "stale"
     elif fault in {"old", "future"}:
-        evidence["quotes"]["p1"]["as_of"] = "2026-09-29" if fault == "old" else "2026-10-01"
+        evidence["quotes"]["p1"]["as_of"] = "2026-09-22" if fault == "old" else "2026-10-01"
+        if fault == "future":  # a price after the analysis date is dropped; with no on-or-before price the value is unknown
+            portfolio["positions"][0]["mark"] = None
     elif fault in {"adjusted", "dividend_adjusted"}:
         evidence["quotes"]["p1"]["basis"] = "split_adjusted" if fault == "adjusted" else "total_return_adjusted"
     elif fault == "missing":
@@ -108,7 +110,7 @@ def test_unusable_sources_leave_values_unknown_and_amount_unset(fault):
     elif fault == "fx_stale":
         evidence["fx"][0]["status"] = "stale"
     else:
-        evidence["fx"][0]["as_of"] = "2026-09-29"
+        evidence["fx"][0]["as_of"] = "2026-09-22"
     result, _ = review_with_evidence(evidence, portfolio)
     review = result["portfolio"]
     assert review["positions"][0]["value"] is None
@@ -117,6 +119,27 @@ def test_unusable_sources_leave_values_unknown_and_amount_unset(fault):
     assert review["source_inputs_usable"] is False
     assert review["qualifications"]
     assert result["recommendation"]["amount"] is None
+
+
+@pytest.mark.parametrize("source", ["quote", "fx"])
+def test_recent_provider_values_value_the_portfolio_with_their_own_date_but_never_size(source):
+    evidence = evidence_fixture()
+    if source == "quote":
+        evidence["quotes"]["p1"]["as_of"] = "2026-09-29"
+    else:
+        evidence["fx"][0]["as_of"] = "2026-09-29"
+    result, _ = review_with_evidence(evidence)
+    row = result["portfolio"]["positions"][0]
+    assert row["value"] == "1680"
+    assert row["quote_age_days" if source == "quote" else "fx_age_days"] == 1
+    assert row["source_inputs_usable"] is False
+
+
+def test_manual_marks_from_an_earlier_day_stay_unknown():
+    portfolio = snapshot()
+    portfolio["positions"][0]["mark"]["as_of"] = "2026-09-29"
+    result, _ = review_with_evidence({}, portfolio)
+    assert result["portfolio"]["positions"][0]["value"] is None
 
 
 @pytest.mark.parametrize("status", ["delayed", "cached", "stale", "manual"])
@@ -183,8 +206,8 @@ def test_valet_dated_cad_conversion_through_application_with_fake_http(inverse):
         requests.append(request)
         assert request.url.host == "www.bankofcanada.ca"
         assert request.url.path.endswith("/observations/FXUSDCAD/json")
-        assert request.url.params["start_date"] == request.url.params["end_date"] == "2026-09-30"
-        return httpx.Response(200, json={"observations": [{"d": "2026-09-30", "FXUSDCAD": {"v": "1.25"}}]})
+        assert (request.url.params["start_date"], request.url.params["end_date"]) == ("2026-09-23", "2026-09-30")
+        return httpx.Response(200, json={"observations": [{"d": "2026-09-29", "FXUSDCAD": {"v": "1.1"}}, {"d": "2026-09-30", "FXUSDCAD": {"v": "1.25"}}]})
     portfolio = snapshot()
     portfolio["fx"] = []
     if inverse:
@@ -201,12 +224,25 @@ def test_valet_dated_cad_conversion_through_application_with_fake_http(inverse):
     assert row["fx_used"]["captured_at"]
 
 
-@pytest.mark.parametrize("fault", ["missing", "old", "failure", "negative"])
-def test_valet_missing_or_unusable_observation_never_uses_another_date(fault):
+def test_valet_before_publication_uses_the_latest_earlier_day_with_its_date():
+    def fake_valet(request):
+        return httpx.Response(200, json={"observations": [{"d": "2026-09-29", "FXUSDCAD": {"v": "1.25"}}]})
+    portfolio = snapshot()
+    portfolio["fx"] = []
+    provider = PersonalFinancialProvider(valet=True, transport=httpx.MockTransport(fake_valet))
+    result, _ = review_with_evidence({}, portfolio, provider)
+    row = result["portfolio"]["positions"][0]
+    assert row["fx_used"]["as_of"] == "2026-09-29"
+    assert row["fx_age_days"] == 1
+    assert row["value"] == "1250"
+
+
+@pytest.mark.parametrize("fault", ["missing", "future", "failure", "negative"])
+def test_valet_missing_or_unusable_observation_stays_unknown(fault):
     def fake_valet(request):
         if fault == "failure":
             return httpx.Response(503)
-        observations = [] if fault == "missing" else [{"d": "2026-09-29" if fault == "old" else "2026-09-30", "FXUSDCAD": {"v": "-1" if fault == "negative" else "1.25"}}]
+        observations = [] if fault == "missing" else [{"d": "2026-10-01" if fault == "future" else "2026-09-30", "FXUSDCAD": {"v": "-1" if fault == "negative" else "1.25"}}]
         return httpx.Response(200, json={"observations": observations})
     portfolio = snapshot()
     portfolio["fx"] = []
@@ -264,3 +300,77 @@ def test_post_split_snapshot_shares_and_unadjusted_price_are_counted_once():
     assert result["portfolio"]["cash_value"] == "1350"
     assert "no split factor is applied again" in result["portfolio"]["calculation_basis"]
     assert "No dividends are added" in result["portfolio"]["calculation_basis"]
+
+
+def dated_evidence(quote_as_of: str, analysis_day: str):
+    """Fixture evidence with p1's cached quote on quote_as_of; identity and FX are re-checked on the analysis day."""
+    evidence = evidence_fixture()
+    evidence["quotes"]["p1"].update(as_of=quote_as_of, captured_at=f"{quote_as_of}T20:00:00Z")
+    for row in [*evidence["identities"].values(), *evidence["fx"]]:
+        row.update(as_of=analysis_day, captured_at=f"{analysis_day}T20:00:00Z")
+    return evidence
+
+
+def analyze_on(monkeypatch, today: str, evidence, *, analysis_date=None, mark=True, store=None):
+    from datetime import date
+    monkeypatch.setattr("analyst.pipeline.market_today", lambda: date.fromisoformat(today))
+    portfolio = snapshot()  # holdings last confirmed 2026-09-30
+    if not mark:
+        portfolio["positions"][0]["mark"] = None
+    model = ScriptedModel([ModelTurn(calls=[ToolCall("review", "review_portfolio", "{}")]), ModelTurn(answer=recommendation())])
+    body = {"question": "Review my portfolio", "portfolio": portfolio, **({"analysis_date": analysis_date} if analysis_date else {})}
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), portfolio_store=store,
+                                     financial=FakeFinancialProvider(FinancialEvidence.model_validate(evidence)))).post("/api/analyze", json=body)
+    assert response.status_code == 200, response.text
+    return response.json()["portfolio"], portfolio
+
+
+def test_current_review_values_older_holdings_with_a_newer_quote(monkeypatch):
+    review, _ = analyze_on(monkeypatch, "2026-10-03", dated_evidence("2026-10-03", "2026-10-03"), mark=False)
+    assert review["positions"][0]["value"] is not None and review["positions"][0]["quote_used"]["as_of"] == "2026-10-03"
+    assert (review["as_of"], review["holdings_as_of"]) == ("2026-10-03", "2026-09-30")
+
+
+def test_current_review_accepts_an_intermediate_quote_within_the_freshness_window(monkeypatch):
+    review, _ = analyze_on(monkeypatch, "2026-10-03", dated_evidence("2026-10-01", "2026-10-03"), mark=False)
+    assert review["positions"][0]["value"] is not None
+
+
+def test_freshness_is_measured_from_the_analysis_date_not_the_holdings_date(monkeypatch):
+    review, _ = analyze_on(monkeypatch, "2026-10-12", dated_evidence("2026-10-01", "2026-10-12"), mark=False)
+    assert review["positions"][0]["value"] is None  # eleven days old on the analysis date
+
+
+def test_historical_review_never_uses_a_later_quote(monkeypatch):
+    review, _ = analyze_on(monkeypatch, "2026-10-03", dated_evidence("2026-10-03", "2026-09-30"), analysis_date="2026-09-30", mark=False)
+    assert review["as_of"] == "2026-09-30"
+    assert review["positions"][0]["value"] is None and review["positions"][0]["quote_used"] is None
+    assert any("dated after the analysis date" in line for line in review["qualifications"])
+
+
+@pytest.mark.parametrize("source", ["cached_quote", "broker_mark"])
+def test_historical_review_uses_a_price_on_or_before_its_date(monkeypatch, source):
+    quote_day = "2026-09-30" if source == "cached_quote" else "2026-10-03"  # a later cached quote falls back to the dated mark
+    review, _ = analyze_on(monkeypatch, "2026-10-03", dated_evidence(quote_day, "2026-09-30"), analysis_date="2026-09-30", mark=source == "broker_mark")
+    assert review["positions"][0]["value"] is not None
+    assert review["positions"][0]["quote_used"]["as_of"] == "2026-09-30"
+
+
+def test_an_analysis_cannot_predate_the_holdings(monkeypatch):
+    from datetime import date
+    monkeypatch.setattr("analyst.pipeline.market_today", lambda: date(2026, 10, 3))
+    response = TestClient(create_app(model=ScriptedModel([]), data=FakeDataProvider())).post(
+        "/api/analyze", json={"question": "Review", "portfolio": snapshot(), "analysis_date": "2026-09-29"})
+    assert response.status_code == 422
+
+
+def test_a_current_review_leaves_the_saved_portfolio_shares_and_date_unchanged(monkeypatch, tmp_path):
+    from analyst.portfolio import PortfolioStore
+    from analyst.schemas import SavedPortfolio, Snapshot
+    store = PortfolioStore(tmp_path)
+    store.save(SavedPortfolio(snapshot=Snapshot.model_validate(snapshot())))
+    before = store.path.read_bytes()
+    review, sent = analyze_on(monkeypatch, "2026-10-03", dated_evidence("2026-10-03", "2026-10-03"), store=store)
+    assert store.path.read_bytes() == before
+    assert [row["supplied"]["shares"] for row in review["positions"]] == [row.get("shares") for row in sent["positions"]]
+    assert review["holdings_as_of"] == sent["as_of"] == "2026-09-30"

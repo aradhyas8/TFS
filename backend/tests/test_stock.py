@@ -99,7 +99,7 @@ def test_stock_research_calculations_and_conditional_action_complete_in_same_req
     assert stock["cases"][2]["terminal_price"] == "150"
     assert stock["cases"][1]["known_terminal_value"] == "1300"
     assert stock["cases"][1]["sensitivity_prices"] == ["80", "100", "120"]
-    assert stock["cases"][1]["required_exit_multiple"] == "10"
+    assert stock["cases"][1]["required_exit_multiple"] == "16.11"  # price 100 x 1.1^5 / year-5 EPS 10
     assert result["recommendation"]["preferred_action"] == "hold"
     assert result["recommendation"]["amount"] is None
     assert "filing" in str(model.requests[-1])
@@ -259,7 +259,8 @@ def test_sector_appropriate_company_methods_use_reported_metric(sector, method, 
     for case in paths["cases"]:
         case.update(margins=["0.1" if method == "fcf_exit" else "1"] * 5,
                     cash_conversion=["0.8" if method == "fcf_exit" else "1"] * 5,
-                    reinvestment=["0.25" if method == "fcf_exit" else "0"] * 5)
+                    reinvestment=["0.25" if method == "fcf_exit" else "0"] * 5,
+                    return_on_equity=["0"] * 5 if method == "book_exit" else None)  # zero ROE: book value stays flat
     response, _ = run_stock(research=source, paths=paths)
     assert response.status_code == 200, response.text
     assert response.json()["stock"]["cases"][1]["terminal_price"] == expected
@@ -296,7 +297,7 @@ def test_dilution_changes_terminal_shares_and_exit_sensitivity():
     case = response.json()["stock"]["cases"][1]
     assert case["terminal_shares"] == "20"
     assert case["terminal_price"] == "50"
-    assert case["required_exit_multiple"] == "20"
+    assert case["required_exit_multiple"] == "32.21"  # price 100 x 1.1^5 / year-5 EPS 5
     assert case["sensitivity_prices"] == ["40", "50", "60"]
 
 
@@ -324,10 +325,12 @@ def test_financial_company_payout_uses_roe_earnings_instead_of_book_capital():
     response, _ = run_stock(research=source, paths=paths)
     assert response.status_code == 200, response.text
     case = response.json()["stock"]["cases"][1]
-    # Book/share = 20; annual earnings/share = 20 * 0.1 = 2.
-    # Annual dividend = 1; exit = 20. Ten shares convert at 1.3 CAD/USD.
-    assert case["terminal_price"] == "20"
-    assert case["known_terminal_value"] == "325"
+    # Book/share = 20; ROE 10% with half paid out retains 5%, so book/share compounds to 20 x 1.05^5 = 25.5256.
+    # Dividends are half of each year's earnings on opening book: 1 + 1.05 + ... + 1.05^4 = 5.52563.
+    # Exit at 1x book = 25.5256; (25.52563 + 5.52563) x ten shares x 1.3 CAD/USD = 403.67.
+    assert case["terminal_price"] == "25.5256"
+    assert case["known_terminal_value"] == "403.67"
+    assert [year["book_growth"] for year in case["path"]] == ["0.05"] * 5 and case["path"][0]["retention"] == "0.5"
 
 
 def test_missing_roe_does_not_turn_book_capital_into_dividends():
@@ -344,3 +347,210 @@ def test_missing_roe_does_not_turn_book_capital_into_dividends():
     assert result["stock"]["cases"][1]["known_terminal_value"] is None
     assert "Return on equity is unknown" in str(result["stock"]["cases"][1])
     assert result["recommendation"]["preferred_action"] == "wait_for_inputs"
+
+
+def test_stock_analysis_turns_expose_comparison_inputs_and_align_drivers():
+    from analyst.research import ReviewedResearchProvider
+    from analyst.schemas import CompanyResearch
+    request = stock_comparison_request()
+    # Misalign the driver position_id to test orchestration normalization
+    judgments = stock_comparison_judgments(request)
+    for alt in judgments["alternatives"]:
+        if alt["alternative_id"] == "company":
+            for case in alt["cases"]:
+                for driver in case["drivers"]:
+                    driver["position_id"] = "guessed_company_id"
+        elif alt["alternative_id"] == "cash":
+            for case in alt["cases"]:
+                for driver in case["drivers"]:
+                    driver["position_id"] = "guessed_cash_id"
+
+    turns = [
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("sec", "get_sec_filings", "{}")]),
+        ModelTurn(calls=[ToolCall("issuer", "get_issuer_material", "{}")]),
+        ModelTurn(calls=[ToolCall("company", "calculate_company_cases", json.dumps(company_judgments()))]),
+        ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(judgments))]),
+        ModelTurn(answer=stock_answer()),
+    ]
+    model = ScriptedModel(turns)
+    response = TestClient(create_app(model=model, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))).post(
+        "/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert "comparison" in result
+    assert result["comparison"]["starting_value"] == "1950"
+    # Verify comparison_inputs were exposed to model before calculate_comparison turn
+    company_turn_context = str(model.requests[-2])
+    assert "comparison_inputs" in company_turn_context
+    assert "p1" in company_turn_context
+    assert "c1" in company_turn_context
+
+
+def test_retained_stock_fx_is_synchronized_with_company_cases():
+    from analyst.research import ReviewedResearchProvider
+    from analyst.schemas import CompanyResearch
+    request = stock_comparison_request()
+    judgments = stock_comparison_judgments(request)
+    # Intentionally vary the fx_multipliers in comparison judgments from the company cases
+    for alt in judgments["alternatives"]:
+        if alt["alternative_id"] == "keep":
+            for case in alt["cases"]:
+                for driver in case["drivers"]:
+                    if driver["position_id"] == "p1":
+                        driver["fx_multipliers"] = ["1.05", "1.10", "1.15", "1.20", "1.25"]
+
+    turns = [
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("sec", "get_sec_filings", "{}")]),
+        ModelTurn(calls=[ToolCall("issuer", "get_issuer_material", "{}")]),
+        ModelTurn(calls=[ToolCall("company", "calculate_company_cases", json.dumps(company_judgments()))]),
+        ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(judgments))]),
+        ModelTurn(answer=stock_answer()),
+    ]
+    model = ScriptedModel(turns)
+    response = TestClient(create_app(model=model, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))).post(
+        "/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert "comparison" in result
+    keep_alt = next(a for a in result["comparison"]["alternatives"] if a["selection"]["kind"] == "no_action")
+    p1_driver = next(d for d in keep_alt["cases"][1]["judgment"]["drivers"] if d["position_id"] == "p1")
+    # FX multipliers were synchronized to match the company case (["1"] * 5)
+    assert p1_driver["fx_multipliers"] == ["1", "1", "1", "1", "1"]
+
+
+def test_stock_analysis_reprompts_if_model_answers_before_calculate_comparison():
+    from analyst.research import ReviewedResearchProvider
+    from analyst.schemas import CompanyResearch
+    request = stock_comparison_request()
+    judgments = stock_comparison_judgments(request)
+    turns = [
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("sec", "get_sec_filings", "{}")]),
+        ModelTurn(calls=[ToolCall("issuer", "get_issuer_material", "{}")]),
+        ModelTurn(calls=[ToolCall("company", "calculate_company_cases", json.dumps(company_judgments()))]),
+        # Model prematurely answers without calling calculate_comparison
+        ModelTurn(answer=stock_answer(), continuation=[{"role": "assistant", "content": "Premature answer"}]),
+        # Model is reprompted by the pipeline and now calls calculate_comparison
+        ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(judgments))]),
+        ModelTurn(answer=stock_answer()),
+    ]
+    model = ScriptedModel(turns)
+    response = TestClient(create_app(model=model, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))).post(
+        "/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["comparison"] is not None
+    # Check that reprompt message was sent to the model
+    reprompt_request = model.requests[5]
+    assert any("Selected alternatives require calculated conditional cases before answering" in item.get("content", "") for item in reprompt_request)
+
+
+def test_stock_analysis_idempotent_tool_calls_and_research_reprompt():
+    from analyst.research import ReviewedResearchProvider
+    from analyst.schemas import CompanyResearch
+    request = stock_comparison_request()
+    judgments = stock_comparison_judgments(request)
+    turns = [
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("sec1", "get_sec_filings", "{}")]),
+        ModelTurn(calls=[ToolCall("issuer1", "get_issuer_material", "{}")]),
+        # Premature answer after primary research completed
+        ModelTurn(answer=stock_answer(), continuation=[{"role": "assistant", "content": "I reviewed the filings."}]),
+        # Reprompt should say primary research is already complete and instruct calculate_company_cases
+        # Model repeats sec filing call and then proceeds with calculate_company_cases
+        ModelTurn(calls=[ToolCall("sec2", "get_sec_filings", "{}")]),
+        ModelTurn(calls=[ToolCall("company1", "calculate_company_cases", json.dumps(company_judgments()))]),
+        # Duplicate company cases call is idempotent
+        ModelTurn(calls=[ToolCall("company2", "calculate_company_cases", json.dumps(company_judgments()))]),
+        # Comparison call
+        ModelTurn(calls=[ToolCall("comparison1", "calculate_comparison", json.dumps(judgments))]),
+        # Duplicate comparison call is idempotent
+        ModelTurn(calls=[ToolCall("comparison2", "calculate_comparison", json.dumps(judgments))]),
+        ModelTurn(answer=stock_answer()),
+    ]
+    model = ScriptedModel(turns)
+    response = TestClient(create_app(model=model, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))).post(
+        "/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["comparison"] is not None
+    # Check that reprompt message told the model that primary research is already complete
+    reprompt_request = model.requests[4]
+    assert any("Primary research is already complete. You MUST now call calculate_company_cases" in item.get("content", "") for item in reprompt_request)
+
+
+def test_stock_forced_tool_forces_calculate_company_cases_after_multiple_premature_answers():
+    """Regression: model giving multiple premature answers during stock analysis (WF2) must not
+    exhaust the loop. forced_tool='calculate_company_cases' ensures the model is directed to the
+    right tool on each reprompt turn. Previously this failed with 'Model exceeded the bounded
+    portfolio review loop' after 12 turns. Now succeeds with increased budget (16) + forced_tool."""
+    from analyst.research import ReviewedResearchProvider
+    from analyst.schemas import CompanyResearch
+    request = stock_comparison_request()
+    judgments = stock_comparison_judgments(request)
+    # Simulate model answering prematurely 3 times before calling calculate_company_cases.
+    turns = [
+        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
+        ModelTurn(calls=[ToolCall("sec1", "get_sec_filings", "{}")]),
+        ModelTurn(calls=[ToolCall("issuer1", "get_issuer_material", "{}")]),
+        # 3 consecutive premature answers — previously would exhaust 12-turn budget
+        ModelTurn(answer=stock_answer()),
+        ModelTurn(answer=stock_answer()),
+        ModelTurn(answer=stock_answer()),
+        # Finally calls the required tool on forced reprompt
+        ModelTurn(calls=[ToolCall("company1", "calculate_company_cases", json.dumps(company_judgments()))]),
+        ModelTurn(calls=[ToolCall("comparison1", "calculate_comparison", json.dumps(judgments))]),
+        ModelTurn(answer=stock_answer()),
+    ]
+    model = ScriptedModel(turns)
+    response = TestClient(create_app(model=model, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))).post(
+        "/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["comparison"] is not None
+
+
+def test_explanatory_stock_prose_may_quote_figures_and_periods():
+    from analyst.pipeline import InvalidReview, validate_prose
+    # Ordinary explanation of reported figures and periods is allowed in Stock Analysis prose.
+    validate_prose("ROE was 14.3% for fiscal 2025 and 15.2% annualized in the latest quarter; book value per share is 65.14.", explanatory=True)
+    validate_prose("A brief history of one quarter and one fiscal year cannot settle where the credit cycle stands.", stock=True, explanatory=True)
+    validate_prose("Credit losses could reduce earnings by 10% in a downturn.", stock=True, explanatory=True)
+    # Probabilities, guarantees, all-your-cash and numeric trade sizing still fail.
+    for prose in ("The base case has a probability of fifty percent.", "Returns are guaranteed.", "Move all your cash into the bank.",
+                  "Add 30% to the position.", "Sell half of the holding.", "Buy 100 shares."):
+        with pytest.raises(InvalidReview):
+            validate_prose(prose, stock=True, explanatory=True)
+    # Outside Stock Analysis the strict rule is unchanged.
+    with pytest.raises(InvalidReview):
+        validate_prose("ROE was 14.3% in the latest quarter.")
+
+
+@pytest.mark.parametrize("reason,ok", [
+    ("No earnings-call transcript was available, so management tone is unknown.", True),
+    ("A transcript could change the view on credit quality.", True),
+    ("The transcript says management expects lower credit losses.", False),
+    ("Transcript Q&A was reviewed and confirms the thesis.", False),
+])
+def test_transcript_mentions_versus_claims(reason, ok):
+    answer = stock_answer()
+    answer["reason"] = reason
+    response, _ = run_stock(answer=answer)
+    assert (response.status_code == 200) is ok, response.text
+
+
+def test_stray_citation_is_removed_but_fabricated_evidence_fails():
+    answer = stock_answer()
+    answer["evidence_ids"] = [*answer["evidence_ids"], "quote-p1"]
+    response, _ = run_stock(answer=answer)
+    assert response.status_code == 200, response.text
+    recommendation = response.json()["recommendation"]
+    assert "quote-p1" not in recommendation["evidence_ids"] and recommendation["preferred_action"] == "hold"
+    assert "A citation to a document not available to this analysis was removed." in recommendation["uncertainty"]

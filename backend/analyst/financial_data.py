@@ -1,15 +1,71 @@
 """Dated financial-source boundary. No model supplies identities, prices or rates."""
 
+import asyncio
 import json
 import os
-from datetime import UTC, date, datetime
+import re
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, localcontext
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Literal, Protocol
+from zoneinfo import ZoneInfo
 
 import httpx
+from dotenv import load_dotenv
 
-from .schemas import FX, FinancialEvidence, Identity, Position, Quote, Snapshot, SponsorHoldings
+from .schemas import (
+    CANADIAN_LISTINGS,
+    FX,
+    US_LISTINGS,
+    FinancialEvidence,
+    Identity,
+    Position,
+    Quote,
+    Snapshot,
+    SourceQualification,
+    SponsorHoldings,
+)
+
+# A provider price or rate dated more than this many days before the snapshot is not used.
+# Covers weekends, holidays and the Bank of Canada's once-daily publication; values keep their own date.
+RECENT_DAYS = 7
+EODHD_URL = "https://eodhd.com/api"
+EODHD_SOURCE = "EODHD"
+SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
+SEC_LISTINGS = {"Nasdaq": "XNAS", "NYSE": "XNYS"}
+SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+# What a registrant files says what it is: an investment company (ETF/fund/unit trust) or an operating company.
+FUND_FORMS = {"N-CEN", "NPORT-P", "N-CSR", "N-CSRS", "485BPOS", "485APOS", "24F-2NT", "N-30D", "N-1A", "N-8A"}
+OPERATING_FORMS = {"10-K", "10-Q", "20-F", "40-F", "6-K", "8-K"}
+# Commodity pools (SIC 6221, such as gold trusts) file 10-Ks like companies but trade as ETPs: SEC cannot say which.
+SEC_UNCLEAR_SIC = {"6221"}
+# EODHD exchange codes. All US listings share "US"; SEC supplies the exact US exchange.
+EODHD_LISTINGS = {"TO": "XTSE", "V": "XTSX", "NEO": "NEOE", "CN": "XCNQ"}
+EODHD_CODE = {**{listing: code for code, listing in EODHD_LISTINGS.items()}, "XNAS": "US", "XNYS": "US", "XASE": "US"}
+SUFFIX = {"XTSE": ".TO", "XTSX": ".V", "NEOE": ".NE", "XCNQ": ".CN"}
+# Chosen by the user on 2026-10-07: EODHD free plan, personal use, 20 requests a day.
+EODHD_QUALIFICATION = SourceQualification(
+    source=EODHD_SOURCE, terms_url="https://eodhd.com/financial-apis/terms-conditions",
+    checked_on=date(2026, 10, 7), personal_use_permitted=True, covered_listings=sorted(EODHD_CODE))
+# Chosen by the user on 2026-10-08 after a live acceptance test: Yahoo Finance through the unofficial
+# yfinance library is the zero-cost primary quote source; EODHD remains the fallback. Not exchange data.
+YAHOO_SOURCE = "Yahoo Finance via yfinance (unofficial, not exchange data)"
+YAHOO_QUALIFICATION = SourceQualification(
+    source=YAHOO_SOURCE, terms_url="https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html",
+    checked_on=date(2026, 10, 8), personal_use_permitted=True, covered_listings=sorted(EODHD_CODE))
+# OpenFIGI identifies securities only; never prices, fundamentals, filings, FX or research. It lists every trading
+# venue (a Nasdaq stock also has NYSE and Arca rows), so only the country composites ("US", "CN") name a security.
+# Bloomberg's Nasdaq tier codes appear only for Nasdaq-listed securities; no other code is trusted to fix a listing.
+OPENFIGI_URL = "https://api.openfigi.com/v3/mapping"
+FIGI_SIDES = {"US": ("USD", US_LISTINGS), "CN": ("CAD", CANADIAN_LISTINGS)}
+NASDAQ_TIERS = {"UW", "UQ", "UR"}
+FIGI_FIELDS = ("ticker", "name", "exchCode", "securityType", "securityType2", "figi", "compositeFIGI", "shareClassFIGI")
+MARKET_TIME = ZoneInfo("America/New_York")
+PRICE_PLACES = Decimal("0.0000000001")
+# Yahoo symbol -> {"price", "currency", "time" (epoch seconds), "history": [(ISO date, close)]}; absent when not returned.
+YahooFetch = Callable[[list[str]], dict[str, dict[str, Any]]]
 
 
 class FinancialProvider(Protocol):
@@ -19,21 +75,126 @@ class FinancialProvider(Protocol):
     async def sponsor_holdings(self, position: Position, as_of: date) -> SponsorHoldings | None: ...
 
 
-class PersonalFinancialProvider:
-    """Backend-owned reviewed reference file, broker fallback and optional Valet FX.
+class QuoteUnavailable(ValueError):
+    """No usable price for this holding; the message says why."""
 
-    yfinance is intentionally not enabled: library availability does not establish
-    coverage or permission to fetch/reuse Yahoo prices for this application.
+
+class SourceLimit(ValueError):
+    """The market-data plan refused the request: daily limit used up or symbol not covered."""
+
+
+NOT_CACHED = "No price in the market-data cache yet; use Refresh prices."
+
+
+def legal_name(name: str) -> str:
+    """Comparable issuer name: SEC's /STATE/ suffix, case and punctuation removed."""
+    return re.sub(r"[^a-z0-9]+", " ", re.sub(r"/[A-Za-z]+/?", "", name).lower()).strip()
+
+
+def eodhd_symbol(position: Position) -> str | None:
+    code = EODHD_CODE.get(position.listing or "")
+    return f"{position.ticker}.{code}" if code and position.ticker and position.kind != "cash" else None
+
+
+def yahoo_symbol(position: Position) -> str | None:
+    """US tickers as-is, Canadian ones with their exchange suffix (CM -> CM.TO); share classes use a dash."""
+    if eodhd_symbol(position) is None or position.ticker is None:
+        return None
+    return position.ticker.replace(".", "-") + SUFFIX.get(position.listing or "", "")
+
+
+def yahoo_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    """One Yahoo chart request per symbol, run in parallel: latest price, currency, quote time and a month of daily closes.
+
+    yfinance has no multi-symbol quote call; yf.download is this same per-symbol fan-out but drops currency and time.
+    A symbol that errors or returns nothing is left out, so the caller can fall back for it.
+    """
+    import yfinance as yf  # type: ignore[import-untyped]
+
+    def one(symbol: str) -> dict[str, Any]:
+        ticker = yf.Ticker(symbol)
+        closes = ticker.history(period="1mo", interval="1d", auto_adjust=False)["Close"].dropna()
+        meta = ticker.get_history_metadata()
+        stamp = meta.get("regularMarketTime")  # a pandas Timestamp in yfinance 1.x
+        return {"price": meta.get("regularMarketPrice"), "currency": meta.get("currency"),
+                "time": int(stamp.timestamp()) if hasattr(stamp, "timestamp") else stamp,
+                "history": [(day.date().isoformat(), float(close)) for day, close in closes.items()]}
+
+    found: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for symbol, future in [(symbol, pool.submit(one, symbol)) for symbol in symbols]:
+            try:
+                row = future.result()
+            except Exception:  # noqa: BLE001 - any yfinance failure means "no quote", and the caller falls back
+                continue
+            if row["price"] is not None or row["history"]:
+                found[symbol] = row
+    return found
+
+
+class QuoteCache:
+    """The last fetched quote per symbol (EODHD-style key: AVGO.US, CM.TO), in one local JSON file. Analysis reads only this.
+
+    Daily closes from the same refresh sit beside it in history.json; nothing reads them yet. OpenFIGI identity
+    rows sit in identities.json.
+    """
+
+    def __init__(self, directory: Path | str | None = None) -> None:
+        self.directory = Path(directory or os.environ.get("MARKET_DATA_DIR") or Path(__file__).resolve().parents[1] / "data" / "market")
+        self.path = self.directory / "quotes.json"
+
+    def get(self) -> dict[str, Quote]:
+        if not self.path.exists():
+            return {}
+        return {symbol: Quote.model_validate(row) for symbol, row in json.loads(self.path.read_text(encoding="utf-8")).items()}
+
+    def put(self, quotes: dict[str, Quote]) -> None:
+        merged = {**self.get(), **quotes}
+        self.directory.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({symbol: row.model_dump(mode="json") for symbol, row in merged.items()}, indent=2), encoding="utf-8")
+        temporary.replace(self.path)
+
+    def read(self, name: str) -> dict[str, Any]:
+        """A side file in the same directory: "history" (daily closes) or "identities" (OpenFIGI rows by ticker)."""
+        path = self.directory / f"{name}.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    def merge(self, name: str, rows: dict[str, Any]) -> None:
+        merged = {**self.read(name), **rows}
+        self.directory.mkdir(parents=True, exist_ok=True)
+        temporary = self.directory / f"{name}.tmp"
+        temporary.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+        temporary.replace(self.directory / f"{name}.json")
+
+
+class PersonalFinancialProvider:
+    """Reviewed reference file first, then SEC and EODHD identity, cached quotes and Valet FX.
+
+    EODHD is never primary-source verification: only an SEC registrant match verifies an issuer.
+    Quotes come only from the local cache, which refresh_quotes fills at most once per symbol per day
+    unless the user forces a refresh: yfinance first, EODHD for whatever yfinance misses. yfinance is
+    used for quotes and daily closes only, never identity, FX, filings or holdings.
     """
 
     def __init__(self, reference: FinancialEvidence | None = None, *, valet: bool = False,
-                 transport: httpx.AsyncBaseTransport | None = None) -> None:
+                 transport: httpx.AsyncBaseTransport | None = None, eodhd_key: str = "", sec_agent: str = "",
+                 cache: QuoteCache | None = None, yahoo: YahooFetch | None = None, openfigi: bool = False,
+                 openfigi_key: str = "") -> None:
         self.reference = reference or FinancialEvidence()
         self.valet = valet
         self.transport = transport
+        self.eodhd_key = eodhd_key
+        self.sec_agent = sec_agent
+        self.cache = cache
+        self.yahoo = yahoo
+        self.openfigi = openfigi
+        self.openfigi_key = openfigi_key
+        self._sec: tuple[dict[str, tuple[int, str, str]], dict[str, int]] | None = None
 
     @classmethod
     def from_environment(cls) -> "PersonalFinancialProvider":
+        load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
         path = os.environ.get("FINANCIAL_REFERENCE_FILE")
         reference = FinancialEvidence.model_validate_json(Path(path).read_text(encoding="utf-8")) if path else None
         holdings_path = os.environ.get("SPONSOR_HOLDINGS_REFERENCE_FILE")
@@ -43,18 +204,331 @@ class PersonalFinancialProvider:
                 reference = FinancialEvidence()
             for key, val in extra.items():
                 reference.sponsor_holdings[key] = SponsorHoldings.model_validate(val) if val else None
-        return cls(reference, valet=os.environ.get("BOC_FX_ENABLED", "false").lower() == "true")
+        return cls(reference, valet=os.environ.get("BOC_FX_ENABLED", "true").lower() == "true",
+                   eodhd_key=os.environ.get("EODHD_API_KEY", ""), sec_agent=os.environ.get("SEC_USER_AGENT", ""),
+                   cache=QuoteCache(), yahoo=yahoo_quotes if os.environ.get("YFINANCE_ENABLED", "true").lower() == "true" else None,
+                   openfigi=os.environ.get("OPENFIGI_ENABLED", "true").lower() == "true", openfigi_key=os.environ.get("OPENFIGI_API_KEY", ""))
+
+    async def _get(self, url: str, params: dict[str, str], headers: dict[str, str] | None = None) -> Any:
+        async with httpx.AsyncClient(transport=self.transport, timeout=20, headers=headers) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            return response.json()
+
+    async def _eodhd(self, path: str, **params: str) -> Any:
+        # The key travels only in the request; never put it in a source URL, issue or log.
+        try:
+            return await self._get(f"{EODHD_URL}/{path}", {**params, "api_token": self.eodhd_key, "fmt": "json"})
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code in {402, 403, 429}:
+                raise SourceLimit from None
+            raise
+
+    async def remaining_calls(self) -> int | None:
+        """Requests left today on the EODHD plan. The /user call itself is not counted by EODHD."""
+        try:
+            user = await self._eodhd("user")
+            used = int(user["apiRequests"]) if user.get("apiRequestsDate") == datetime.now(UTC).date().isoformat() else 0
+            return max(int(user["dailyRateLimit"]) - used, 0)
+        except (*SOURCE_ERRORS, SourceLimit, AttributeError):
+            return None
+
+    async def _sec_index(self) -> tuple[dict[str, tuple[int, str, str]], dict[str, int]]:
+        """SEC registrants by US ticker and by unique legal name. Free; costs no EODHD calls."""
+        if self._sec is None:
+            payload = await self._get(SEC_TICKERS_URL, {}, {"User-Agent": self.sec_agent}) if self.sec_agent else {}
+            fields = payload.get("fields", []) if isinstance(payload, dict) else []
+            tickers: dict[str, tuple[int, str, str]] = {}
+            names: dict[str, set[int]] = {}
+            if fields[:4] == ["cik", "name", "ticker", "exchange"]:
+                for cik, name, ticker, exchange in (row[:4] for row in payload.get("data", [])):
+                    names.setdefault(legal_name(str(name)), set()).add(int(cik))
+                    if exchange in SEC_LISTINGS and ticker not in tickers:
+                        tickers[ticker] = (int(cik), str(name), SEC_LISTINGS[exchange])
+            self._sec = tickers, {name: next(iter(ciks)) for name, ciks in names.items() if len(ciks) == 1}
+        return self._sec
+
+    async def _sec_safe(self) -> tuple[dict[str, tuple[int, str, str]], dict[str, int]]:
+        try:
+            return await self._sec_index()
+        except SOURCE_ERRORS:
+            self._sec = None
+            return {}, {}  # SEC unavailable: identities stay supplied, never verified
+
+    async def lookup(self, ticker: str, listing: str | None, currency: str | None, as_of: date) -> list[Identity]:
+        """Every listing matching what the user gave. More than one means ask; none leaves it unknown.
+
+        SEC answers US operating companies for free. A ticker SEC lists for an investment company (an ETF or
+        unit trust such as SPY) keeps SEC's name but is an ETF; its exchange, which SEC's file does not give
+        reliably for funds, comes from OpenFIGI. When SEC cannot establish the security, OpenFIGI (free, cached)
+        is asked next; if it cannot name a Canadian listing or a type, EODHD search (one call) fills in.
+        Whatever is still missing is asked of the user.
+        """
+        tickers, names = await self._sec_safe()
+        now = datetime.now(UTC)
+        want_us = listing in US_LISTINGS or listing is None and currency in {None, "USD"}
+        want_ca = listing in EODHD_LISTINGS.values() or listing is None and currency in {None, "CAD"}
+        found: list[Identity] = []
+        sec = tickers.get(ticker) if want_us else None
+        sec_kind = await self._sec_kind(sec[0]) if sec else None
+        if sec and sec_kind == "stock" and listing in {None, sec[2]}:
+            found.append(Identity(status="verified", ticker=ticker, listing=sec[2], currency="USD", kind="stock",
+                                  company_id=f"CIK{sec[0]:010d}", company_name=sec[1], source=f"SEC registrant CIK{sec[0]:010d}",
+                                  source_url=SEC_TICKERS_URL, as_of=as_of, captured_at=now))
+        sides = {side for side, wanted in (("US", want_us and not found), ("CN", want_ca)) if wanted}
+        figi: list[Identity] = []
+        if sides and not found:  # SEC could not establish it
+            figi = self._figi_identities(ticker, await self._openfigi(ticker) or [], sides, listing, tickers, as_of, now)
+            if sec and sec_kind == "etf":
+                figi = self._sec_fund(sec, figi, ticker, listing, as_of, now)
+            # EODHD's US search names no exchange, so a typed US row without one can only be asked of the user.
+            if figi and all(row.kind and (row.listing or row.currency == "USD") for row in figi):
+                return figi
+        exchange = EODHD_CODE.get(listing or "") or ("TO" if want_ca else "US")
+        if not self.eodhd_key or not (want_ca or want_us and not found):
+            return found + figi
+        try:
+            rows = await self._eodhd(f"search/{ticker}", exchange=exchange, limit="10")
+        except (*SOURCE_ERRORS, SourceLimit):
+            return found + figi
+        searched = len(found)
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or row.get("Code") != ticker or row.get("Exchange") != exchange:
+                continue
+            quoted = str(row.get("Currency") or "")
+            if len(quoted) != 3 or currency and quoted != currency:
+                continue
+            kinds: dict[str, Literal["stock", "etf"]] = {"etf": "etf", "common stock": "stock", "preferred stock": "stock"}
+            kind = kinds.get(str(row.get("Type") or "").lower())
+            name = str(row.get("Name") or ticker)
+            cik = names.get(legal_name(name)) if kind == "stock" and exchange != "US" else None
+            identity = Identity(status="supplied", ticker=ticker, listing=EODHD_LISTINGS.get(exchange), currency=quoted,
+                                kind=kind, company_name=name, source=f"{EODHD_SOURCE} search {ticker}.{exchange}",
+                                source_url=f"{EODHD_URL}/search/{ticker}?exchange={exchange}", as_of=as_of, captured_at=now,
+                                company_id=None if kind != "stock" else f"CIK{cik:010d}" if cik else f"ISIN-{row['ISIN']}" if row.get("ISIN") else None)
+            if cik is not None:
+                identity = identity.model_copy(update={"status": "verified", "source": f"SEC registrant CIK{cik:010d}; {identity.source}"})
+            found.append(identity)
+        # EODHD rows replace OpenFIGI's incomplete rows for the side it searched; the other side's rows stay.
+        side_currency = "USD" if exchange == "US" else "CAD"
+        return found + [row for row in figi if len(found) == searched or row.listing and row.kind or row.currency != side_currency]
+
+    async def _sec_kind(self, cik: int) -> Literal["stock", "etf"] | None:
+        """What SEC's own records say a registrant is: "etf" for an investment company, "stock" for an operating
+        company, None when they do not say clearly or SEC is unreachable. Cached per CIK once known."""
+        key = f"CIK{cik:010d}"
+        cached = self.cache.read("sec_entities").get(key) if self.cache else None
+        if cached:
+            return cached["kind"]  # type: ignore[no-any-return]
+        try:
+            entity = await self._get(SEC_SUBMISSIONS_URL.format(cik=cik), {}, {"User-Agent": self.sec_agent})
+            forms = set(entity["filings"]["recent"]["form"])
+        except (*SOURCE_ERRORS, AttributeError):
+            return None
+        fund = entity.get("entityType") == "investment" or not entity.get("sic") and forms & FUND_FORMS and not forms & OPERATING_FORMS
+        operating = entity.get("sic") not in {None, "", *SEC_UNCLEAR_SIC} and forms & OPERATING_FORMS and not forms & FUND_FORMS
+        kind: Literal["stock", "etf"] | None = "etf" if fund else "stock" if operating else None
+        if kind and self.cache:
+            self.cache.merge("sec_entities", {key: {"kind": kind, "name": entity.get("name"), "entity_type": entity.get("entityType"),
+                                                    "sic": entity.get("sic"), "captured_at": datetime.now(UTC).isoformat()}})
+        return kind
+
+    @staticmethod
+    def _sec_fund(sec: tuple[int, str, str], figi: list[Identity], ticker: str, listing: str | None,
+                  as_of: date, now: datetime) -> list[Identity]:
+        """An SEC investment company: SEC's name and the ETF type win; OpenFIGI's US rows supply the listing, if any."""
+        source = f"SEC investment company CIK{sec[0]:010d}"
+        us = [row.model_copy(update={"kind": "etf", "company_name": sec[1], "company_id": None, "status": "supplied",
+                                     "source": f"{source}; {row.source}"}) for row in figi if row.currency == "USD"]
+        if not us:
+            us = [Identity(status="supplied", ticker=ticker, listing=listing if listing in US_LISTINGS else None, currency="USD",
+                           kind="etf", company_name=sec[1], source=source, source_url=SEC_SUBMISSIONS_URL.format(cik=sec[0]),
+                           as_of=as_of, captured_at=now)]
+        return us + [row for row in figi if row.currency != "USD"]
+
+    async def _openfigi(self, ticker: str) -> list[dict[str, str]] | None:
+        """OpenFIGI equity rows for one ticker: country composites and Nasdaq tiers only. None when off or failed.
+
+        Matches are cached for good; a no-match is cached for the day, so normal loads do not call again.
+        """
+        if not self.openfigi:
+            return None
+        cached = self.cache.read("identities").get(ticker) if self.cache else None
+        if cached and (cached["rows"] or cached["captured_at"][:10] == datetime.now(UTC).date().isoformat()):
+            return list(cached["rows"])
+        headers = {"X-OPENFIGI-APIKEY": self.openfigi_key} if self.openfigi_key else None
+        job = {"idType": "TICKER", "idValue": ticker.replace(".", "/"), "marketSecDes": "Equity"}
+        try:
+            async with httpx.AsyncClient(transport=self.transport, timeout=20, headers=headers) as client:
+                response = await client.post(OPENFIGI_URL, json=[job])
+                response.raise_for_status()
+                [answer] = response.json()
+            if "error" in answer:
+                return None
+            rows = [{field: str(row.get(field) or "") for field in FIGI_FIELDS} for row in answer.get("data", [])
+                    if row.get("exchCode") in {*FIGI_SIDES, *NASDAQ_TIERS}]
+        except (*SOURCE_ERRORS, AttributeError):
+            return None  # a 429 or an outage is not cached; the next load retries
+        if self.cache:
+            self.cache.merge("identities", {ticker: {"captured_at": datetime.now(UTC).isoformat(), "rows": rows}})
+        return rows
+
+    @staticmethod
+    def _figi_identities(ticker: str, rows: list[dict[str, str]], sides: set[str], listing: str | None,
+                         tickers: dict[str, tuple[int, str, str]], as_of: date, now: datetime) -> list[Identity]:
+        """One identity per OpenFIGI composite security on a wanted side. The listing is the user's, or XNAS from a
+        Nasdaq tier code; otherwise unknown. Currency follows the side and never changes the user's."""
+        found: list[Identity] = []
+        kinds: dict[str, Literal["stock", "etf"]] = {"Common Stock": "stock", "Preferred Stock": "stock"}
+        for row in rows:
+            if row["exchCode"] not in sides:
+                continue
+            currency, listings = FIGI_SIDES[row["exchCode"]]
+            nasdaq = row["exchCode"] == "US" and any(other["exchCode"] in NASDAQ_TIERS and other["compositeFIGI"] == row["compositeFIGI"]
+                                                     for other in rows)
+            known = "XNAS" if nasdaq else None
+            if listing is not None and (listing not in listings or known not in {None, listing}):
+                continue
+            kind = "etf" if row["securityType"] == "ETP" else kinds.get(row["securityType2"])
+            # A Canadian share class that is also a US composite links to the SEC registrant of that US ticker.
+            us = next((other for other in rows if other["exchCode"] == "US" and other["shareClassFIGI"] == row["shareClassFIGI"]), None)
+            sec = tickers.get(us["ticker"]) if kind == "stock" and us and row["shareClassFIGI"] else None
+            share_class = row["shareClassFIGI"] or row["compositeFIGI"]
+            found.append(Identity(
+                status="verified" if sec else "supplied", ticker=ticker, listing=listing or known, currency=currency, kind=kind,
+                company_id=f"CIK{sec[0]:010d}" if sec else f"FIGI-{share_class}" if kind == "stock" else None,
+                company_name=sec[1] if sec else row["name"], source_url=OPENFIGI_URL, as_of=as_of, captured_at=now,
+                source=(f"SEC registrant CIK{sec[0]:010d}; " if sec else "") + f"OpenFIGI {row['compositeFIGI']} (share class {share_class})"))
+        return found
 
     async def identity(self, position: Position, as_of: date) -> Identity:
-        return self.reference.identities.get(position.id) or Identity(
+        """The identity resolved at import, re-checked against SEC only. Costs no EODHD calls."""
+        reference = self.reference.identities.get(position.id)
+        if reference is not None:
+            return reference
+        identity = Identity(
             status="supplied", ticker=position.ticker, listing=position.listing,
             currency=position.currency, kind=position.kind if position.kind != "cash" else None,
             company_id=position.company_id, company_name=position.company_name,
-            source="User-supplied listing identity", as_of=as_of,
+            source="Imported listing identity" if position.company_name else "User-supplied listing identity", as_of=as_of,
         )
+        if position.kind == "stock" and position.ticker and position.listing and position.company_name and position.company_id:
+            tickers, names = await self._sec_safe()
+            sec = tickers.get(position.ticker)
+            cik = (sec[0] if sec and sec[2] == position.listing else None) if position.listing in US_LISTINGS else names.get(legal_name(position.company_name))
+            if cik is not None and position.company_id == f"CIK{cik:010d}":
+                identity = identity.model_copy(update={"status": "verified", "source": f"SEC registrant CIK{cik:010d}",
+                                                       "source_url": SEC_TICKERS_URL, "captured_at": datetime.now(UTC)})
+        return identity
 
     async def quote(self, position: Position, as_of: date) -> Quote | None:
-        return self.reference.quotes.get(position.id)
+        """The cached quote only. Analysis never calls the market-data source."""
+        supplied = self.reference.quotes.get(position.id)
+        symbol = eodhd_symbol(position)
+        if supplied or self.cache is None or symbol is None:
+            return supplied
+        cached = self.cache.get().get(symbol)
+        if cached is None:
+            raise QuoteUnavailable(NOT_CACHED)
+        if cached.captured_at and cached.captured_at.astimezone(MARKET_TIME).date() < datetime.now(MARKET_TIME).date():
+            cached = cached.model_copy(update={"status": "cached"})  # fetched on an earlier day: not today's delayed quote
+        return cached
+
+    async def refresh_quotes(self, positions: list[Position], *, force: bool = False) -> dict[str, Any]:
+        """Fetches each holding's delayed quote at most once per market day: yfinance first, then EODHD within its daily limit."""
+        if self.cache is None:
+            return {"fetched": [], "fresh": [], "skipped": [], "failed": [], "remaining": None, "message": "No market-data cache."}
+        today = datetime.now(MARKET_TIME).date()
+        cached = self.cache.get()
+        wanted = {symbol: position for position in positions if (symbol := eodhd_symbol(position))}
+        fresh = [s for s, row in cached.items() if s in wanted and not force and row.captured_at
+                 and row.captured_at.astimezone(MARKET_TIME).date() == today]
+        due = [symbol for symbol in wanted if symbol not in fresh]
+        result: dict[str, Any] = {"fetched": [], "fresh": fresh, "skipped": [], "failed": [], "remaining": None, "message": ""}
+        if not due:
+            result["message"] = "Prices already fetched today; no provider calls used."
+            return result
+        yahoo = await self._yahoo_refresh({symbol: wanted[symbol] for symbol in due}) if self.yahoo else {}
+        result["fetched"] = sorted(yahoo)
+        rest = [symbol for symbol in due if symbol not in yahoo]
+        if not rest:
+            result["message"] = "Delayed prices fetched from Yahoo Finance (yfinance)."
+            return result
+        await self._eodhd_refresh(rest, wanted, result)
+        if yahoo:
+            result["message"] = f"{len(yahoo)} priced by Yahoo Finance (yfinance); EODHD fallback for {len(rest)}: {result['message']}"
+        return result
+
+    async def _yahoo_refresh(self, due: dict[str, Position]) -> dict[str, Quote]:
+        """Caches the yfinance quotes it can validate. A failed call, wrong currency or bad price leaves that symbol for EODHD."""
+        assert self.cache is not None and self.yahoo is not None
+        symbols = {yahoo: symbol for symbol, position in due.items() if (yahoo := yahoo_symbol(position))}
+        try:
+            rows = await asyncio.to_thread(self.yahoo, list(symbols))
+        except Exception:  # noqa: BLE001 - yfinance is unofficial; any failure means fall back
+            return {}
+        now = datetime.now(UTC)
+        quotes: dict[str, Quote] = {}
+        history: dict[str, Any] = {}
+        for yahoo, symbol in symbols.items():
+            row, position = rows.get(yahoo), due[symbol]
+            try:
+                assert row is not None and row.get("currency") == position.currency
+                price = Decimal(str(row["price"])).quantize(PRICE_PLACES)
+                traded = datetime.fromtimestamp(int(row["time"]), MARKET_TIME).date()
+                assert price.is_finite() and price > 0
+                closes = {day: str(Decimal(str(close)).quantize(PRICE_PLACES)) for day, close in row.get("history") or []}
+            except (AssertionError, KeyError, TypeError, ValueError, ArithmeticError):
+                continue
+            quotes[symbol] = Quote(value=price, as_of=traded, source=YAHOO_SOURCE, captured_at=now, basis="unadjusted",
+                                   ticker=position.ticker or "", listing=position.listing or "", currency=position.currency,
+                                   status="delayed", qualification=YAHOO_QUALIFICATION)
+            history[symbol] = {"source": YAHOO_SOURCE, "symbol": yahoo, "currency": position.currency, "basis": "unadjusted",
+                               "captured_at": now.isoformat(), "daily_close": closes}
+        self.cache.put(quotes)
+        self.cache.merge("history", history)
+        return quotes
+
+    async def _eodhd_refresh(self, due: list[str], wanted: dict[str, Position], result: dict[str, Any]) -> None:
+        """EODHD real-time for the symbols yfinance missed, within the plan's daily limit. Fills result in place."""
+        assert self.cache is not None
+        if not self.eodhd_key:
+            result.update(skipped=due, message="No EODHD key configured; prices stay unknown.")
+            return
+        remaining = await self.remaining_calls()
+        batch = due if remaining is None else due[:remaining]
+        result["skipped"] = due[len(batch):]
+        if batch:
+            try:
+                rows = await self._eodhd(f"real-time/{batch[0]}", **({"s": ",".join(batch[1:])} if batch[1:] else {}))
+            except SourceLimit:
+                result.update(skipped=due, message="EODHD daily request limit reached; cached prices are kept and new prices wait until tomorrow.")
+                return
+            except SOURCE_ERRORS:
+                result.update(failed=batch, message="EODHD could not be reached; cached prices are kept.")
+                return
+            now = datetime.now(UTC)
+            quotes: dict[str, Quote] = {}
+            for row in rows if isinstance(rows, list) else [rows]:
+                symbol = str(row.get("code")) if isinstance(row, dict) else ""
+                position = wanted.get(symbol)
+                try:
+                    price = Decimal(str(row["close"])).quantize(PRICE_PLACES)
+                    traded = datetime.fromtimestamp(int(row["timestamp"]), MARKET_TIME).date()
+                except (KeyError, TypeError, ValueError, ArithmeticError):
+                    continue
+                if position is None or not price.is_finite() or price <= 0:
+                    continue
+                # EODHD real-time is delayed (about 15-20 minutes); its quote has no currency, the listing's applies.
+                quotes[symbol] = Quote(value=price, as_of=traded, source=EODHD_SOURCE, captured_at=now, basis="unadjusted",
+                                       ticker=position.ticker or "", listing=position.listing or "", currency=position.currency,
+                                       status="delayed", qualification=EODHD_QUALIFICATION)
+            self.cache.put(quotes)
+            result["fetched"] = sorted([*result["fetched"], *quotes])
+            result["failed"] = [symbol for symbol in batch if symbol not in quotes]
+        result["remaining"] = None if remaining is None else remaining - len(batch)
+        result["message"] = (f"{len(result['skipped'])} holdings wait for tomorrow: EODHD daily limit reached." if result["skipped"]
+                             else "Delayed prices fetched." if result["fetched"] else "No prices returned.")
 
     async def sponsor_holdings(self, position: Position, as_of: date) -> SponsorHoldings | None:
         holdings = self.reference.sponsor_holdings.get(position.id)
@@ -77,17 +551,17 @@ class PersonalFinancialProvider:
             return supplied
         foreign = from_currency if to_currency == "CAD" else to_currency
         series = f"FX{foreign}CAD"
-        async with httpx.AsyncClient(transport=self.transport, timeout=10) as client:
-            response = await client.get(
-                f"https://www.bankofcanada.ca/valet/observations/{series}/json",
-                params={"start_date": as_of.isoformat(), "end_date": as_of.isoformat()},
-            )
-            response.raise_for_status()
-            payload = response.json()
-            observations = payload.get("observations", []) if isinstance(payload, dict) else []
-        if not isinstance(observations, list) or len(observations) != 1 or not isinstance(observations[0], dict) or observations[0].get("d") != as_of.isoformat():
+        payload = await self._get(f"https://www.bankofcanada.ca/valet/observations/{series}/json",
+                                  {"start_date": (as_of - timedelta(days=RECENT_DAYS)).isoformat(), "end_date": as_of.isoformat()})
+        observations = payload.get("observations", []) if isinstance(payload, dict) else []
+        # The latest published day on or before the snapshot date, kept with its own date.
+        dated = [row for row in observations if isinstance(row, dict) and isinstance(row.get("d"), str)
+                 and row["d"] <= as_of.isoformat()] if isinstance(observations, list) else []
+        if not dated:
             return None
-        observation = observations[0].get(series, {})
+        latest = max(dated, key=lambda row: str(row["d"]))
+        observed = date.fromisoformat(latest["d"])
+        observation = latest.get(series, {})
         value = observation.get("v") if isinstance(observation, dict) else None
         if value is None:
             return None
@@ -99,7 +573,7 @@ class PersonalFinancialProvider:
             if from_currency == "CAD":
                 rate = (Decimal(1) / rate).quantize(Decimal("0.0000000001"))
         return FX(from_currency=from_currency, to_currency=to_currency, rate=rate,
-                  as_of=as_of, source=f"Bank of Canada Valet {series}" +
+                  as_of=observed, source=f"Bank of Canada Valet {series}" +
                   (" (inverse, rounded to ten decimals)" if from_currency == "CAD" else ""),
                   captured_at=datetime.now(UTC), status="indicative")
 
@@ -150,6 +624,9 @@ async def refresh_financial_data(snapshot: Snapshot, provider: FinancialProvider
         evidence.identities[position.id] = identity
         try:
             quote = await provider.quote(position, snapshot.as_of)
+        except QuoteUnavailable as reason:
+            quote = None
+            evidence.issues.append(f"{position.id}: {reason}")
         except SOURCE_ERRORS:
             quote = None
             evidence.issues.append(f"{position.id}: Price source failed; explicit broker-display fallback used if supplied.")
@@ -164,6 +641,10 @@ async def refresh_financial_data(snapshot: Snapshot, provider: FinancialProvider
             ):
                 evidence.issues.append(f"{position.id}: Price source coverage or terms are unqualified; broker-display fallback used if supplied.")
                 quote = None
+        if quote is not None and quote.as_of > snapshot.as_of:
+            # The cache keeps the latest price only; a price after the valuation date never values an earlier analysis.
+            evidence.issues.append(f"{position.id}: Cached price is dated after the analysis date; not used.")
+            quote = None
         if quote is None and position.mark and identity.ticker and identity.listing:
             quote = Quote(**position.mark.model_dump(), ticker=identity.ticker,
                           listing=identity.listing, currency=position.currency, status="manual")

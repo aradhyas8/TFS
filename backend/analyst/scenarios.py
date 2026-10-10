@@ -37,7 +37,7 @@ BASIS = (
 
 def component(
     row: PositionResult, starting: Decimal | None, driver: ScenarioDriver,
-    reporting_currency: str, fact: FundFacts | None, as_of: date,
+    reporting_currency: str, fact: FundFacts | None, as_of: date, holdings_as_of: date | None = None,
 ) -> ScenarioComponent:
     issues: list[str] = []
     kind = row.supplied.kind
@@ -51,7 +51,7 @@ def component(
             raise ValueError("Reinvested total returns already include income; do not add it twice.")
         if driver.return_basis == "price_only" and driver.income_multipliers is None:
             issues.append("Future income path is unknown; not assumed zero.")
-        if fact is None or fact.as_of != as_of:
+        if fact is None or fact.as_of not in {as_of, holdings_as_of}:
             fact = None
             issues.append("Same-date ETF exposure, costs and income facts are unavailable.")
         if driver.cost_basis == "gross" and (fact is None or fact.annual_cost is None):
@@ -137,7 +137,8 @@ def _calculate(
     for alternative in selection.alternatives:
         ids = selection.scope_position_ids if alternative.kind == "no_action" else [str(alternative.position_id)]
         effect = effects.get(alternative.id)
-        if effect and effect.as_of != portfolio.as_of:
+        # User-entered effects are dated with the holdings they were entered for.
+        if effect and effect.as_of not in {portfolio.as_of, portfolio.holdings_as_of}:
             effect = None
         transaction = effect.transaction_cost if effect else None
         tax = effect.terminal_tax if effect else None
@@ -166,7 +167,7 @@ def _calculate(
                     initial = Decimal(rows[key].value or "0") if starting is not None and rows[key].value is not None else None
                 elif initial is not None and transaction is not None:
                     initial -= transaction
-                computed = component(rows[key], initial, drivers[key], portfolio.reporting_currency, facts.get(key), portfolio.as_of)
+                computed = component(rows[key], initial, drivers[key], portfolio.reporting_currency, facts.get(key), portfolio.as_of, portfolio.holdings_as_of)
                 selected_stock = next((row for row in (stock if isinstance(stock, list) else [stock] if stock else []) if row.position_id == key), None)
                 if selected_stock is not None and rows[key].supplied.kind == "stock":
                     stock_case = next(row for row in selected_stock.cases if row.name == name)
@@ -179,7 +180,7 @@ def _calculate(
                     stock_fx = rows[key].fx_used
                     initial_fx = Decimal(1) if rows[key].supplied.currency == portfolio.reporting_currency else stock_fx.rate if stock_fx else None
                     if quote is not None and quote.value > 0 and initial_fx is not None and initial is not None and stock_case.terminal_reporting_per_share is not None:
-                        computed.known_terminal_value = money(Decimal(stock_case.terminal_reporting_per_share) * initial / (quote.value * initial_fx))
+                        computed.known_terminal_value = money((Decimal(stock_case.terminal_reporting_per_share) * initial / (quote.value * initial_fx)).quantize(Decimal("0.0000000001")))
                         computed.terminal_local_value = None
                         computed.fully_specified = True
                         computed.qualifications = ["Retained stock uses its operating-driver company case, including idle distributions; costs/taxes stay unknown.", *stock_case.qualifications]
@@ -190,10 +191,15 @@ def _calculate(
             # Provisional source provenance qualifies an otherwise fully specified
             # conditional result; missing numeric effects must never become zero.
             fully_specified = transaction is not None and tax is not None and all(row.fully_specified for row in components)
+            # Unknown costs and taxes are named, never assumed zero; no action makes no trade, so it has no trading cost.
+            unmodeled = [*(["transaction costs"] if transaction is None and alternative.kind != "no_action" else []), *(["taxes"] if tax is None else [])]
+            known = money(terminal) if terminal is not None else None
             case_results.append(CalculatedCase(
                 name=case.name, judgment=case, components=components,
-                known_terminal_value=money(terminal) if terminal is not None else None,
-                terminal_value=money(terminal) if terminal is not None and fully_specified else None,
+                known_terminal_value=known,
+                terminal_value=known if fully_specified else None,
+                comparison_value=money(terminal.quantize(Decimal("0.01"))) if terminal is not None and all(row.fully_specified for row in components) else None,
+                unmodeled=[] if fully_specified else unmodeled,
                 qualifications=list(dict.fromkeys(issues)),
             ))
         alternatives.append(CalculatedAlternative(selection=alternative, position_ids=ids, cases=case_results))

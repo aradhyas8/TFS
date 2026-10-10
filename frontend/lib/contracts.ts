@@ -5,6 +5,9 @@ export type Identity = { status: string; ticker: string | null; listing: string 
   company_id: string | null; company_name: string | null; source: string; source_url: string | null;
   as_of: string | null; captured_at: string | null };
 export type Quote = Mark & { ticker: string; listing: string; currency: string; status: string };
+/** The market-data cache refresh: delayed quotes fetched at most once a day unless forced. Keyed by position ID. */
+export type PriceRefresh = { fetched: string[]; fresh: string[]; skipped: string[]; failed: string[]; remaining: number | null; message: string;
+  quotes: Record<string, Quote> };
 export type Position = {
   id: string; account_id: string; kind: "stock" | "etf" | "cash"; currency: string;
   ticker?: string | null; listing?: string | null; company_id?: string | null;
@@ -58,7 +61,7 @@ export type GuardrailReview = {
   qualifications: string[];
 };
 export type Review = {
-  as_of: string; reviewed_at: string; reporting_currency: string; total_value: string | null; known_value: string;
+  as_of: string; holdings_as_of?: string | null; reviewed_at: string; reporting_currency: string; total_value: string | null; known_value: string;
   holdings_value: string | null; cash_value: string | null; complete: boolean;
   positions: { supplied: Position; value: string | null; local_value: string | null; weight: string | null;
     identity_status: string; identity: Identity | null; quote_used: Quote | null;
@@ -67,6 +70,7 @@ export type Review = {
   accounts: { id: string; name: string; total_value: string | null; known_value: string }[];
   direct_companies: { company_id: string; company_name: string; value: string | null; known_value: string;
     weight: string | null; position_ids: string[] }[];
+  currency_exposure?: { currency: string; value: string | null; known_value: string; weight: string | null }[];
   company_overlap: CompanyOverlap[];
   baseline: Baseline | null; guardrails: GuardrailReview | null; indirect_exposure: HoldingsCoverage | "none"; qualifications: string[]; calculation_basis: string;
   source_inputs_usable: boolean; sizing_eligible: false;
@@ -90,7 +94,7 @@ export type ScenarioDriver = { position_id: string; annual_returns: string[] | n
 export type ComparisonResult = { as_of: string; reporting_currency: string; horizon_years: number; starting_value: string | null;
   inputs: ComparisonInput; qualifications: string[]; calculation_basis: string;
   alternatives: { selection: ComparisonAlternative; position_ids: string[]; cases: { name: string;
-    known_terminal_value: string | null; terminal_value: string | null; qualifications: string[];
+    known_terminal_value: string | null; terminal_value: string | null; qualifications: string[]; comparison_value?: string | null; unmodeled?: string[];
     judgment: { name: string; drivers: ScenarioDriver[]; assumptions: string[]; downside: string; uncertainty: string[] };
     components: { position_id: string; local_currency: string; starting_local_value: string | null;
       fx_used: FX | null; terminal_local_value: string | null; known_terminal_value: string | null; fully_specified: boolean; qualifications: string[] }[];
@@ -102,15 +106,43 @@ export type StockResult = { position_id: string; as_of: string; reporting_curren
     facts: { id: string; metric: string; value: string | null; unit: string; currency: string | null;
       period_start: string | null; period_end: string; definition: string; document_ids: string[];
       filing_checked: boolean; notes_checked: boolean; custom_tags_checked: boolean; segments_checked: boolean }[] };
-  judgments: { method: string; mid_cycle_context: string | null };
+  judgments: { method: string; mid_cycle_context: string | null; metric_fact_id?: string | null; revenue_fact_id?: string | null };
   cases: { name: string; terminal_metric: string | null; terminal_shares: string | null;
     terminal_price: string | null; known_terminal_value: string | null; present_value_per_share: string | null;
+    starting_metric?: string | null; starting_shares?: string | null; starting_per_share?: string | null; equity_value?: string | null; discount_factor?: string | null;
+    present_value_of_exit?: string | null; present_value_of_distributions?: string | null;
+    path?: { year: number; revenue: string | null; metric: string; metric_margin: string | null; diluted_shares: string; metric_per_share: string; distribution_per_share: string;
+      return_on_equity?: string | null; payout?: string | null; retention?: string | null; book_growth?: string | null }[];
     sensitivity_prices: (string | null)[]; required_exit_multiple: string | null; qualifications: string[];
     judgment: { growth: string[]; margins: string[]; cash_conversion: string[]; reinvestment: string[];
       dilution: string[]; payout: string[]; return_on_equity: string[] | null; fx_multipliers: string[]; discount_rate: string;
       exit_multiple: string; exit_sensitivity: string[]; assumptions: string[]; uncertainty: string[] } }[];
-  qualifications: string[]; calculation_basis: string };
-export type NewCashInput = { amount: string | null; cash_position_id: string | null; confirmed: boolean; risk_context: string | null };
+  qualifications: string[]; calculation_basis: string; sizing_withheld?: string[];
+  valuation?: { price: string | null; currency: string; price_as_of: string | null; downside: string | null; base: string | null; upside: string | null;
+    price_to_base: string | null; position: "below_downside" | "downside_to_base" | "base_to_upside" | "above_upside" | "unknown";
+    reported_margin: string | null; modeled_first_year_margin: string | null; cash: string | null; total_debt: string | null; balance_date: string | null; notes: string[] } | null };
+export type NewCashInput = { amount: string | null; cash_position_id: string | null; confirmed: boolean; risk_context: string | null;
+  account_id?: string | null; currency?: string | null };
+/** The backend binds new money to this temporary zero-balance cash row for one request; it is never saved. */
+export const NEW_CASH_DESTINATION = "new-cash-destination";
+/** An imported holding whose listing or type couldn't be resolved; only what is known is filled in. */
+export type UnresolvedHolding = { account_id: string; ticker: string; shares: string; average_cost: string | null;
+  currency: string | null; listing: string | null; kind: "stock" | "etf" | null; candidates: string[] };
+export type SavedPortfolio = { snapshot: Snapshot; average_costs: Record<string, string>; settings: PortfolioSettings | null;
+  unresolved: UnresolvedHolding[]; saved_at: string | null };
+
+export async function del(path: string): Promise<void> {
+  const response = await fetch(path, { method: "DELETE", signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error("The delete could not be completed.");
+}
+
+export async function put<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "The request could not be completed.");
+  return data as T;
+}
 export type AllocationAmount = { minimum: string; maximum: string; currency: string; position_id: string };
 export type AllocationResult = { context: NewCashInput;
   scan: { source_captured_at: string | null; scanned_at: string; as_of: string; source: string; issues: string[];
@@ -182,11 +214,14 @@ export type SavedDecision = {
   confirmed_action: UserConfirmedAction | null;
 };
 
-export async function get<T>(path: string): Promise<T> {
+export const DEFAULT_TIMEOUT_MS = 30_000;
+export const ANALYZE_TIMEOUT_MS = 600_000;
+
+export async function get<T>(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const response = await fetch(path, {
     method: "GET",
     headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const data = await response.json();
   if (!response.ok) {
@@ -195,10 +230,11 @@ export async function get<T>(path: string): Promise<T> {
   return data as T;
 }
 
-export async function post<T>(path: string, body: unknown): Promise<T> {
+export async function post<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
+  const timeout = timeoutMs ?? (path.includes("/api/analyze") ? ANALYZE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   const response = await fetch(path, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    signal: AbortSignal.timeout(150_000),
+    signal: AbortSignal.timeout(timeout),
   });
   const data = await response.json();
   if (!response.ok) {

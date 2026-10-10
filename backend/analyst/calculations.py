@@ -1,14 +1,16 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, localcontext
 from typing import Literal
 
 import numpy as np
 import pandas as pd
 
+from .financial_data import NOT_CACHED, RECENT_DAYS
 from .schemas import (
     AccountResult,
     CompanyExposure,
     CompanyOverlap,
+    CurrencyExposure,
     FinancialEvidence,
     FundOverlapContribution,
     HoldingConstituent,
@@ -29,6 +31,50 @@ def weight(value: Decimal | None, total: Decimal | None) -> str | None:
     if value is None or total is None or total == 0:
         return None
     return str((value / total).quantize(Decimal("0.00000001")))
+
+
+def recent(source: date, snapshot: date, status: str) -> bool:
+    """Same-day for manual inputs; a provider value may be the latest published within RECENT_DAYS."""
+    return status != "stale" and (source == snapshot or status != "manual" and snapshot - timedelta(days=RECENT_DAYS) <= source < snapshot)
+
+
+# Missing-value causes worded once for all holdings they affect.
+CAUSES = {
+    "Supplied mark is missing.": "could not be priced",
+    "Price source failed; explicit broker-display fallback used if supplied.": "could not be priced",
+    NOT_CACHED: "could not be priced from the cache; use Refresh prices",
+    "Security/listing or direct-company identity is unresolved.": "could not be identified with confidence",
+    "No usable dated FX rate; the converted value is unknown.": "could not be converted: no usable FX rate",
+    "Supplied mark date differs from the snapshot; valuation is unknown.": "could not be valued: price is not from the snapshot date",
+}
+
+
+def summarize(rows: list[PositionResult], evidence_issues: list[str]) -> list[str]:
+    """One line per cause, naming the holdings, instead of one line per holding."""
+    names = {row.supplied.id: row.supplied.ticker or row.supplied.id for row in rows}
+    causes: dict[str, list[str]] = {}
+    general: list[str] = []
+    for row in rows:
+        for issue in row.issues:
+            causes.setdefault(CAUSES.get(issue, issue), []).append(names[row.supplied.id])
+    for item in evidence_issues:
+        key, separator, issue = item.partition(": ")
+        if separator and key in names:
+            causes.setdefault(CAUSES.get(issue, issue), []).append(names[key])
+        elif item not in general:
+            general.append(item)
+    # A holding with a specific pricing cause is not listed again under the generic one.
+    specific = {name for cause, held in causes.items() if cause != "could not be priced" and cause.startswith("could not be priced") for name in held}
+    if "could not be priced" in causes:
+        causes["could not be priced"] = [name for name in causes["could not be priced"] if name not in specific]
+    lines = []
+    for issue, held in causes.items():
+        if not held:
+            continue
+        held = list(dict.fromkeys(held))
+        count = f"{len(held)} holding{'s' if len(held) != 1 else ''}"
+        lines.append(f"{count} {issue} ({', '.join(held)})." if issue in CAUSES.values() else f"{count} ({', '.join(held)}): {issue}")
+    return general + lines
 
 
 def sum_values(values: list[Decimal | None]) -> tuple[Decimal, Decimal | None]:
@@ -83,12 +129,14 @@ def _resolve_constituents(
     return items, fund_coverage
 
 
-def review_portfolio(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
+def review_portfolio(snapshot: Snapshot, evidence: FinancialEvidence, holdings_as_of: date | None = None) -> PortfolioReview:
     # Decimal keeps supplied financial precision; pandas groups across all accounts;
     # NumPy checks completeness without turning missing values into financial zeroes.
     with localcontext() as context:
         context.prec = 60
-        return _review(snapshot, evidence)
+        review = _review(snapshot, evidence)
+    review.holdings_as_of = holdings_as_of or snapshot.as_of
+    return review
 
 
 def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
@@ -108,12 +156,12 @@ def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
         else:
             resolved = resolved and identity is not None and identity.status in {"verified", "supplied"}
             if identity and identity.status == "supplied":
-                issues.append("Identity is user supplied, not independently verified; valuation is provisional.")
+                issues.append("Identity is not verified by a primary source; valuation is provisional.")
             if not resolved:
                 issues.append("Security/listing or direct-company identity is unresolved.")
             if quote is None:
                 issues.append("Supplied mark is missing.")
-            elif quote.as_of != snapshot.as_of:
+            elif not recent(quote.as_of, snapshot.as_of, quote.status):
                 issues.append("Supplied mark date differs from the snapshot; valuation is unknown.")
             elif quote.status == "stale" or quote.basis != "unadjusted":
                 issues.append("Stale or adjusted quote is unusable for snapshot valuation.")
@@ -125,6 +173,8 @@ def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
                 issues.append(f"Quote is {quote.status}; indicative valuation only, never an execution quote.")
                 if quote.captured_at is None:
                     issues.append("Quote capture time is unknown; it was not inferred from submission time.")
+                if quote.as_of < snapshot.as_of:
+                    issues.append("Last available price predates the snapshot date (market closed or not yet traded).")
         if position.kind != "cash" and position.shares == 0:
             # An unheld candidate has zero current exposure even if its purchase
             # evidence is unusable; source_inputs_usable still gates any sizing.
@@ -141,9 +191,9 @@ def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
                 ),
                 None,
             )
-            if fx_used is None or fx_used.as_of != snapshot.as_of or fx_used.status == "stale":
+            if fx_used is None or not recent(fx_used.as_of, snapshot.as_of, fx_used.status):
                 rate = None
-                issues.append("A supplied FX rate on the snapshot date is required.")
+                issues.append("No usable dated FX rate; the converted value is unknown.")
             else:
                 rate = fx_used.rate
                 issues.append(f"FX is {fx_used.status}; indicative, not an execution quote.")
@@ -151,8 +201,9 @@ def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
         verified_security = position.kind == "cash" or bool(
             identity and identity.status == "verified" and quote
             and quote.status in {"indicative", "delayed"} and quote.captured_at
+            and quote.as_of == snapshot.as_of  # an earlier day's price values the portfolio but never sizes
         )
-        usable_fx = position.currency == snapshot.reporting_currency or bool(rate is not None and fx_used and fx_used.status == "indicative" and fx_used.captured_at)
+        usable_fx = position.currency == snapshot.reporting_currency or bool(rate is not None and fx_used and fx_used.status == "indicative" and fx_used.captured_at and fx_used.as_of == snapshot.as_of)
         values.append(value)
         rows.append(
             PositionResult(
@@ -201,7 +252,8 @@ def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
     companies: list[CompanyExposure] = []
     stocks = []
     for index, row in enumerate(rows):
-        issuer = row.identity if row.identity_status == "verified" and row.identity else row.supplied
+        # A resolved provider identity names the issuer even when only market-data search (not a primary source) supplied it.
+        issuer = row.identity if row.identity and row.identity.company_id and row.identity_status != "unresolved" else row.supplied
         if row.supplied.kind == "stock" and issuer.company_id:
             stocks.append({"company_id": issuer.company_id, "company_name": issuer.company_name,
                            "index": index})
@@ -353,13 +405,18 @@ def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
     else:
         overlap_note = "Indirect ETF exposure, current evidence, tax effects and transaction costs are unknown."
 
+    currency_exposure = []
+    for code in dict.fromkeys(row.supplied.currency for row in rows):
+        currency_known, currency_total = sum_values([value for value, row in zip(values, rows, strict=True) if row.supplied.currency == code])
+        currency_exposure.append(CurrencyExposure(currency=code, value=money(currency_total) if currency_total is not None else None,
+                                                  known_value=money(currency_known), weight=weight(currency_total, total)))
+
     qualifications = [
-        "Source dates are compared with the requested snapshot date, without an invented freshness threshold. Older or future inputs remain unusable; historical snapshots are not current prices.",
-        "Baseline, company cap, active budget and personal risk context are unknown; no allocation amount is justified.",
+        f"Manual marks must be dated on the snapshot date; provider prices and FX may be the latest published within {RECENT_DAYS} days before it and keep their own dates. Future inputs are unusable.",
+        "Valuation, weights and exposure need no personal rules. Only rule checks (company cap, active budget, baseline) and any allocation amount depend on them.",
         overlap_note,
     ]
-    qualifications.extend(evidence.issues)
-    qualifications.extend(f"{row.supplied.id}: {issue}" for row in rows for issue in row.issues)
+    qualifications.extend(summarize(rows, evidence.issues))
     if total is None:
         qualifications.append(
             "Incomplete valuation: known subtotal is not a portfolio total; all portfolio weights are unknown."
@@ -373,6 +430,7 @@ def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
         positions=rows,
         accounts=accounts,
         direct_companies=companies,
+        currency_exposure=currency_exposure,
         company_overlap=company_overlap,
         total_value=money(total) if total is not None else None,
         known_value=money(known),

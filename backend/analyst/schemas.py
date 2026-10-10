@@ -2,15 +2,25 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
 Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
 Currency = Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$")]
 Quantity = Annotated[Decimal, Field(ge=0, le=Decimal("1e12"), max_digits=24, decimal_places=10)]
 Rate = Annotated[Decimal, Field(gt=0, le=Decimal("1e6"), max_digits=24, decimal_places=10)]
+# A reported amount that may be negative (operating income, net income, cash flows).
+SignedAmount = Annotated[Decimal, Field(ge=Decimal("-1e15"), le=Decimal("1e15"), max_digits=28, decimal_places=10)]
 Fraction = Annotated[Decimal, Field(ge=0, le=1, max_digits=11, decimal_places=10)]
 SharesChange = Annotated[Decimal, Field(ge=Decimal("-1e12"), le=Decimal("1e12"), max_digits=24, decimal_places=10)]
 
@@ -324,9 +334,16 @@ class StockInput(Contract):
     position_id: Identifier
 
 
+NEW_CASH_DESTINATION = "new-cash-destination"
+
+
 class NewCashInput(Contract):
     amount: Quantity | None = None
     cash_position_id: Identifier | None = None
+    # Destination for money that is not yet in the portfolio. The request binds a
+    # zero-balance cash row for it, so no existing cash holding is required.
+    account_id: Identifier | None = None
+    currency: Currency | None = None
     confirmed: bool = False
     risk_context: Text | None = None
 
@@ -435,6 +452,15 @@ class AnalysisRequest(Contract):
     new_cash: NewCashInput | None = None
     portfolio_review: PortfolioReviewInput | None = None
     theme: ThemeInput | None = None
+    # Explicit historical valuation date. Absent, the analysis is current: holdings stay as last confirmed on
+    # portfolio.as_of and are valued with the latest acceptable prices on or before today.
+    analysis_date: date | None = None
+
+    @model_validator(mode="after")
+    def analysis_after_holdings(self) -> Self:
+        if self.analysis_date is not None and self.analysis_date < self.portfolio.as_of:
+            raise ValueError("An analysis cannot predate the date the holdings were confirmed.")
+        return self
 
     @model_validator(mode="after")
     def comparison_references(self) -> Self:
@@ -492,6 +518,16 @@ class AnalysisRequest(Contract):
         if self.new_cash is not None:
             if self.stock is not None or self.comparison is not None or self.proposed_changes is not None:
                 raise ValueError("New-cash decisions bind their own comparison and previews in the shared pipeline.")
+            if self.new_cash.account_id is not None and self.new_cash.cash_position_id is None:
+                if all(account.id != self.new_cash.account_id for account in self.portfolio.accounts):
+                    raise ValueError("Choose a destination account from the portfolio.")
+                if any(row.id == NEW_CASH_DESTINATION for row in self.portfolio.positions):
+                    raise ValueError("Reserved new-cash destination identifier.")
+                currency = self.new_cash.currency or self.portfolio.reporting_currency
+                self.portfolio.positions.append(Position(id=NEW_CASH_DESTINATION, account_id=self.new_cash.account_id,
+                                                         kind="cash", currency=currency, cash=Decimal(0)))
+                self.new_cash.cash_position_id = NEW_CASH_DESTINATION
+                self.new_cash.currency = currency
             if self.new_cash.cash_position_id is not None and not any(row.id == self.new_cash.cash_position_id and row.kind == "cash" for row in self.portfolio.positions):
                 raise ValueError("Confirm an existing account cash balance for the new contribution.")
             if any(row.id == "__new_cash__" for row in self.portfolio.positions):
@@ -544,8 +580,15 @@ class AnalysisRequest(Contract):
 
 class CSVRequest(Contract):
     csv: str = Field(min_length=1, max_length=1_000_000)
-    as_of: date
+    as_of: date | None = None
     reporting_currency: Currency
+
+    @field_validator("as_of", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, v: Any) -> Any:
+        if v == "" or v is None:
+            return None
+        return v
 
 
 class Alternative(Contract):
@@ -590,6 +633,13 @@ class AccountResult(Contract):
     name: str
     total_value: str | None
     known_value: str
+
+
+class CurrencyExposure(Contract):
+    currency: str
+    value: str | None
+    known_value: str
+    weight: str | None
 
 
 class CompanyExposure(Contract):
@@ -672,12 +722,14 @@ class GuardrailReview(Contract):
 
 
 class PortfolioReview(Contract):
-    as_of: date
+    as_of: date  # valuation (analysis) date
+    holdings_as_of: date | None = None  # when the holdings/shares were last confirmed; not the valuation date
     reviewed_at: AwareDatetime
     reporting_currency: str
     positions: list[PositionResult]
     accounts: list[AccountResult]
     direct_companies: list[CompanyExposure]
+    currency_exposure: list[CurrencyExposure] = Field(default_factory=list)
     company_overlap: list[CompanyOverlap] = Field(default_factory=list)
     total_value: str | None
     known_value: str
@@ -722,6 +774,10 @@ class CalculatedCase(Contract):
     known_terminal_value: str | None
     terminal_value: str | None
     qualifications: list[str]
+    # The value to compare: after costs and taxes when both are known, else before the adjustments listed in
+    # `unmodeled`, which are unknown and never assumed to be zero.
+    comparison_value: str | None = None
+    unmodeled: list[str] = Field(default_factory=list)
 
 
 class CalculatedAlternative(Contract):
@@ -766,11 +822,37 @@ class ResearchDocument(Contract):
         return self
 
 
+class FactSource(Contract):
+    """Where one reported number came from, exactly as SEC published it."""
+    taxonomy: Identifier
+    concept: Identifier
+    unit: Identifier
+    accession: Identifier
+    form: Identifier
+    fiscal_year: int | None = None
+    fiscal_period: Identifier | None = None
+    filed: date
+    period_start: date | None
+    period_end: date
+    value: SignedAmount
+    url: str
+
+
+RESEARCH_METRICS = ("revenue", "shares", "book_value", "ffo", "operating_income", "net_income", "cash", "total_debt",
+                    "operating_cash_flow", "capex", "free_cash_flow", "eps_diluted", "book_value_per_share", "roe",
+                    "cet1_ratio", "dividend_per_share", "weighted_diluted_shares")
+NON_NEGATIVE_METRICS = {"revenue", "shares", "book_value", "ffo", "cash", "total_debt", "capex", "book_value_per_share",
+                        "cet1_ratio", "dividend_per_share", "weighted_diluted_shares"}
+
+
 class ResearchFact(Contract):
     id: Identifier
-    metric: Literal["revenue", "shares", "book_value", "ffo"]
-    value: Quantity | None
-    unit: Literal["currency", "shares"]
+    metric: Literal["revenue", "shares", "book_value", "ffo", "operating_income", "net_income", "cash", "total_debt",
+                    "operating_cash_flow", "capex", "free_cash_flow", "eps_diluted", "book_value_per_share", "roe",
+                    "cet1_ratio", "dividend_per_share", "weighted_diluted_shares"]
+    value: SignedAmount | None
+    # Per-share amounts carry their currency; ratios (ROE, CET1) are decimal fractions with no currency.
+    unit: Literal["currency", "shares", "per_share", "ratio"]
     currency: Currency | None
     period_start: date | None
     period_end: date
@@ -780,6 +862,18 @@ class ResearchFact(Contract):
     notes_checked: bool
     custom_tags_checked: bool
     segments_checked: bool
+    # "manual": independently reviewed extract. "sec_xbrl": read automatically from SEC CompanyFacts; the filing,
+    # segment and alternative-tag checks are automated and footnotes are not read, so notes_checked stays false.
+    # "issuer_report": read automatically from the issuer's own published report (e.g. a bank's supplementary financial
+    # information workbook); the same automated checks apply and footnotes are not read.
+    review: Literal["manual", "sec_xbrl", "issuer_report"] = "manual"
+    sources: list[FactSource] = Field(default_factory=list, max_length=6)
+
+    @model_validator(mode="after")
+    def sign(self) -> Self:
+        if self.value is not None and self.value < 0 and self.metric in NON_NEGATIVE_METRICS:
+            raise ValueError(f"A reported {self.metric} cannot be negative.")
+        return self
 
 
 class CompanyResearch(Contract):
@@ -840,9 +934,34 @@ class CompanyJudgments(Contract):
         return self
 
 
+class CaseYear(Contract):
+    """One modeled year of a company case, as calculated. Money is in the reported metric's currency."""
+    year: int
+    revenue: str | None
+    metric: str
+    metric_margin: str | None
+    diluted_shares: str
+    metric_per_share: str
+    distribution_per_share: str
+    # Book-value (bank) cases only: the year's ROE and payout judgments and the growth Python derives from them.
+    return_on_equity: str | None = None
+    payout: str | None = None
+    retention: str | None = None
+    book_growth: str | None = None
+
+
 class CalculatedCompanyCase(Contract):
     name: CaseName
     judgment: CompanyCase
+    # The deterministic chain, exposed for audit: starting facts, each year, the exit and the discounting.
+    starting_metric: str | None = None
+    starting_shares: str | None = None
+    starting_per_share: str | None = None
+    path: list[CaseYear] = Field(default_factory=list, max_length=5)
+    equity_value: str | None = None
+    discount_factor: str | None = None
+    present_value_of_exit: str | None = None
+    present_value_of_distributions: str | None = None
     terminal_metric: str | None
     terminal_shares: str | None
     terminal_price: str | None
@@ -854,6 +973,25 @@ class CalculatedCompanyCase(Contract):
     qualifications: list[str]
 
 
+class StockValuation(Contract):
+    """Where today's price sits against the calculated cases. Deterministic; the model interprets it."""
+    price: str | None
+    currency: Currency
+    price_as_of: date | None
+    downside: str | None
+    base: str | None
+    upside: str | None
+    price_to_base: str | None
+    position: Literal["below_downside", "downside_to_base", "base_to_upside", "above_upside", "unknown"]
+    # Reported figures for the same period, so the modeled path can be checked against what the company reported.
+    reported_margin: str | None = None
+    modeled_first_year_margin: str | None = None
+    cash: str | None = None
+    total_debt: str | None = None
+    balance_date: date | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
 class StockResult(Contract):
     position_id: str
     as_of: date
@@ -863,6 +1001,9 @@ class StockResult(Contract):
     cases: list[CalculatedCompanyCase]
     calculation_basis: str
     qualifications: list[str]
+    valuation: StockValuation | None = None
+    # Why exact position sizing is not given, stated apart from the investment view.
+    sizing_withheld: list[str] = Field(default_factory=list)
 
 
 class AllocationResult(Contract):
@@ -1024,3 +1165,50 @@ CandidateCasesInput.model_rebuild()
 AnalysisRequest.model_rebuild()
 SaveDecisionRequest.model_rebuild()
 
+
+
+class UnresolvedHolding(Contract):
+    """An imported holding whose listing or security type could not be resolved. Only what is known is kept."""
+    account_id: Identifier
+    ticker: Identifier  # as entered, including any exchange suffix
+    shares: Quantity
+    average_cost: Quantity | None = None
+    currency: Currency | None = None
+    listing: Identifier | None = None
+    kind: Literal["stock", "etf"] | None = None
+    # Listings the market-data provider found when more than one matched; the user picks one.
+    candidates: list[Identifier] = Field(default_factory=list, max_length=8)
+
+
+class SavedPortfolio(Contract):
+    """The user's current portfolio and rules. Average cost is kept for the user only and never sent to analysis."""
+    snapshot: Snapshot
+    average_costs: dict[Identifier, Quantity] = Field(default_factory=dict)
+    settings: PortfolioSettings | None = None
+    unresolved: list[UnresolvedHolding] = Field(default_factory=list, max_length=2000)
+    saved_at: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def check_costs(self) -> Self:
+        securities = {row.id for row in self.snapshot.positions if row.kind != "cash"}
+        if any(key not in securities for key in self.average_costs):
+            raise ValueError("Average cost must reference a held security.")
+        if any(row.id == NEW_CASH_DESTINATION for row in self.snapshot.positions):
+            raise ValueError("Reserved new-cash destination identifier.")
+        accounts = {account.id for account in self.snapshot.accounts}
+        if any(row.account_id not in accounts for row in self.unresolved):
+            raise ValueError("Every unresolved holding must reference a supplied account.")
+        return self
+
+
+class RefreshPrices(Contract):
+    """Refresh the market-data cache; force fetches again even if today's prices are cached."""
+    force: bool = False
+
+
+class IdentifyHolding(Contract):
+    """The user's answer for one unresolved holding: only the missing listing and/or type."""
+    account_id: Identifier
+    ticker: Identifier
+    listing: Identifier | None = None
+    kind: Literal["stock", "etf"] | None = None

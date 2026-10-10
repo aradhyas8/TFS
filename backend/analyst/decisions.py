@@ -226,6 +226,19 @@ class DecisionStore:
         decisions.sort(key=lambda d: d.saved_at, reverse=True)
         return decisions
 
+    def delete(self, decision_id: str) -> bool:
+        file_path = self._file_path(decision_id)
+        if not file_path.is_file():
+            return False
+        file_path.unlink()
+        return True
+
+    def clear(self) -> int:
+        files = list(self.directory.glob("*.json")) if self.directory.exists() else []
+        for file in files:
+            file.unlink()
+        return len(files)
+
     def confirm_action(
         self,
         decision_id: str,

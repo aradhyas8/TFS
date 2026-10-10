@@ -45,7 +45,7 @@ Securities are classified according to explicit market listing MICs and currency
 - **Valuation Scenarios:**
   - Calculated outside the model in Python with 60-decimal precision.
   - Three disciplined operating cases: downside, base, and upside across five annual periods.
-  - Reverse valuation computes the required exit multiple to recover current unadjusted price without inventing market beliefs.
+  - Reverse valuation solves the year-5 exit multiple at which discounted exit price plus discounted payouts equals the current unadjusted price, without inventing market beliefs.
 
 ## Guardrails & Prose Validation
 

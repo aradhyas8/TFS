@@ -315,3 +315,15 @@ def test_canadian_stock_evidence_preserved_in_saved_decision(tmp_path: Path) -> 
     assert reopened.evidence_references[0].url == "https://www.sedarplus.ca/csa-party/records/document.html?id=123"
     assert reopened.as_of == date(2026, 9, 30)
 
+
+
+def test_decisions_can_be_deleted_one_at_a_time_or_all(tmp_path):
+    store = DecisionStore(tmp_path)
+    api = TestClient(create_app(data=FakeDataProvider(), store=store))
+    body = {"result": make_sample_result().model_dump(mode="json")}
+    first, second = (SavedDecision.model_validate(api.post("/api/decisions", json=body).json()) for _ in range(2))
+    assert api.delete(f"/api/decisions/{first.id}").status_code == 204
+    assert api.delete(f"/api/decisions/{first.id}").status_code == 404
+    assert [row["id"] for row in api.get("/api/decisions").json()] == [second.id]
+    assert api.delete("/api/decisions").json() == {"deleted": 1}
+    assert api.get("/api/decisions").json() == []
