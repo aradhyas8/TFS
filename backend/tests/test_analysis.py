@@ -385,9 +385,14 @@ def test_validate_prose_allows_negated_guarantee_and_disclaimed_contribution_roo
     from analyst.pipeline import InvalidReview, validate_prose
 
     # Permitted disclaimers:
-    validate_prose("Cash rates could be more supportive temporarily, but no rate is guaranteed. Opportunity costs remain if equities outperform.")
+    validate_prose(
+        "Cash rates could be more supportive temporarily, but no rate is guaranteed. Opportunity costs remain if equities outperform."
+    )
     validate_prose("Returns are not guaranteed. Risk capacity does not authorize waiving limits.")
-    validate_prose("Tax effects, contribution room, transaction costs and actual cash interest terms are unknown.", stock=True)
+    validate_prose(
+        "Tax effects, contribution room, transaction costs and actual cash interest terms are unknown.",
+        stock=True,
+    )
     validate_prose("Account contribution room is unverified and not modeled.", stock=True)
 
     # Forbidden positive claims:
@@ -400,8 +405,12 @@ def test_validate_prose_allows_negated_guarantee_and_disclaimed_contribution_roo
 def test_validate_prose_allows_explicit_not_trade_instructions_disclaimer():
     from analyst.pipeline import InvalidReview, validate_prose
 
-    validate_prose("These are review findings, not trade instructions. Concentration could distort estimated weights.")
-    validate_prose("Treat these as review flags, not approved exceptions or trade instructions. Cap status may differ on live marks.")
+    validate_prose(
+        "These are review findings, not trade instructions. Concentration could distort estimated weights."
+    )
+    validate_prose(
+        "Treat these as review flags, not approved exceptions or trade instructions. Cap status may differ on live marks."
+    )
 
     with pytest.raises(InvalidReview):
         validate_prose("You should trade the concentrated holding.")
@@ -431,7 +440,9 @@ def test_validate_prose_allows_descriptive_trading_properties():
     from analyst.pipeline import InvalidReview, validate_prose
 
     # Permitted descriptive trading terminology
-    validate_prose("This is a gross total-return path in the fund's stated CAD trading currency, with distributions reinvested.")
+    validate_prose(
+        "This is a gross total-return path in the fund's stated CAD trading currency, with distributions reinvested."
+    )
     validate_prose("The fund trades on the TSX under ticker XIC.")
     validate_prose("Average daily trading volume remains unverified.")
     validate_prose("The ETF trading symbol is confirmed.")
@@ -445,4 +456,63 @@ def test_validate_prose_allows_descriptive_trading_properties():
         validate_prose("Execute a buy order for the ETF.")
 
 
+def test_research_source_selection_for_new_cash_and_theme(monkeypatch):
+    import analyst.api
+    from analyst.financial_data import FakeFinancialProvider
+    from analyst.issuer_research import IssuerResearchProvider
+    from analyst.schemas import AnalysisResult, FinancialEvidence, Recommendation
+    from analyst.sec_research import SecResearchProvider
+    from tests.test_allocation import allocation_evidence, allocation_request
+    from tests.test_theme import theme_request
 
+    captured: list[object] = []
+
+    async def fake_analyze(request, provider, source, *, secret, financial, research, discovery):
+        from analyst.calculations import review_portfolio
+        from analyst.schemas import ThemeResult
+
+        captured.append(research)
+        theme_res = (
+            ThemeResult(context=request.theme, status="awaiting_agreement")
+            if request.theme and not request.theme.confirmed
+            else None
+        )
+        return AnalysisResult(
+            question=request.question,
+            portfolio=review_portfolio(request.portfolio, FinancialEvidence()),
+            recommendation=Recommendation.model_validate(recommendation()),
+            status="completed",
+            theme=theme_res,
+        )
+
+    monkeypatch.setattr(analyst.api, "analyze", fake_analyze)
+    client = TestClient(
+        create_app(
+            model=ScriptedModel([]),
+            data=FakeDataProvider(),
+            financial=FakeFinancialProvider(allocation_evidence()),
+        )
+    )
+
+    # 1. New Cash request
+    resp_cash = client.post("/api/analyze", json=allocation_request())
+    assert resp_cash.status_code == 200, resp_cash.text
+    assert len(captured) == 1
+    cash_research = captured[0]
+    assert isinstance(cash_research, IssuerResearchProvider)
+    assert isinstance(cash_research.fallback, SecResearchProvider)
+
+    # 2. Confirmed Theme request
+    resp_theme = client.post("/api/analyze", json=theme_request(confirmed=True))
+    assert resp_theme.status_code == 200, resp_theme.text
+    assert len(captured) == 2
+    theme_research = captured[1]
+    assert isinstance(theme_research, IssuerResearchProvider)
+    assert isinstance(theme_research.fallback, SecResearchProvider)
+
+    # 3. Unconfirmed Theme request (research is None, makes no model or research calls)
+    resp_unconfirmed = client.post("/api/analyze", json=theme_request(confirmed=False))
+    assert resp_unconfirmed.status_code == 200, resp_unconfirmed.text
+    assert len(captured) == 3
+    assert captured[2] is None
+    assert resp_unconfirmed.json()["theme"]["status"] == "awaiting_agreement"
