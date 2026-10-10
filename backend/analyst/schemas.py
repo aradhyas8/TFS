@@ -420,6 +420,30 @@ class DiscoveryCandidate(Contract):
         return self
 
 
+class CandidateRequest(Contract):
+    ticker: Text
+    listing: Identifier | None = None
+
+
+class CandidateListing(Contract):
+    ticker: Identifier
+    listing: Identifier | None = None
+    currency: Currency | None = None
+    kind: Literal["stock", "etf"] | None = None
+    company_name: Text | None = None
+
+
+class CandidateUnresolved(Contract):
+    reason: Literal["multiple", "not_found"]
+    listings: list[CandidateListing] = Field(default_factory=list)
+
+
+class CandidateResult(Contract):
+    position: Position | None = None
+    unresolved: CandidateUnresolved | None = None
+    is_fund: bool = False
+
+
 class DiscoveryScan(Contract):
     source_captured_at: AwareDatetime | None = None
     scanned_at: AwareDatetime

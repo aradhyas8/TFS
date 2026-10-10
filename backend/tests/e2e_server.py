@@ -3,7 +3,8 @@
 import asyncio
 import json
 import socket
-from datetime import date
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +21,11 @@ from analyst.schemas import (
     AnalysisRequest,
     CompanyResearch,
     FinancialEvidence,
+    Identity,
+    Quote,
     Snapshot,
     SponsorHoldings,
+    SourceQualification,
 )
 from tests.test_allocation import allocation_answer, allocation_evidence, comparison_judgments
 from tests.test_canadian_stock import canadian_research_fixture
@@ -175,18 +179,152 @@ class BrowserTestModel:
         return ModelTurn(answer=answer)
 
 
+def e2e_evidence() -> FinancialEvidence:
+    now = datetime.now(timezone.utc)
+    evidence = FinancialEvidence()
+    # NVDA candidate (stock)
+    evidence.identities["nvda"] = Identity(
+        status="verified",
+        ticker="NVDA",
+        listing="XNAS",
+        currency="USD",
+        kind="stock",
+        company_id="nvda",
+        company_name="NVIDIA Corporation",
+        source="E2E test reference",
+        source_url="https://sec.gov/edgar",
+        as_of=date(2026, 9, 30),
+        captured_at=now,
+    )
+    evidence.quotes["NVDA"] = Quote(
+        value=Decimal("120"),
+        as_of=date(2026, 9, 30),
+        source="Test provider",
+        captured_at=now,
+        basis="unadjusted",
+        ticker="NVDA",
+        listing="XNAS",
+        currency="USD",
+        status="indicative",
+        qualification=SourceQualification(
+            source="Test provider",
+            terms_url="https://example.com",
+            checked_on=date(2026, 9, 30),
+            personal_use_permitted=True,
+            covered_listings=["XNAS"],
+        ),
+    )
+    # SPY candidate (fund)
+    evidence.identities["spy"] = Identity(
+        status="verified",
+        ticker="SPY",
+        listing="XNYS",
+        currency="USD",
+        kind="etf",
+        company_id="spy",
+        company_name="SPDR S&P 500 ETF Trust",
+        source="E2E test reference",
+        source_url="https://sec.gov/edgar",
+        as_of=date(2026, 9, 30),
+        captured_at=now,
+    )
+    evidence.quotes["SPY"] = Quote(
+        value=Decimal("500"),
+        as_of=date(2026, 9, 30),
+        source="Test provider",
+        captured_at=now,
+        basis="unadjusted",
+        ticker="SPY",
+        listing="XNYS",
+        currency="USD",
+        status="indicative",
+        qualification=SourceQualification(
+            source="Test provider",
+            terms_url="https://example.com",
+            checked_on=date(2026, 9, 30),
+            personal_use_permitted=True,
+            covered_listings=["XNYS"],
+        ),
+    )
+    # BMO dual-listed
+    evidence.identities["bmo_us"] = Identity(
+        status="verified",
+        ticker="BMO",
+        listing="XNYS",
+        currency="USD",
+        kind="stock",
+        company_id="bmo",
+        company_name="Bank of Montreal",
+        source="E2E test reference",
+        source_url="https://sec.gov/edgar",
+        as_of=date(2026, 9, 30),
+        captured_at=now,
+    )
+    evidence.identities["bmo_ca"] = Identity(
+        status="verified",
+        ticker="BMO",
+        listing="XTSE",
+        currency="CAD",
+        kind="stock",
+        company_id="bmo",
+        company_name="Bank of Montreal",
+        source="E2E test reference",
+        source_url="https://sedarplus.ca",
+        as_of=date(2026, 9, 30),
+        captured_at=now,
+    )
+    evidence.quotes["BMO"] = Quote(
+        value=Decimal("130"),
+        as_of=date(2026, 9, 30),
+        source="Test provider",
+        captured_at=now,
+        basis="unadjusted",
+        ticker="BMO",
+        listing="XTSE",
+        currency="CAD",
+        status="indicative",
+        qualification=SourceQualification(
+            source="Test provider",
+            terms_url="https://example.com",
+            checked_on=date(2026, 9, 30),
+            personal_use_permitted=True,
+            covered_listings=["XTSE", "XNYS"],
+        ),
+    )
+    return evidence
+
+
+def e2e_research() -> dict[str, CompanyResearch]:
+    records = {
+        "acme": CompanyResearch.model_validate(review_research_fixture()),
+        "acme:XTSE": CompanyResearch.model_validate(canadian_research_fixture()),
+    }
+    nvda_res = research_fixture()
+    nvda_res["company_id"] = "nvda"
+    for doc in nvda_res["documents"]:
+        doc["company_id"] = "nvda"
+    records["nvda"] = CompanyResearch.model_validate(nvda_res)
+
+    bmo_res = canadian_research_fixture()
+    bmo_res["company_id"] = "bmo"
+    for doc in bmo_res["documents"]:
+        doc["company_id"] = "bmo"
+    records["bmo"] = CompanyResearch.model_validate(bmo_res)
+    records["bmo:XTSE"] = CompanyResearch.model_validate(bmo_res)
+    return records
+
+
 financial = FakeFinancialProvider()
+financial.reference = e2e_evidence()
+stock_research = ReviewedResearchProvider(e2e_research())
 
 
 class BrowserTestData(FakeDataProvider):
     def snapshot(self, supplied: Snapshot) -> Snapshot:
         # Browser journeys run serially. Bind the external source fixture to the
         # submitted listing; every request resets it, including ordinary broker marks.
-        financial.reference = FinancialEvidence()
-        stock_research.records = {
-            "acme": CompanyResearch.model_validate(review_research_fixture()),
-            "acme:XTSE": CompanyResearch.model_validate(canadian_research_fixture()),
-        }
+        financial.reference = e2e_evidence()
+        stock_research.records = e2e_research()
         for position in supplied.positions:
             if position.id == "fund" and position.mark and position.mark.source == "Fixture allocation":
                 financial.reference = allocation_evidence()
@@ -232,8 +370,6 @@ class BrowserTestData(FakeDataProvider):
         return super().snapshot(supplied)
 
 
-stock_research = ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())})
-
 e2e_storage_dir = Path(__file__).parent / "data" / "e2e_decisions"
 decision_store = DecisionStore(e2e_storage_dir)
 for _file in decision_store.directory.glob("*.json"):
@@ -262,5 +398,6 @@ app = create_app(
 def forget_portfolio() -> None:
     """Test server only: each browser journey starts without a saved portfolio or a leftover source fixture."""
     portfolio_store.path.unlink(missing_ok=True)
-    financial.reference = FinancialEvidence()
+    financial.reference = e2e_evidence()
+    stock_research.records = e2e_research()
 

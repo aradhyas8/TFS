@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { actionLabel, NEW_CASH_DESTINATION, type Analysis, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot } from "../../lib/contracts";
+import { actionLabel, NEW_CASH_DESTINATION, type Analysis, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot } from "../../lib/contracts";
 import { accountName, answerSentence, caseCurrency, clock, compact, POSITION_LABEL, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
 
 export type Tab = "evidence" | "scenarios" | "proposed" | "holdings" | "guardrails";
@@ -279,7 +279,7 @@ const byWeight = (rows: Valued[]) => [...rows].sort((a, b) => (b.weight === null
 function Weights({ result, snapshot, onTab }: { result: Analysis; snapshot: Snapshot | null; onTab: (tab: Tab) => void }) {
   const review = result.portfolio;
   const currency = review.reporting_currency;
-  const rows = review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION);
+  const rows = review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION && !row.supplied.id.startsWith("candidate-"));
   const ranked = byWeight(rows);
   const scale = Math.max(...rows.map(row => Number(row.weight ?? 0)), 0.01);
   const capOf = (companyId: string) => review.guardrails?.companies.find(company => company.company_id === companyId);
@@ -303,8 +303,9 @@ function Weights({ result, snapshot, onTab }: { result: Analysis; snapshot: Snap
 
 /** Largest direct companies, currency mix and what's known inside funds. Unknown is never shown as zero. */
 function Exposure({ review }: { review: Review }) {
+  const direct = review.direct_companies.filter(c => !c.position_ids.some(id => id.startsWith("candidate-")));
   return <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-    {review.direct_companies.length ? <span>Largest companies you own directly: {[...review.direct_companies].sort((a, b) => Number(b.weight ?? -1) - Number(a.weight ?? -1)).slice(0, 3)
+    {direct.length ? <span>Largest companies you own directly: {[...direct].sort((a, b) => Number(b.weight ?? -1) - Number(a.weight ?? -1)).slice(0, 3)
       .map(company => `${company.company_name} ${company.weight === null ? "Unknown" : pct(company.weight)}`).join(" · ")}.</span>
       : <span className="m">No directly held companies are identified yet.</span>}
     {!!review.currency_exposure?.length && <span>By currency: {review.currency_exposure.map(row => `${row.currency} ${row.weight === null ? "Unknown" : pct(row.weight)}`).join(" · ")}.</span>}
@@ -494,8 +495,16 @@ export function RebalanceAnswer({ result, snapshot, cite, saved, onTab, onConfir
 }
 
 /** One short question when a company reference can't be settled from the saved holdings. Nothing is guessed. */
-export function Clarify({ question, message, options, review, onStock, onReview }: { question: string; message: string; options: Position[]; review: boolean;
-  onStock: (position: Position) => void; onReview: () => void }) {
+export function Clarify({ question, message, options, review, onStock, onReview, candidateListings, onSelectListing }: {
+  question: string;
+  message: string;
+  options: Position[];
+  review: boolean;
+  onStock: (position: Position) => void;
+  onReview: () => void;
+  candidateListings?: CandidateListing[];
+  onSelectListing?: (listing: CandidateListing) => void;
+}) {
   return <div>
     <div className="echo"><span className="q">{question}</span><span className="cap">Not sent yet · needs one answer</span></div>
     <div className="memo" aria-label="Clarification" role="region">
@@ -504,6 +513,8 @@ export function Clarify({ question, message, options, review, onStock, onReview 
           <p className="body" style={{ color: "var(--text)" }}>{message}</p>
           {options.length > 0 && <div className="choices">{options.map(row => <button type="button" className="btn secondary small" key={row.id} onClick={() => onStock(row)}>
             {row.ticker || row.id}<span className="m"> · {positionName(row, row.id)}</span></button>)}</div>}
+          {candidateListings && candidateListings.length > 0 && <div className="choices">{candidateListings.map(listing => <button type="button" className="btn secondary small" key={`${listing.ticker}:${listing.listing}`} onClick={() => onSelectListing?.(listing)}>
+            {listing.ticker} / {listing.listing}<span className="m"> · {listing.currency} · {listing.company_name || listing.ticker}</span></button>)}</div>}
           {review && <span><button type="button" className="link" onClick={onReview}>Review my whole portfolio instead</button></span>}
         </div>
       </Row>
@@ -627,15 +638,21 @@ export function StockAnswer({ result, snapshot, cite, saved, onTab, onConfirm }:
       </Row>
       <Row label="Portfolio impact">
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {comparison ? <>
-            <span className="cap n">Value after {comparison.horizon_years} years in the base case, from {money(comparison.starting_value, comparison.reporting_currency || currency)}</span>
-            <ul className="plist n" style={{ listStyle: "none" }} aria-label="Options compared">{comparison.alternatives.map(alt => {
-              const c = alt.cases.find(item => item.name === "base");
-              return <li key={alt.selection.id} className="pv"><span>{altName(alt.selection)}</span>
-                <span>{money(c?.terminal_value ?? c?.comparison_value, comparison.reporting_currency || currency)}{!c?.terminal_value && c?.comparison_value && c.unmodeled?.length ? <span className="m"> · before {c.unmodeled.join(" and ")}</span> : ""}</span></li>;
-            })}</ul>
-            {unmodeled.length > 0 && <span className="cap">Not modeled, not assumed zero: {unmodeled.join(" and ")}. They come off these values when known.</span>}
-          </> : <span className="m">No comparison was produced for this answer.</span>}
+          {comparison ? (
+            Number(comparison.starting_value || 0) === 0 ? (
+              <span>No cash to compare on. Use /new-cash with an amount to compare against the fund and cash.</span>
+            ) : (
+              <>
+                <span className="cap n">Value after {comparison.horizon_years} years in the base case, from {money(comparison.starting_value, comparison.reporting_currency || currency)}</span>
+                <ul className="plist n" style={{ listStyle: "none" }} aria-label="Options compared">{comparison.alternatives.map(alt => {
+                  const c = alt.cases.find(item => item.name === "base");
+                  return <li key={alt.selection.id} className="pv"><span>{altName(alt.selection)}</span>
+                    <span>{money(c?.terminal_value ?? c?.comparison_value, comparison.reporting_currency || currency)}{!c?.terminal_value && c?.comparison_value && c.unmodeled?.length ? <span className="m"> · before {c.unmodeled.join(" and ")}</span> : ""}</span></li>;
+                })}</ul>
+                {unmodeled.length > 0 && <span className="cap">Not modeled, not assumed zero: {unmodeled.join(" and ")}. They come off these values when known.</span>}
+              </>
+            )
+          ) : <span className="m">No comparison was produced for this answer.</span>}
           {rec.amount && <span className="n">Sized at {range(rec.amount.minimum, rec.amount.maximum, rec.amount.currency)}.</span>}
           <button type="button" className="link cap" style={{ alignSelf: "flex-start" }} onClick={() => onTab("guardrails")}>Your rules in Guardrails →</button>
         </div>

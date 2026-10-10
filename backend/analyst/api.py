@@ -1,5 +1,7 @@
 import csv
 import io
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -12,19 +14,38 @@ from .allocation import DiscoveryProvider
 from .config import Settings
 from .csv_input import COLUMNS, load_csv
 from .decisions import DecisionStore, extract_decision
-from .financial_data import FinancialProvider, PersonalFinancialProvider, eodhd_symbol
+from .financial_data import (
+    SOURCE_ERRORS,
+    FinancialProvider,
+    PersonalFinancialProvider,
+    eodhd_symbol,
+)
 from .issuer_research import IssuerResearchProvider
 from .pipeline import InvalidReview, analyze
-from .portfolio import HOLDINGS_COLUMNS, PortfolioStore, enrich, identify, load_holdings
+from .portfolio import (
+    HOLDINGS_COLUMNS,
+    PortfolioStore,
+    enrich,
+    identify,
+    listing_currency,
+    load_holdings,
+    split_ticker,
+)
 from .providers import DataProvider, ModelProvider, OpenAIModel, SuppliedDataProvider
 from .research import ResearchProvider
 from .schemas import (
     AnalysisRequest,
     AnalysisResult,
+    CandidateListing,
+    CandidateRequest,
+    CandidateResult,
+    CandidateUnresolved,
     ConfirmActionRequest,
     CSVRequest,
     FinancialEvidence,
     IdentifyHolding,
+    Mark,
+    Position,
     RefreshPrices,
     SavedDecision,
     SaveDecisionRequest,
@@ -158,6 +179,107 @@ def create_app(
             if (symbol := eodhd_symbol(position)) and symbol in cached
         }
         return result
+
+    @app.post("/api/candidates", response_model=CandidateResult)
+    async def candidate_lookup(request: CandidateRequest) -> CandidateResult:
+        provider = market_data()
+        if provider is None or not hasattr(provider, "lookup"):
+            raise HTTPException(503, "Financial provider is not configured.")
+        bare_ticker, suffix_listing = split_ticker(request.ticker.strip())
+        listing = request.listing or suffix_listing
+        currency = listing_currency(listing)
+        current = portfolios.get()
+        as_of = current.snapshot.as_of if current else datetime.now(UTC).date()
+        first_account = (
+            current.snapshot.accounts[0].id
+            if current and current.snapshot.accounts
+            else "default"
+        )
+        try:
+            matches = await provider.lookup(bare_ticker, listing, currency, as_of)
+        except SOURCE_ERRORS:
+            matches = []
+
+        if not matches:
+            return CandidateResult(unresolved=CandidateUnresolved(reason="not_found"))
+        if len(matches) > 1:
+            listings = [
+                CandidateListing(
+                    ticker=m.ticker or bare_ticker,
+                    listing=m.listing,
+                    currency=m.currency,
+                    kind=m.kind,
+                    company_name=m.company_name,
+                )
+                for m in matches
+            ]
+            return CandidateResult(
+                unresolved=CandidateUnresolved(reason="multiple", listings=listings)
+            )
+
+        match = matches[0]
+        pos_listing = match.listing or suffix_listing or "unknown"
+        pos_currency = match.currency or listing_currency(pos_listing) or "USD"
+        pos = Position(
+            id=f"candidate-{match.ticker or bare_ticker}-{pos_listing}",
+            account_id=first_account,
+            kind=match.kind or "stock",
+            currency=pos_currency,
+            ticker=match.ticker or bare_ticker,
+            listing=pos_listing,
+            company_id=match.company_id,
+            company_name=match.company_name,
+            shares=Decimal(0),
+            etf_role="diversified" if match.kind == "etf" else None,
+        )
+
+        if hasattr(provider, "refresh_quotes"):
+            try:
+                await provider.refresh_quotes([pos])
+            except SOURCE_ERRORS:
+                pass
+
+        if getattr(provider, "cache", None):
+            try:
+                cached = provider.cache.get()
+                symbol = eodhd_symbol(pos)
+                if symbol and symbol in cached:
+                    q = cached[symbol]
+                    pos = pos.model_copy(
+                        update={
+                            "mark": Mark(
+                                value=q.value,
+                                as_of=q.as_of,
+                                source=q.source,
+                                captured_at=q.captured_at,
+                                basis=q.basis,
+                            )
+                        }
+                    )
+            except Exception:
+                pass
+
+        ref = getattr(provider, "reference", None)
+        if ref and pos.mark is None:
+            symbol = eodhd_symbol(pos)
+            q = (
+                ref.quotes.get(pos.id)
+                or (ref.quotes.get(symbol) if symbol else None)
+            )
+            if q:
+                pos = pos.model_copy(
+                    update={
+                        "mark": Mark(
+                            value=q.value,
+                            as_of=q.as_of,
+                            source=q.source,
+                            captured_at=q.captured_at,
+                            basis=q.basis,
+                        )
+                    }
+                )
+
+        return CandidateResult(position=pos, is_fund=(match.kind == "etf"))
 
     def market_data() -> FinancialProvider | None:
         try:

@@ -152,12 +152,81 @@ test("an ambiguous or unknown company asks one short question instead of guessin
   await expect(clarification).toContainText('"Acme" matches more than one holding. Which one should I analyze?');
   await expect(clarification.getByRole("button")).toHaveText([/^ACME · Acme Corp/, /^ACMR · Acme Robotics Inc/]);
 
-  await send(page, "What do you think about NVDA?");
-  await expect(clarification).toContainText(`I couldn't match "NVDA" to a holding in your saved portfolio.`);
+  await send(page, "What do you think about UNKNOWNXYZ?");
+  await expect(clarification).toContainText('I couldn\'t find "UNKNOWNXYZ" as a US or Canadian stock.');
   await expect(clarification.getByRole("button", { name: "Review my whole portfolio instead" })).toBeVisible();
   expect(sent).toEqual([]); // nothing was guessed or sent
 
   await clarification.getByRole("button", { name: /^ACME/ }).click();
   await expectStockAnalysis(page);
-  expect(sent.map(body => [body.question, body.stock?.position_id])).toEqual([["What do you think about NVDA?", "tfsa-acme"]]);
+  expect(sent.map(body => [body.question, body.stock?.position_id])).toEqual([["What do you think about UNKNOWNXYZ?", "tfsa-acme"]]);
+});
+
+test("an unowned stock candidate runs Stock Analysis with price source, no-cash memo line, and is excluded from rail and holdings", async ({ page }) => {
+  // Saved portfolio with NO CASH row to test the zero-cash comparison behavior
+  const noCashSaved = {
+    ...SAVED,
+    snapshot: {
+      ...SAVED.snapshot,
+      positions: SAVED.snapshot.positions.filter(p => p.kind !== "cash"),
+    },
+  };
+  const sent = await open(page, noCashSaved);
+  const before = await stored(page);
+
+  await send(page, "What do you think about NVDA?");
+  const memo = page.getByRole("region", { name: "Stock analysis" });
+  await expect(page.locator(".ctx")).toContainText("Stock analysis · NVDA");
+  await expect(page.locator(".echo")).toContainText("What do you think about NVDA?");
+
+  // Your position: unowned note + price source and date label
+  await expect(memo.getByTestId("stock-position")).toContainText("You don't own NVDA today.");
+  await expect(memo.getByTestId("stock-position")).toContainText("Price US$120 · Test provider · Sep 30 · indicative");
+
+  // Cases and reverse valuation
+  await expect(memo.getByTestId("stock-valuation")).toBeVisible();
+  await expect(memo.getByRole("list", { name: "Downside, base and upside" })).toBeVisible();
+
+  // Zero-cash comparison message
+  await expect(memo).toContainText("No cash to compare on. Use /new-cash with an amount to compare against the fund and cash.");
+
+  // Rail excludes unowned candidate row
+  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  await expect(rail.locator(".holdings-mini")).not.toContainText("NVDA");
+
+  // Holdings tab in details panel excludes unowned candidate row
+  const details = page.getByRole("complementary", { name: "Details" });
+  await details.getByRole("tab", { name: "Holdings" }).click();
+  await expect(details).not.toContainText("NVDA");
+
+  // Saved portfolio is never mutated
+  await page.waitForTimeout(600);
+  expect(await stored(page)).toEqual(before);
+  expect(sent.map(body => body.stock?.position_id)).toEqual(["candidate-NVDA-XNAS"]);
+});
+
+test("an unowned fund ticker returns a clear clarify prompt indicating it is a fund", async ({ page }) => {
+  const sent = await open(page);
+  await send(page, "What do you think about SPY?");
+  const clarification = page.getByRole("region", { name: "Clarification" });
+  await expect(clarification).toContainText("SPY is a fund, not a single company. Stock Analysis covers individual US and Canadian stocks; a portfolio review covers your funds.");
+  await expect(clarification.getByRole("button", { name: "Review my whole portfolio instead" })).toBeVisible();
+  expect(sent).toEqual([]); // never sent to /api/analyze
+});
+
+test("a dual-listed ticker prompts to disambiguate listing and runs Stock Analysis upon selection", async ({ page }) => {
+  const sent = await open(page);
+  await send(page, "/stock BMO");
+  const clarification = page.getByRole("region", { name: "Clarification" });
+  await expect(clarification).toContainText('"BMO" matches more than one listing. Which one did you mean?');
+  await expect(clarification.getByRole("button", { name: /BMO \/ XNYS/ })).toBeVisible();
+  await expect(clarification.getByRole("button", { name: /BMO \/ XTSE/ })).toBeVisible();
+
+  await clarification.getByRole("button", { name: /BMO \/ XTSE/ }).click();
+  const memo = page.getByRole("region", { name: "Stock analysis" });
+  await expect(page.locator(".ctx")).toContainText("Stock analysis · BMO");
+  await expect(memo.getByTestId("stock-position")).toContainText("You don't own BMO today.");
+  await expect(memo.getByTestId("stock-position")).toContainText("Price C$130 · Test provider · Sep 30 · indicative");
+  await expect(memo).toContainText("SEDAR+");
+  expect(sent.map(body => body.stock?.position_id)).toEqual(["candidate-BMO-XTSE"]);
 });

@@ -34,7 +34,7 @@ export default function Rail({ snapshot, unresolved, settings, result, decisions
         {review && <span className="portfolio-total n">{money(review.total_value, review.reporting_currency)}</span>}
       </button>
       <span className="holdings-mini n">
-        {review ? review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION).map(row =>
+        {review ? review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION && !row.supplied.id.startsWith("candidate-")).map(row =>
           holding(snapshot.positions.find(held => held.id === row.supplied.id) ?? row.supplied, pct(row.weight)))
           : snapshot.positions.map(row => holding(row, row.kind === "cash" ? money(row.cash ?? null, row.currency) : `${row.shares ?? "?"} sh`))}
       </span>
