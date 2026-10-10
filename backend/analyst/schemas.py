@@ -20,9 +20,13 @@ Currency = Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$")]
 Quantity = Annotated[Decimal, Field(ge=0, le=Decimal("1e12"), max_digits=24, decimal_places=10)]
 Rate = Annotated[Decimal, Field(gt=0, le=Decimal("1e6"), max_digits=24, decimal_places=10)]
 # A reported amount that may be negative (operating income, net income, cash flows).
-SignedAmount = Annotated[Decimal, Field(ge=Decimal("-1e15"), le=Decimal("1e15"), max_digits=28, decimal_places=10)]
+SignedAmount = Annotated[
+    Decimal, Field(ge=Decimal("-1e15"), le=Decimal("1e15"), max_digits=28, decimal_places=10)
+]
 Fraction = Annotated[Decimal, Field(ge=0, le=1, max_digits=11, decimal_places=10)]
-SharesChange = Annotated[Decimal, Field(ge=Decimal("-1e12"), le=Decimal("1e12"), max_digits=24, decimal_places=10)]
+SharesChange = Annotated[
+    Decimal, Field(ge=Decimal("-1e12"), le=Decimal("1e12"), max_digits=24, decimal_places=10)
+]
 
 
 class Contract(BaseModel):
@@ -39,7 +43,9 @@ class Mark(Contract):
     as_of: date
     source: Identifier
     captured_at: AwareDatetime | None = None
-    basis: Literal["unadjusted", "split_adjusted", "total_return_adjusted", "unknown"] = "unadjusted"
+    basis: Literal["unadjusted", "split_adjusted", "total_return_adjusted", "unknown"] = (
+        "unadjusted"
+    )
 
 
 class Position(Contract):
@@ -83,9 +89,8 @@ def is_canadian_security(currency: str | None, listing: str | None) -> bool:
 def is_supported_stock(row: Position) -> bool:
     if row.kind != "stock":
         return False
-    return (
-        (row.currency == "USD" and row.listing in US_LISTINGS)
-        or (row.currency == "CAD" and row.listing in CANADIAN_LISTINGS)
+    return (row.currency == "USD" and row.listing in US_LISTINGS) or (
+        row.currency == "CAD" and row.listing in CANADIAN_LISTINGS
     )
 
 
@@ -159,7 +164,6 @@ class FinancialEvidence(Contract):
     issues: list[str] = Field(default_factory=list)
 
 
-
 class Snapshot(Contract):
     as_of: date
     reporting_currency: Currency
@@ -203,7 +207,22 @@ class Baseline(Contract):
 
     @model_validator(mode="after")
     def check_total(self) -> Self:
-        if sum((value for value in (self.stocks, self.diversified_etfs, self.sector_theme_etfs, self.cash) if value is not None), Decimal(0)) > 1:
+        if (
+            sum(
+                (
+                    value
+                    for value in (
+                        self.stocks,
+                        self.diversified_etfs,
+                        self.sector_theme_etfs,
+                        self.cash,
+                    )
+                    if value is not None
+                ),
+                Decimal(0),
+            )
+            > 1
+        ):
             raise ValueError("Supplied baseline weights cannot exceed the whole portfolio.")
         return self
 
@@ -233,9 +252,14 @@ class ProposedChanges(Contract):
 
     @model_validator(mode="after")
     def check_duplicates(self) -> Self:
-        for ids in ([row.cash_position_id for row in self.new_cash], [row.position_id for row in self.trades]):
+        for ids in (
+            [row.cash_position_id for row in self.new_cash],
+            [row.position_id for row in self.trades],
+        ):
             if len(ids) != len(set(ids)):
-                raise ValueError("Aggregate proposed changes explicitly; duplicate rows are not allowed.")
+                raise ValueError(
+                    "Aggregate proposed changes explicitly; duplicate rows are not allowed."
+                )
         return self
 
 
@@ -284,14 +308,21 @@ class ComparisonInput(Contract):
 
     @model_validator(mode="after")
     def unique_inputs(self) -> Self:
-        for ids in (self.scope_position_ids, [row.id for row in self.alternatives],
-                    [row.position_id for row in self.fund_facts],
-                    [row.alternative_id for row in self.effects]):
+        for ids in (
+            self.scope_position_ids,
+            [row.id for row in self.alternatives],
+            [row.position_id for row in self.fund_facts],
+            [row.alternative_id for row in self.effects],
+        ):
             if len(ids) != len(set(ids)):
                 raise ValueError("Comparison inputs must have unique references.")
-        if len({(row.kind, row.position_id) for row in self.alternatives}) != len(self.alternatives):
+        if len({(row.kind, row.position_id) for row in self.alternatives}) != len(
+            self.alternatives
+        ):
             raise ValueError("Duplicate comparison alternatives are not allowed.")
-        if any(row.alternative_id not in {alt.id for alt in self.alternatives} for row in self.effects):
+        if any(
+            row.alternative_id not in {alt.id for alt in self.alternatives} for row in self.effects
+        ):
             raise ValueError("Effects must reference selected alternatives.")
         return self
 
@@ -428,7 +459,10 @@ class ThemeInput(Contract):
 
     @model_validator(mode="after")
     def bounded(self) -> Self:
-        if len(set(self.shortlist)) != len(self.shortlist) or len(self.shortlist) > self.max_candidates:
+        if (
+            len(set(self.shortlist)) != len(self.shortlist)
+            or len(self.shortlist) > self.max_candidates
+        ):
             raise ValueError("Shortlist must be unique and within the agreed candidate bound.")
         if self.confirmed and (not self.name or not self.mechanism or not self.shortlist):
             raise ValueError("Agreement requires a theme, mechanism and shortlist.")
@@ -465,6 +499,7 @@ class AnalysisRequest(Contract):
     @model_validator(mode="after")
     def comparison_references(self) -> Self:
         import re
+
         if self.theme is not None:
             if self.stock or self.new_cash or self.portfolio_review:
                 raise ValueError("Choose one decision request type.")
@@ -474,78 +509,194 @@ class AnalysisRequest(Contract):
                 if row is None or row.kind not in {"stock", "etf"}:
                     raise ValueError("Shortlist must reference supplied securities.")
                 if row.kind == "stock" and not is_supported_stock(row):
-                    raise ValueError("Shortlist stock research supports US and Canadian listings only.")
+                    raise ValueError(
+                        "Shortlist stock research supports US and Canadian listings only."
+                    )
             if self.comparison is None and self.theme.shortlist:
-                alternatives = [ComparisonAlternative(id=f"candidate-{key}", kind=rows[key].kind, position_id=key) for key in self.theme.shortlist]
-                fund = next((row for row in rows.values() if row.kind == "etf" and row.etf_role == "diversified" and row.id not in self.theme.shortlist), None)
+                alternatives = [
+                    ComparisonAlternative(
+                        id=f"candidate-{key}", kind=rows[key].kind, position_id=key
+                    )
+                    for key in self.theme.shortlist
+                ]
+                fund = next(
+                    (
+                        row
+                        for row in rows.values()
+                        if row.kind == "etf"
+                        and row.etf_role == "diversified"
+                        and row.id not in self.theme.shortlist
+                    ),
+                    None,
+                )
                 cash = next((row for row in rows.values() if row.kind == "cash"), None)
                 if fund:
-                    alternatives.append(ComparisonAlternative(id="fund", kind="etf", position_id=fund.id))
+                    alternatives.append(
+                        ComparisonAlternative(id="fund", kind="etf", position_id=fund.id)
+                    )
                 if cash:
-                    alternatives.append(ComparisonAlternative(id="cash", kind="cash", position_id=cash.id))
+                    alternatives.append(
+                        ComparisonAlternative(id="cash", kind="cash", position_id=cash.id)
+                    )
                 alternatives.append(ComparisonAlternative(id="keep", kind="no_action"))
                 scope = [row.id for row in rows.values() if row.shares or row.cash]
-                self.comparison = ComparisonInput(scope_position_ids=scope or self.theme.shortlist, alternatives=alternatives)
+                self.comparison = ComparisonInput(
+                    scope_position_ids=scope or self.theme.shortlist, alternatives=alternatives
+                )
             if self.comparison:
-                selected = {row.position_id for row in self.comparison.alternatives if row.kind in {"stock", "etf"}}
-                if not set(self.theme.shortlist).issubset(selected) or any(key not in self.theme.shortlist and not (rows.get(str(key)) and rows[str(key)].kind == "etf" and rows[str(key)].etf_role == "diversified") for key in selected):
-                    raise ValueError("Comparison must contain the shortlist and only diversified fund alternatives beyond it.")
-                if not {"cash", "no_action"}.issubset({row.kind for row in self.comparison.alternatives}):
-                    raise ValueError("Theme comparison requires cash and no action.")
+                selected = {
+                    row.position_id
+                    for row in self.comparison.alternatives
+                    if row.kind in {"stock", "etf"}
+                }
+                if not set(self.theme.shortlist).issubset(selected) or any(
+                    key not in self.theme.shortlist
+                    and not (
+                        rows.get(str(key))
+                        and rows[str(key)].kind == "etf"
+                        and rows[str(key)].etf_role == "diversified"
+                    )
+                    for key in selected
+                ):
+                    raise ValueError(
+                        "Comparison must contain the shortlist and only diversified fund alternatives beyond it."
+                    )
+                has_cash = any(row.kind == "cash" for row in rows.values())
+                required = {"cash", "no_action"} if has_cash else {"no_action"}
+                if not required.issubset({row.kind for row in self.comparison.alternatives}):
+                    msg = (
+                        "Theme comparison requires cash and no action."
+                        if has_cash
+                        else "Theme comparison requires no action."
+                    )
+                    raise ValueError(msg)
         if self.portfolio_review is not None:
             if self.new_cash is not None or self.stock is not None:
                 raise ValueError("Choose one decision request type.")
             priors = self.portfolio_review.prior_theses
-            company_ids = {row.company_id for row in self.portfolio.positions if row.kind == "stock"}
-            if len({row.company_id for row in priors}) != len(priors) or any(row.company_id not in company_ids or row.as_of > self.portfolio.as_of for row in priors):
-                raise ValueError("Prior theses must uniquely reference current companies and cannot be future dated.")
+            company_ids = {
+                row.company_id for row in self.portfolio.positions if row.kind == "stock"
+            }
+            if len({row.company_id for row in priors}) != len(priors) or any(
+                row.company_id not in company_ids or row.as_of > self.portfolio.as_of
+                for row in priors
+            ):
+                raise ValueError(
+                    "Prior theses must uniquely reference current companies and cannot be future dated."
+                )
             if self.comparison is None:
                 representatives: dict[str, Position] = {}
                 for held in self.portfolio.positions:
                     if held.kind == "stock" and held.shares and is_supported_stock(held):
                         representatives.setdefault(held.company_id or held.id, held)
-                alternatives = [ComparisonAlternative(id=f"company-{row.id}", kind="stock", position_id=row.id) for row in representatives.values()]
-                fund = next((row for row in self.portfolio.positions if row.kind == "etf" and row.etf_role == "diversified"), None)
+                alternatives = [
+                    ComparisonAlternative(id=f"company-{row.id}", kind="stock", position_id=row.id)
+                    for row in representatives.values()
+                ]
+                fund = next(
+                    (
+                        row
+                        for row in self.portfolio.positions
+                        if row.kind == "etf" and row.etf_role == "diversified"
+                    ),
+                    None,
+                )
                 cash = next((row for row in self.portfolio.positions if row.kind == "cash"), None)
                 if fund:
-                    alternatives.append(ComparisonAlternative(id="fund", kind="etf", position_id=fund.id))
+                    alternatives.append(
+                        ComparisonAlternative(id="fund", kind="etf", position_id=fund.id)
+                    )
                 if cash:
-                    alternatives.append(ComparisonAlternative(id="cash", kind="cash", position_id=cash.id))
+                    alternatives.append(
+                        ComparisonAlternative(id="cash", kind="cash", position_id=cash.id)
+                    )
                 alternatives.append(ComparisonAlternative(id="keep", kind="no_action"))
-                self.comparison = ComparisonInput(scope_position_ids=[row.id for row in self.portfolio.positions], alternatives=alternatives)
-        if self.theme is None and self.portfolio_review is None and self.new_cash is None and self.stock is None and self.comparison is None and self.proposed_changes is None and re.search(r"new cash|allocate.*cash|\$[\d,]+.*what should|what.*\$[\d,]+", self.question, re.I):
+                self.comparison = ComparisonInput(
+                    scope_position_ids=[row.id for row in self.portfolio.positions],
+                    alternatives=alternatives,
+                )
+        if (
+            self.theme is None
+            and self.portfolio_review is None
+            and self.new_cash is None
+            and self.stock is None
+            and self.comparison is None
+            and self.proposed_changes is None
+            and re.search(
+                r"new cash|allocate.*cash|\$[\d,]+.*what should|what.*\$[\d,]+", self.question, re.I
+            )
+        ):
             self.new_cash = NewCashInput()
         if self.new_cash is not None:
-            if self.stock is not None or self.comparison is not None or self.proposed_changes is not None:
-                raise ValueError("New-cash decisions bind their own comparison and previews in the shared pipeline.")
+            if (
+                self.stock is not None
+                or self.comparison is not None
+                or self.proposed_changes is not None
+            ):
+                raise ValueError(
+                    "New-cash decisions bind their own comparison and previews in the shared pipeline."
+                )
             if self.new_cash.account_id is not None and self.new_cash.cash_position_id is None:
-                if all(account.id != self.new_cash.account_id for account in self.portfolio.accounts):
+                if all(
+                    account.id != self.new_cash.account_id for account in self.portfolio.accounts
+                ):
                     raise ValueError("Choose a destination account from the portfolio.")
                 if any(row.id == NEW_CASH_DESTINATION for row in self.portfolio.positions):
                     raise ValueError("Reserved new-cash destination identifier.")
                 currency = self.new_cash.currency or self.portfolio.reporting_currency
-                self.portfolio.positions.append(Position(id=NEW_CASH_DESTINATION, account_id=self.new_cash.account_id,
-                                                         kind="cash", currency=currency, cash=Decimal(0)))
+                self.portfolio.positions.append(
+                    Position(
+                        id=NEW_CASH_DESTINATION,
+                        account_id=self.new_cash.account_id,
+                        kind="cash",
+                        currency=currency,
+                        cash=Decimal(0),
+                    )
+                )
                 self.new_cash.cash_position_id = NEW_CASH_DESTINATION
                 self.new_cash.currency = currency
-            if self.new_cash.cash_position_id is not None and not any(row.id == self.new_cash.cash_position_id and row.kind == "cash" for row in self.portfolio.positions):
-                raise ValueError("Confirm an existing account cash balance for the new contribution.")
+            if self.new_cash.cash_position_id is not None and not any(
+                row.id == self.new_cash.cash_position_id and row.kind == "cash"
+                for row in self.portfolio.positions
+            ):
+                raise ValueError(
+                    "Confirm an existing account cash balance for the new contribution."
+                )
             if any(row.id == "__new_cash__" for row in self.portfolio.positions):
                 raise ValueError("Reserved comparison cash identifier.")
             return self
         if self.stock is not None:
-            target = next((row for row in self.portfolio.positions if row.id == self.stock.position_id), None)
+            target = next(
+                (row for row in self.portfolio.positions if row.id == self.stock.position_id), None
+            )
             if target is None or target.kind != "stock" or not is_supported_stock(target):
                 raise ValueError("Stock research requires a supplied US or Canadian stock listing.")
         if self.stock is not None and self.comparison is None:
-            target = next(row for row in self.portfolio.positions if row.id == self.stock.position_id)
-            cash = next((row for row in self.portfolio.positions if row.kind == "cash" and row.cash), None)
-            fund = next((row for row in self.portfolio.positions if row.kind == "etf" and row.etf_role == "diversified"), None)
-            alternatives = [ComparisonAlternative(id="company", kind="stock", position_id=target.id)]
+            target = next(
+                row for row in self.portfolio.positions if row.id == self.stock.position_id
+            )
+            cash = next(
+                (row for row in self.portfolio.positions if row.kind == "cash" and row.cash), None
+            )
+            fund = next(
+                (
+                    row
+                    for row in self.portfolio.positions
+                    if row.kind == "etf" and row.etf_role == "diversified"
+                ),
+                None,
+            )
+            alternatives = [
+                ComparisonAlternative(id="company", kind="stock", position_id=target.id)
+            ]
             if fund is not None:
-                alternatives.append(ComparisonAlternative(id="fund", kind="etf", position_id=fund.id))
+                alternatives.append(
+                    ComparisonAlternative(id="fund", kind="etf", position_id=fund.id)
+                )
             if cash is not None:
-                alternatives.append(ComparisonAlternative(id="cash", kind="cash", position_id=cash.id))
+                alternatives.append(
+                    ComparisonAlternative(id="cash", kind="cash", position_id=cash.id)
+                )
             alternatives.append(ComparisonAlternative(id="keep", kind="no_action"))
             scope = [target.id] if target.shares else [cash.id] if cash else [target.id]
             self.comparison = ComparisonInput(scope_position_ids=scope, alternatives=alternatives)
@@ -559,21 +710,51 @@ class AnalysisRequest(Contract):
             if alternative.position_id is None:
                 continue
             row = rows.get(alternative.position_id)
-            if alternative.kind == "stock" and self.theme is None and self.portfolio_review is None and (self.stock is None or alternative.position_id != self.stock.position_id):
+            if (
+                alternative.kind == "stock"
+                and self.theme is None
+                and self.portfolio_review is None
+                and (self.stock is None or alternative.position_id != self.stock.position_id)
+            ):
                 raise ValueError("Stock alternatives must use the selected researched listing.")
-            if row is None or (alternative.kind == "etf" and (row.kind != "etf" or row.etf_role != "diversified" and not (self.theme and row.id in self.theme.shortlist))) or (alternative.kind in {"cash", "short_bill"} and row.kind != "cash"):
-                raise ValueError("Select a supplied diversified ETF or a cash-currency row for cash/short bills.")
+            if (
+                row is None
+                or (
+                    alternative.kind == "etf"
+                    and (
+                        row.kind != "etf"
+                        or row.etf_role != "diversified"
+                        and not (self.theme and row.id in self.theme.shortlist)
+                    )
+                )
+                or (alternative.kind in {"cash", "short_bill"} and row.kind != "cash")
+            ):
+                raise ValueError(
+                    "Select a supplied diversified ETF or a cash-currency row for cash/short bills."
+                )
         if self.portfolio_review:
-            if set(comparison.scope_position_ids) != set(rows) or not any(row.kind == "no_action" for row in comparison.alternatives):
-                raise ValueError("Portfolio review comparison must retain the whole portfolio and include no action.")
+            if set(comparison.scope_position_ids) != set(rows) or not any(
+                row.kind == "no_action" for row in comparison.alternatives
+            ):
+                raise ValueError(
+                    "Portfolio review comparison must retain the whole portfolio and include no action."
+                )
             for alt in comparison.alternatives:
                 if alt.kind == "stock":
                     row = rows[str(alt.position_id)]
                     if row.kind != "stock" or not is_supported_stock(row) or not row.shares:
-                        raise ValueError("Review stock alternatives require held US or Canadian listings.")
-        relevant = set(comparison.scope_position_ids) | {row.position_id for row in comparison.alternatives}
+                        raise ValueError(
+                            "Review stock alternatives require held US or Canadian listings."
+                        )
+        relevant = set(comparison.scope_position_ids) | {
+            row.position_id for row in comparison.alternatives
+        }
         for fact in comparison.fund_facts:
-            if fact.position_id not in relevant or fact.position_id not in rows or rows[fact.position_id].kind != "etf":
+            if (
+                fact.position_id not in relevant
+                or fact.position_id not in rows
+                or rows[fact.position_id].kind != "etf"
+            ):
                 raise ValueError("Fund facts must reference ETFs used by the comparison.")
         return self
 
@@ -597,7 +778,9 @@ class Alternative(Contract):
 
 
 class Recommendation(Contract):
-    preferred_action: Literal["review_only", "wait_for_inputs", "no_action", "add", "hold", "reduce", "exit"]
+    preferred_action: Literal[
+        "review_only", "wait_for_inputs", "no_action", "add", "hold", "reduce", "exit"
+    ]
     amount: AllocationAmount | None
     reason: Text
     alternatives: list[Alternative] = Field(min_length=1, max_length=2)
@@ -723,7 +906,9 @@ class GuardrailReview(Contract):
 
 class PortfolioReview(Contract):
     as_of: date  # valuation (analysis) date
-    holdings_as_of: date | None = None  # when the holdings/shares were last confirmed; not the valuation date
+    holdings_as_of: date | None = (
+        None  # when the holdings/shares were last confirmed; not the valuation date
+    )
     reviewed_at: AwareDatetime
     reporting_currency: str
     positions: list[PositionResult]
@@ -812,18 +997,28 @@ class ResearchDocument(Contract):
     @model_validator(mode="after")
     def source_url(self) -> Self:
         from urllib.parse import urlsplit
+
         parsed = urlsplit(self.url)
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
             raise ValueError("Primary evidence needs a public HTTPS reference.")
-        if self.authority == "sec" and (parsed.hostname != "www.sec.gov" or not parsed.path.startswith("/Archives/edgar/data/")):
+        if self.authority == "sec" and (
+            parsed.hostname != "www.sec.gov" or not parsed.path.startswith("/Archives/edgar/data/")
+        ):
             raise ValueError("SEC evidence must reference the original EDGAR filing.")
-        if self.authority in {"sedar", "sedar_plus"} and (parsed.hostname not in {"www.sedarplus.ca", "sedarplus.ca"} or not parsed.path or parsed.path == "/"):
-            raise ValueError("SEDAR+ evidence must reference an exact sedarplus.ca filing verification link.")
+        if self.authority in {"sedar", "sedar_plus"} and (
+            parsed.hostname not in {"www.sedarplus.ca", "sedarplus.ca"}
+            or not parsed.path
+            or parsed.path == "/"
+        ):
+            raise ValueError(
+                "SEDAR+ evidence must reference an exact sedarplus.ca filing verification link."
+            )
         return self
 
 
 class FactSource(Contract):
     """Where one reported number came from, exactly as SEC published it."""
+
     taxonomy: Identifier
     concept: Identifier
     unit: Identifier
@@ -838,18 +1033,61 @@ class FactSource(Contract):
     url: str
 
 
-RESEARCH_METRICS = ("revenue", "shares", "book_value", "ffo", "operating_income", "net_income", "cash", "total_debt",
-                    "operating_cash_flow", "capex", "free_cash_flow", "eps_diluted", "book_value_per_share", "roe",
-                    "cet1_ratio", "dividend_per_share", "weighted_diluted_shares")
-NON_NEGATIVE_METRICS = {"revenue", "shares", "book_value", "ffo", "cash", "total_debt", "capex", "book_value_per_share",
-                        "cet1_ratio", "dividend_per_share", "weighted_diluted_shares"}
+RESEARCH_METRICS = (
+    "revenue",
+    "shares",
+    "book_value",
+    "ffo",
+    "operating_income",
+    "net_income",
+    "cash",
+    "total_debt",
+    "operating_cash_flow",
+    "capex",
+    "free_cash_flow",
+    "eps_diluted",
+    "book_value_per_share",
+    "roe",
+    "cet1_ratio",
+    "dividend_per_share",
+    "weighted_diluted_shares",
+)
+NON_NEGATIVE_METRICS = {
+    "revenue",
+    "shares",
+    "book_value",
+    "ffo",
+    "cash",
+    "total_debt",
+    "capex",
+    "book_value_per_share",
+    "cet1_ratio",
+    "dividend_per_share",
+    "weighted_diluted_shares",
+}
 
 
 class ResearchFact(Contract):
     id: Identifier
-    metric: Literal["revenue", "shares", "book_value", "ffo", "operating_income", "net_income", "cash", "total_debt",
-                    "operating_cash_flow", "capex", "free_cash_flow", "eps_diluted", "book_value_per_share", "roe",
-                    "cet1_ratio", "dividend_per_share", "weighted_diluted_shares"]
+    metric: Literal[
+        "revenue",
+        "shares",
+        "book_value",
+        "ffo",
+        "operating_income",
+        "net_income",
+        "cash",
+        "total_debt",
+        "operating_cash_flow",
+        "capex",
+        "free_cash_flow",
+        "eps_diluted",
+        "book_value_per_share",
+        "roe",
+        "cet1_ratio",
+        "dividend_per_share",
+        "weighted_diluted_shares",
+    ]
     value: SignedAmount | None
     # Per-share amounts carry their currency; ratios (ROE, CET1) are decimal fractions with no currency.
     unit: Literal["currency", "shares", "per_share", "ratio"]
@@ -891,7 +1129,11 @@ class CompanyResearch(Contract):
                 raise ValueError("Research IDs must be unique.")
         if any(row.company_id != self.company_id for row in self.documents):
             raise ValueError("Research must match the backend-bound issuer.")
-        if any(key not in {row.id for row in self.documents} for fact in self.facts for key in fact.document_ids):
+        if any(
+            key not in {row.id for row in self.documents}
+            for fact in self.facts
+            for key in fact.document_ids
+        ):
             raise ValueError("Facts must link to bound primary documents.")
         return self
 
@@ -899,7 +1141,10 @@ class CompanyResearch(Contract):
 class CompanyCase(Contract):
     name: CaseName
     growth: FiveReturns
-    margins: Annotated[list[Annotated[Decimal, Field(ge=-1, le=1, max_digits=11, decimal_places=10)]], Field(min_length=5, max_length=5)]
+    margins: Annotated[
+        list[Annotated[Decimal, Field(ge=-1, le=1, max_digits=11, decimal_places=10)]],
+        Field(min_length=5, max_length=5),
+    ]
     cash_conversion: Annotated[list[Fraction], Field(min_length=5, max_length=5)]
     reinvestment: Annotated[list[Fraction], Field(min_length=5, max_length=5)]
     dilution: FiveReturns
@@ -936,6 +1181,7 @@ class CompanyJudgments(Contract):
 
 class CaseYear(Contract):
     """One modeled year of a company case, as calculated. Money is in the reported metric's currency."""
+
     year: int
     revenue: str | None
     metric: str
@@ -975,6 +1221,7 @@ class CalculatedCompanyCase(Contract):
 
 class StockValuation(Contract):
     """Where today's price sits against the calculated cases. Deterministic; the model interprets it."""
+
     price: str | None
     currency: Currency
     price_as_of: date | None
@@ -982,7 +1229,9 @@ class StockValuation(Contract):
     base: str | None
     upside: str | None
     price_to_base: str | None
-    position: Literal["below_downside", "downside_to_base", "base_to_upside", "above_upside", "unknown"]
+    position: Literal[
+        "below_downside", "downside_to_base", "base_to_upside", "above_upside", "unknown"
+    ]
     # Reported figures for the same period, so the modeled path can be checked against what the company reported.
     reported_margin: str | None = None
     modeled_first_year_margin: str | None = None
@@ -1015,10 +1264,13 @@ class AllocationResult(Contract):
     amount: AllocationAmount | None = None
     previews: list[ProposalReview] = Field(default_factory=list, max_length=2)
     missing_inputs: list[str] = Field(default_factory=list)
-    qualifications: list[str] = Field(default_factory=lambda: [
-        "Approximate exposure is an analyst judgment, not an objectively optimal allocation. Amounts and post-allocation limits are calculated in Python.",
-        "New cash is outside the dated snapshot and added once to the whole-portfolio denominator. Only new cash funds this recommendation; existing cash is retained.",
-        "ETF indirect overlap is unknown, never zero. Supplied cap policy is preserved. Costs, tax and execution effects remain unquantified; orders remain with the user."])
+    qualifications: list[str] = Field(
+        default_factory=lambda: [
+            "Approximate exposure is an analyst judgment, not an objectively optimal allocation. Amounts and post-allocation limits are calculated in Python.",
+            "New cash is outside the dated snapshot and added once to the whole-portfolio denominator. Only new cash funds this recommendation; existing cash is retained.",
+            "ETF indirect overlap is unknown, never zero. Supplied cap policy is preserved. Costs, tax and execution effects remain unquantified; orders remain with the user.",
+        ]
+    )
 
 
 class ThesisAssessment(Contract):
@@ -1051,10 +1303,13 @@ class ReunderwritingResult(Contract):
     research: dict[str, CompanyResearch] = Field(default_factory=dict)
     stocks: list[StockResult] = Field(default_factory=list)
     assessments: list[ThesisAssessment] = Field(default_factory=list)
-    qualifications: list[str] = Field(default_factory=lambda: [
-        "Price movement is context, never proof of thesis failure or a reason to average down. Prior ownership does not protect a weak thesis.",
-        "Target-relative changes use only the supplied baseline. Without it, this is current-exposure and thesis review, without invented targets.",
-        "ETF overlap, missing company coverage, costs and taxes remain unknown. Conditional actions are not orders or justified amounts."])
+    qualifications: list[str] = Field(
+        default_factory=lambda: [
+            "Price movement is context, never proof of thesis failure or a reason to average down. Prior ownership does not protect a weak thesis.",
+            "Target-relative changes use only the supplied baseline. Without it, this is current-exposure and thesis review, without invented targets.",
+            "ETF overlap, missing company coverage, costs and taxes remain unknown. Conditional actions are not orders or justified amounts.",
+        ]
+    )
 
 
 class ThemeResult(Contract):
@@ -1068,10 +1323,13 @@ class ThemeResult(Contract):
     amount: AllocationAmount | None = None
     previews: list[ProposalReview] = Field(default_factory=list, max_length=2)
     missing_inputs: list[str] = Field(default_factory=list)
-    qualifications: list[str] = Field(default_factory=lambda: [
-        "Research is confined to the user-agreed shortlist and tool-call effort bound; there is no market-wide discovery.",
-        "Agency/macro coverage is unavailable in this workflow; a named mechanism without primary support remains unknown.",
-        "Amounts remain undetermined without justified sizing. Costs, taxes and indirect overlap remain qualified; no orders are executed."])
+    qualifications: list[str] = Field(
+        default_factory=lambda: [
+            "Research is confined to the user-agreed shortlist and tool-call effort bound; there is no market-wide discovery.",
+            "Agency/macro coverage is unavailable in this workflow; a named mechanism without primary support remains unknown.",
+            "Amounts remain undetermined without justified sizing. Costs, taxes and indirect overlap remain qualified; no orders are executed.",
+        ]
+    )
 
 
 class AnalysisResult(Contract):
@@ -1122,7 +1380,9 @@ class DecisionReasoning(Contract):
 
 
 class DecisionConclusion(Contract):
-    preferred_action: Literal["review_only", "wait_for_inputs", "no_action", "add", "hold", "reduce", "exit"]
+    preferred_action: Literal[
+        "review_only", "wait_for_inputs", "no_action", "add", "hold", "reduce", "exit"
+    ]
     amount: AllocationAmount | None = None
 
 
@@ -1151,7 +1411,9 @@ class SaveDecisionRequest(Contract):
     @model_validator(mode="after")
     def validate_payload(self) -> Self:
         if self.result is None and self.decision is None:
-            raise ValueError("Provide either a completed analysis result or a saved decision record.")
+            raise ValueError(
+                "Provide either a completed analysis result or a saved decision record."
+            )
         return self
 
 
@@ -1166,9 +1428,9 @@ AnalysisRequest.model_rebuild()
 SaveDecisionRequest.model_rebuild()
 
 
-
 class UnresolvedHolding(Contract):
     """An imported holding whose listing or security type could not be resolved. Only what is known is kept."""
+
     account_id: Identifier
     ticker: Identifier  # as entered, including any exchange suffix
     shares: Quantity
@@ -1182,6 +1444,7 @@ class UnresolvedHolding(Contract):
 
 class SavedPortfolio(Contract):
     """The user's current portfolio and rules. Average cost is kept for the user only and never sent to analysis."""
+
     snapshot: Snapshot
     average_costs: dict[Identifier, Quantity] = Field(default_factory=dict)
     settings: PortfolioSettings | None = None
@@ -1203,11 +1466,13 @@ class SavedPortfolio(Contract):
 
 class RefreshPrices(Contract):
     """Refresh the market-data cache; force fetches again even if today's prices are cached."""
+
     force: bool = False
 
 
 class IdentifyHolding(Contract):
     """The user's answer for one unresolved holding: only the missing listing and/or type."""
+
     account_id: Identifier
     ticker: Identifier
     listing: Identifier | None = None
