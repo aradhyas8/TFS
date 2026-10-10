@@ -3,9 +3,11 @@
 import asyncio
 import json
 import socket
+from datetime import date
 from pathlib import Path
 from typing import Any
 
+from analyst import pipeline
 from analyst.api import create_app
 from analyst.config import Settings
 from analyst.decisions import DecisionStore
@@ -240,6 +242,8 @@ for _file in decision_store.directory.glob("*.json"):
     except OSError:
         pass
 
+# Browser fixtures are dated snapshots: value them on their own date, as the backend tests do.
+pipeline.market_today = lambda: date(2000, 1, 1)
 portfolio_store = PortfolioStore(Path(__file__).parent / "data" / "e2e_portfolio")
 portfolio_store.path.unlink(missing_ok=True)
 

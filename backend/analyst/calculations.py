@@ -129,12 +129,14 @@ def _resolve_constituents(
     return items, fund_coverage
 
 
-def review_portfolio(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:
+def review_portfolio(snapshot: Snapshot, evidence: FinancialEvidence, holdings_as_of: date | None = None) -> PortfolioReview:
     # Decimal keeps supplied financial precision; pandas groups across all accounts;
     # NumPy checks completeness without turning missing values into financial zeroes.
     with localcontext() as context:
         context.prec = 60
-        return _review(snapshot, evidence)
+        review = _review(snapshot, evidence)
+    review.holdings_as_of = holdings_as_of or snapshot.as_of
+    return review
 
 
 def _review(snapshot: Snapshot, evidence: FinancialEvidence) -> PortfolioReview:

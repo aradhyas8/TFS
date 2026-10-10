@@ -37,7 +37,7 @@ BASIS = (
 
 def component(
     row: PositionResult, starting: Decimal | None, driver: ScenarioDriver,
-    reporting_currency: str, fact: FundFacts | None, as_of: date,
+    reporting_currency: str, fact: FundFacts | None, as_of: date, holdings_as_of: date | None = None,
 ) -> ScenarioComponent:
     issues: list[str] = []
     kind = row.supplied.kind
@@ -51,7 +51,7 @@ def component(
             raise ValueError("Reinvested total returns already include income; do not add it twice.")
         if driver.return_basis == "price_only" and driver.income_multipliers is None:
             issues.append("Future income path is unknown; not assumed zero.")
-        if fact is None or fact.as_of != as_of:
+        if fact is None or fact.as_of not in {as_of, holdings_as_of}:
             fact = None
             issues.append("Same-date ETF exposure, costs and income facts are unavailable.")
         if driver.cost_basis == "gross" and (fact is None or fact.annual_cost is None):
@@ -137,7 +137,8 @@ def _calculate(
     for alternative in selection.alternatives:
         ids = selection.scope_position_ids if alternative.kind == "no_action" else [str(alternative.position_id)]
         effect = effects.get(alternative.id)
-        if effect and effect.as_of != portfolio.as_of:
+        # User-entered effects are dated with the holdings they were entered for.
+        if effect and effect.as_of not in {portfolio.as_of, portfolio.holdings_as_of}:
             effect = None
         transaction = effect.transaction_cost if effect else None
         tax = effect.terminal_tax if effect else None
@@ -166,7 +167,7 @@ def _calculate(
                     initial = Decimal(rows[key].value or "0") if starting is not None and rows[key].value is not None else None
                 elif initial is not None and transaction is not None:
                     initial -= transaction
-                computed = component(rows[key], initial, drivers[key], portfolio.reporting_currency, facts.get(key), portfolio.as_of)
+                computed = component(rows[key], initial, drivers[key], portfolio.reporting_currency, facts.get(key), portfolio.as_of, portfolio.holdings_as_of)
                 selected_stock = next((row for row in (stock if isinstance(stock, list) else [stock] if stock else []) if row.position_id == key), None)
                 if selected_stock is not None and rows[key].supplied.kind == "stock":
                     stock_case = next(row for row in selected_stock.cases if row.name == name)

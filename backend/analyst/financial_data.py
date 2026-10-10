@@ -641,6 +641,10 @@ async def refresh_financial_data(snapshot: Snapshot, provider: FinancialProvider
             ):
                 evidence.issues.append(f"{position.id}: Price source coverage or terms are unqualified; broker-display fallback used if supplied.")
                 quote = None
+        if quote is not None and quote.as_of > snapshot.as_of:
+            # The cache keeps the latest price only; a price after the valuation date never values an earlier analysis.
+            evidence.issues.append(f"{position.id}: Cached price is dated after the analysis date; not used.")
+            quote = None
         if quote is None and position.mark and identity.ticker and identity.listing:
             quote = Quote(**position.mark.model_dump(), ticker=identity.ticker,
                           listing=identity.listing, currency=position.currency, status="manual")

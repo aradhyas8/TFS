@@ -1,4 +1,5 @@
 import socket
+from datetime import date
 
 import pytest
 
@@ -14,6 +15,8 @@ def no_live_services(monkeypatch, tmp_path):
         raise AssertionError("Automated tests must not make live network connections.")
 
     monkeypatch.setattr(socket.socket, "connect", blocked)
+    # Fixtures are dated snapshots: a current analysis values them on their own date unless a test sets the clock.
+    monkeypatch.setattr("analyst.pipeline.market_today", lambda: date(2000, 1, 1))
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-backend-only-never-browser")
     monkeypatch.setenv("OPENAI_MODEL", "test-model")
     monkeypatch.setenv("BOC_FX_ENABLED", "false")

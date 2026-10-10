@@ -452,6 +452,15 @@ class AnalysisRequest(Contract):
     new_cash: NewCashInput | None = None
     portfolio_review: PortfolioReviewInput | None = None
     theme: ThemeInput | None = None
+    # Explicit historical valuation date. Absent, the analysis is current: holdings stay as last confirmed on
+    # portfolio.as_of and are valued with the latest acceptable prices on or before today.
+    analysis_date: date | None = None
+
+    @model_validator(mode="after")
+    def analysis_after_holdings(self) -> Self:
+        if self.analysis_date is not None and self.analysis_date < self.portfolio.as_of:
+            raise ValueError("An analysis cannot predate the date the holdings were confirmed.")
+        return self
 
     @model_validator(mode="after")
     def comparison_references(self) -> Self:
@@ -713,7 +722,8 @@ class GuardrailReview(Contract):
 
 
 class PortfolioReview(Contract):
-    as_of: date
+    as_of: date  # valuation (analysis) date
+    holdings_as_of: date | None = None  # when the holdings/shares were last confirmed; not the valuation date
     reviewed_at: AwareDatetime
     reporting_currency: str
     positions: list[PositionResult]

@@ -61,7 +61,7 @@ export type GuardrailReview = {
   qualifications: string[];
 };
 export type Review = {
-  as_of: string; reviewed_at: string; reporting_currency: string; total_value: string | null; known_value: string;
+  as_of: string; holdings_as_of?: string | null; reviewed_at: string; reporting_currency: string; total_value: string | null; known_value: string;
   holdings_value: string | null; cash_value: string | null; complete: boolean;
   positions: { supplied: Position; value: string | null; local_value: string | null; weight: string | null;
     identity_status: string; identity: Identity | null; quote_used: Quote | null;

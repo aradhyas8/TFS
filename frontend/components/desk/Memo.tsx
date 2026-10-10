@@ -5,6 +5,12 @@ import { accountName, answerSentence, caseCurrency, clock, compact, POSITION_LAB
 export type Tab = "evidence" | "scenarios" | "proposed" | "holdings" | "guardrails";
 type Cite = { numbers: Map<string, number>; onCite: (id: string) => void };
 
+// Holdings keep the date they were last confirmed; prices carry their own (newer) date.
+function valuationDates(review: Analysis["portfolio"]): string {
+  const prices = review.positions.map(row => row.quote_used?.as_of).filter((day): day is string => !!day).sort().at(-1);
+  return `Holdings last confirmed ${fullDate(review.holdings_as_of || review.as_of)}${prices ? ` · Prices ${fullDate(prices)}` : ""}`;
+}
+
 export function Row({ label, kind = "", children }: { label: string; kind?: string; children: ReactNode }) {
   return <div className={`row ${kind}`}><span className="lbl">{label}</span><div>{children}</div></div>;
 }
@@ -232,7 +238,7 @@ export function ReviewAnswer({ result, snapshot, cite, saved, onTab, onConfirm }
       <Row label="Recommendation" kind="rec">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 className="display">{rec.preferred_action === "review_only" && over ? `Your portfolio breaks ${over === 1 ? "one" : over} of your rules.` : answerSentence(rec.preferred_action, rec.amount, "", null)}</h2>
-          <span className="cap n meta"><span>{review.complete ? `Valued ${fullDate(review.as_of)}` : "Some values are unknown"}</span>{rules}</span>
+          <span className="cap n meta"><span>{valuationDates(review)}{review.complete ? "" : " · Some values are unknown"}</span>{rules}</span>
         </div>
       </Row>
       <Row label="Why"><p className="body">{rec.reason}<Cites ids={rec.evidence_ids || []} cite={cite} /></p></Row>

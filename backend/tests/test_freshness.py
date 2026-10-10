@@ -100,6 +100,8 @@ def test_unusable_sources_leave_values_unknown_and_amount_unset(fault):
         evidence["quotes"]["p1"]["status"] = "stale"
     elif fault in {"old", "future"}:
         evidence["quotes"]["p1"]["as_of"] = "2026-09-22" if fault == "old" else "2026-10-01"
+        if fault == "future":  # a price after the analysis date is dropped; with no on-or-before price the value is unknown
+            portfolio["positions"][0]["mark"] = None
     elif fault in {"adjusted", "dividend_adjusted"}:
         evidence["quotes"]["p1"]["basis"] = "split_adjusted" if fault == "adjusted" else "total_return_adjusted"
     elif fault == "missing":
@@ -298,3 +300,77 @@ def test_post_split_snapshot_shares_and_unadjusted_price_are_counted_once():
     assert result["portfolio"]["cash_value"] == "1350"
     assert "no split factor is applied again" in result["portfolio"]["calculation_basis"]
     assert "No dividends are added" in result["portfolio"]["calculation_basis"]
+
+
+def dated_evidence(quote_as_of: str, analysis_day: str):
+    """Fixture evidence with p1's cached quote on quote_as_of; identity and FX are re-checked on the analysis day."""
+    evidence = evidence_fixture()
+    evidence["quotes"]["p1"].update(as_of=quote_as_of, captured_at=f"{quote_as_of}T20:00:00Z")
+    for row in [*evidence["identities"].values(), *evidence["fx"]]:
+        row.update(as_of=analysis_day, captured_at=f"{analysis_day}T20:00:00Z")
+    return evidence
+
+
+def analyze_on(monkeypatch, today: str, evidence, *, analysis_date=None, mark=True, store=None):
+    from datetime import date
+    monkeypatch.setattr("analyst.pipeline.market_today", lambda: date.fromisoformat(today))
+    portfolio = snapshot()  # holdings last confirmed 2026-09-30
+    if not mark:
+        portfolio["positions"][0]["mark"] = None
+    model = ScriptedModel([ModelTurn(calls=[ToolCall("review", "review_portfolio", "{}")]), ModelTurn(answer=recommendation())])
+    body = {"question": "Review my portfolio", "portfolio": portfolio, **({"analysis_date": analysis_date} if analysis_date else {})}
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), portfolio_store=store,
+                                     financial=FakeFinancialProvider(FinancialEvidence.model_validate(evidence)))).post("/api/analyze", json=body)
+    assert response.status_code == 200, response.text
+    return response.json()["portfolio"], portfolio
+
+
+def test_current_review_values_older_holdings_with_a_newer_quote(monkeypatch):
+    review, _ = analyze_on(monkeypatch, "2026-10-03", dated_evidence("2026-10-03", "2026-10-03"), mark=False)
+    assert review["positions"][0]["value"] is not None and review["positions"][0]["quote_used"]["as_of"] == "2026-10-03"
+    assert (review["as_of"], review["holdings_as_of"]) == ("2026-10-03", "2026-09-30")
+
+
+def test_current_review_accepts_an_intermediate_quote_within_the_freshness_window(monkeypatch):
+    review, _ = analyze_on(monkeypatch, "2026-10-03", dated_evidence("2026-10-01", "2026-10-03"), mark=False)
+    assert review["positions"][0]["value"] is not None
+
+
+def test_freshness_is_measured_from_the_analysis_date_not_the_holdings_date(monkeypatch):
+    review, _ = analyze_on(monkeypatch, "2026-10-12", dated_evidence("2026-10-01", "2026-10-12"), mark=False)
+    assert review["positions"][0]["value"] is None  # eleven days old on the analysis date
+
+
+def test_historical_review_never_uses_a_later_quote(monkeypatch):
+    review, _ = analyze_on(monkeypatch, "2026-10-03", dated_evidence("2026-10-03", "2026-09-30"), analysis_date="2026-09-30", mark=False)
+    assert review["as_of"] == "2026-09-30"
+    assert review["positions"][0]["value"] is None and review["positions"][0]["quote_used"] is None
+    assert any("dated after the analysis date" in line for line in review["qualifications"])
+
+
+@pytest.mark.parametrize("source", ["cached_quote", "broker_mark"])
+def test_historical_review_uses_a_price_on_or_before_its_date(monkeypatch, source):
+    quote_day = "2026-09-30" if source == "cached_quote" else "2026-10-03"  # a later cached quote falls back to the dated mark
+    review, _ = analyze_on(monkeypatch, "2026-10-03", dated_evidence(quote_day, "2026-09-30"), analysis_date="2026-09-30", mark=source == "broker_mark")
+    assert review["positions"][0]["value"] is not None
+    assert review["positions"][0]["quote_used"]["as_of"] == "2026-09-30"
+
+
+def test_an_analysis_cannot_predate_the_holdings(monkeypatch):
+    from datetime import date
+    monkeypatch.setattr("analyst.pipeline.market_today", lambda: date(2026, 10, 3))
+    response = TestClient(create_app(model=ScriptedModel([]), data=FakeDataProvider())).post(
+        "/api/analyze", json={"question": "Review", "portfolio": snapshot(), "analysis_date": "2026-09-29"})
+    assert response.status_code == 422
+
+
+def test_a_current_review_leaves_the_saved_portfolio_shares_and_date_unchanged(monkeypatch, tmp_path):
+    from analyst.portfolio import PortfolioStore
+    from analyst.schemas import SavedPortfolio, Snapshot
+    store = PortfolioStore(tmp_path)
+    store.save(SavedPortfolio(snapshot=Snapshot.model_validate(snapshot())))
+    before = store.path.read_bytes()
+    review, sent = analyze_on(monkeypatch, "2026-10-03", dated_evidence("2026-10-03", "2026-10-03"), store=store)
+    assert store.path.read_bytes() == before
+    assert [row["supplied"]["shares"] for row in review["positions"]] == [row.get("shares") for row in sent["positions"]]
+    assert review["holdings_as_of"] == sent["as_of"] == "2026-09-30"

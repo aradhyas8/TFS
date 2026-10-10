@@ -2,6 +2,7 @@ import copy
 import json
 import logging
 import re
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -15,7 +16,12 @@ from .allocation import (
     size_allocation,
 )
 from .calculations import review_portfolio
-from .financial_data import FinancialProvider, PersonalFinancialProvider, refresh_financial_data
+from .financial_data import (
+    MARKET_TIME,
+    FinancialProvider,
+    PersonalFinancialProvider,
+    refresh_financial_data,
+)
 from .guardrails import apply_guardrails, has_etf_exposure, preview_changes
 from .providers import DataProvider, ModelProvider, ToolCall
 from .research import ResearchProvider, ReviewedResearchProvider
@@ -478,6 +484,10 @@ def normalize_comparison_judgments(
     return arguments
 
 
+def market_today() -> date:
+    return datetime.now(MARKET_TIME).date()
+
+
 async def analyze(
     request: AnalysisRequest, model: ModelProvider | None, data: DataProvider, secret: str = "",
     financial: FinancialProvider | None = None,
@@ -485,10 +495,15 @@ async def analyze(
     discovery: DiscoveryProvider | None = None,
 ) -> AnalysisResult:
     supplied = data.snapshot(request.portfolio)
+    # The holdings date is when shares were last confirmed, not the valuation date. A current analysis values the
+    # unchanged holdings at the latest acceptable prices on or before today; an explicit analysis_date is historical.
+    holdings_as_of = supplied.as_of
+    analysis_as_of = request.analysis_date or max(market_today(), holdings_as_of)
+    supplied = supplied.model_copy(update={"as_of": analysis_as_of})
     theme = ThemeResult(context=request.theme, status="completed" if request.theme.confirmed else "awaiting_agreement") if request.theme else None
     if theme and not theme.context.confirmed:
         clarification_evidence = await refresh_financial_data(supplied, financial or PersonalFinancialProvider())
-        current = review_portfolio(supplied, clarification_evidence)
+        current = review_portfolio(supplied, clarification_evidence, holdings_as_of)
         apply_guardrails(current, request.settings)
         clarification = AnalysisResult(question=request.question, portfolio=current, theme=theme,
             recommendation=Recommendation(preferred_action="wait_for_inputs", amount=None,
@@ -612,7 +627,7 @@ async def analyze(
                 if evidence is None:
                     evidence = await refresh_financial_data(supplied, financial or PersonalFinancialProvider())
                 if call.name == "review_portfolio":
-                    computed = review_portfolio(supplied, evidence)
+                    computed = review_portfolio(supplied, evidence, holdings_as_of)
                     apply_guardrails(computed, request.settings)
                     if request.proposed_changes is not None and not any(row.source == "user" for row in proposals):
                         proposals.append(preview_changes(supplied, evidence, computed, request.settings, request.proposed_changes, "user"))
@@ -670,7 +685,7 @@ async def analyze(
                             raise InvalidReview("Mechanism claims require completed primary research.")
                         mechanism_available = {doc.id for doc in mechanism_record.documents if doc.available and doc.published_on <= supplied.as_of and doc.as_of <= supplied.as_of} if mechanism_record else set()
                         if target.kind == "etf" and request.comparison:
-                            mechanism_available = {f"fund-{fact.position_id}" for fact in request.comparison.fund_facts if fact.position_id == target.id and fact.as_of == supplied.as_of}
+                            mechanism_available = {f"fund-{fact.position_id}" for fact in request.comparison.fund_facts if fact.position_id == target.id and fact.as_of in {supplied.as_of, holdings_as_of}}
                         if any(key not in mechanism_available for key in mechanism_test.evidence_ids) or mechanism_test.conclusion != "unknown" and not mechanism_test.evidence_ids:
                             raise InvalidReview("Mechanism conclusions require available bound candidate evidence.")
                         theme.tests.append(mechanism_test)

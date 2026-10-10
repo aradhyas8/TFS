@@ -76,7 +76,7 @@ def size_review(request: AnalysisRequest, snapshot: Snapshot, evidence: Financia
     if settings is None or settings.single_company_cap is None or settings.active_budget is None:
         missing.append("Supply applicable numeric company cap and active budget.")
     alternative = next((row for row in request.comparison.alternatives if row.position_id == judgment.position_id and (row.kind == "stock" or isinstance(result, ThemeResult) and row.kind == "etf")), None) if request.comparison else None
-    effect = next((row for row in request.comparison.effects if alternative and row.alternative_id == alternative.id and row.as_of == snapshot.as_of), None) if request.comparison else None
+    effect = next((row for row in request.comparison.effects if alternative and row.alternative_id == alternative.id and row.as_of in {snapshot.as_of, current.holdings_as_of}), None) if request.comparison else None
     if effect is None or effect.transaction_cost is None or effect.terminal_tax is None:
         missing.append("Known dated cost and tax effects are needed for supported adjustment sizing.")
     elif effect.transaction_cost != 0 or effect.terminal_tax != 0:
