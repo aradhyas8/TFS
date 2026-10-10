@@ -294,6 +294,7 @@ export function portfolioReviewComparison(snapshot: Snapshot): ComparisonInput {
 
 
 export type ThemeInput = { risk_context?: string | null; name: string | null; mechanism: string | null; shortlist: string[]; max_candidates: number; max_tool_calls: number; confirmed: boolean };
+export const EMPTY_THEME: ThemeInput = { name: "", mechanism: "", shortlist: [], max_candidates: 1, max_tool_calls: 16, confirmed: false, risk_context: null };
 export type ThemeTest = { position_id: string; conclusion: "supports" | "challenges" | "unknown"; explanation: string; evidence_ids: string[] };
 export type ThemeResult = { context: ThemeInput; status: "awaiting_agreement" | "completed"; researched: string[]; stocks: StockResult[]; tests: ThemeTest[]; tool_calls_used: number; sizing: ReunderwritingResult["sizing"]; amount: AllocationAmount | null; previews: ProposalReview[]; missing_inputs: string[]; qualifications: string[] };
 

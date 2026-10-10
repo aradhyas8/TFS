@@ -10,12 +10,15 @@ export function evidenceFor(result: Analysis | null, decision: SavedDecision | n
   let all: Evidence[] = [];
   if (decision) all = decision.evidence_references.map(ref => ({ id: ref.id, title: ref.title, source: ref.source, date: ref.as_of, url: ref.url, excerpt: ref.excerpt, facts: [], available: true }));
   else if (result) {
-    const stocks = [result.stock, ...(result.allocation?.stocks || []), ...(result.reunderwriting?.stocks || [])].filter((s): s is NonNullable<typeof s> => !!s);
+    const stocks = [result.stock, ...(result.allocation?.stocks || []), ...(result.reunderwriting?.stocks || []), ...(result.theme?.stocks || [])].filter((s): s is NonNullable<typeof s> => !!s);
     all = stocks.flatMap(stock => stock.research.documents.map(doc => ({
       id: doc.id, title: doc.title, source: doc.authority, date: doc.published_on, url: doc.url, excerpt: doc.excerpt, available: doc.available,
       facts: stock.research.facts.filter(fact => fact.document_ids.includes(doc.id)).map(fact => `${fact.metric}: ${fact.value ?? "Unknown"}${fact.unit && fact.unit !== "ratio" ? ` ${fact.unit}` : ""}${fact.period_end ? ` (period ending ${fact.period_end})` : ""}`),
     })));
-    const cited = result.recommendation.evidence_ids || [];
+    const cited = [
+      ...(result.recommendation.evidence_ids || []),
+      ...(result.theme?.tests.flatMap(t => t.evidence_ids) || []),
+    ];
     // A company held in several accounts carries the same documents once per lot.
     all = all.filter((item, index) => all.findIndex(other => other.id === item.id) === index);
     all.sort((a, b) => (cited.includes(a.id) ? cited.indexOf(a.id) : 1e6) - (cited.includes(b.id) ? cited.indexOf(b.id) : 1e6));
@@ -112,12 +115,12 @@ function Valuation({ result }: { result: Analysis }) {
 }
 
 function ScenariosTab({ result, snapshot }: { result: Analysis; snapshot: Snapshot | null }) {
-  const stocks = [result.stock, ...(result.allocation?.stocks || [])].filter((s): s is NonNullable<typeof s> => !!s);
+  const stocks = [result.stock, ...(result.allocation?.stocks || []), ...(result.theme?.stocks || [])].filter((s): s is NonNullable<typeof s> => !!s);
   const comparison = result.comparison;
   const currency = result.portfolio.reporting_currency;
   const altName = (alt: NonNullable<typeof comparison>["alternatives"][number]["selection"]) => alt.kind === "no_action" ? "No action" : alt.kind === "cash" ? "Keep as cash" :
     alt.kind === "short_bill" ? "Short-term bills" : snapshot?.positions.find(row => row.id === alt.position_id)?.ticker || result.portfolio.positions.find(row => row.supplied.id === alt.position_id)?.supplied.ticker || alt.position_id || alt.id;
-  if (!stocks.length && !comparison) return <p className="cap">{result.allocation ? "No scenarios were produced for this answer." : "A portfolio review describes where you stand today; it doesn't project scenarios. /new-cash compares futures for new money."}</p>;
+  if (!stocks.length && !comparison) return <p className="cap">{result.allocation || result.theme ? "No scenarios were produced for this answer." : "A portfolio review describes where you stand today; it doesn't project scenarios. /new-cash compares futures for new money."}</p>;
   return <>
     {stocks.map(stock => {
       const row = snapshot?.positions.find(position => position.id === stock.position_id);

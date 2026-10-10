@@ -1,5 +1,5 @@
 /* Direction D tokens and components. Every selector is scoped under .desk. Spec: docs/ui-direction-d.md */
-body:has(.desk) { margin: 0; background: #131211; }
+body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scroll-padding-bottom: 280px; }
 
 .desk {
   --rail: #0F0E0D; --ground: #131211; --raised: #1A1917; --raised-2: #211F1C;
@@ -33,7 +33,7 @@ body:has(.desk) { margin: 0; background: #131211; }
 .desk .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .desk .skip { position: absolute; left: 8px; top: -48px; z-index: 50; background: var(--text); color: var(--ground); padding: 8px 12px; border-radius: 6px; }
 .desk .skip:focus { top: 8px; }
-.desk sup { line-height: 0; vertical-align: super; font-size: 11px; }
+.desk sup { line-height: 1; vertical-align: super; font-size: 11px; }
 .desk sup button { color: var(--brass); padding: 0 1px; font-variant-numeric: tabular-nums; }
 
 /* Buttons and inputs */
@@ -97,7 +97,7 @@ body:has(.desk) { margin: 0; background: #131211; }
 .desk .indet span { position: absolute; top: 0; bottom: 0; width: 30%; background: var(--brass); animation: desk-slide 2.4s ease-in-out infinite; }
 @keyframes desk-slide { 0% { left: -30%; } 100% { left: 100%; } }
 @media (prefers-reduced-motion: reduce) { .desk .indet span { animation: none; left: 0; width: 100%; opacity: .5; } }
-.desk .scroll { flex: 1; padding: 32px 48px; }
+.desk .scroll { flex: 1; padding: 32px 48px 240px; }
 .desk .col { width: 100%; max-width: 720px; margin: 0 auto; }
 .desk .echo { display: flex; flex-direction: column; gap: 4px; padding-bottom: 24px; }
 .desk .echo .q { font-size: 15px; line-height: 24px; }
@@ -150,11 +150,19 @@ body:has(.desk) { margin: 0; background: #131211; }
 .desk .box { background: var(--raised); border: 1px solid var(--rule-strong); border-radius: 8px; display: flex; flex-direction: column; }
 .desk .box.focus { border-color: var(--brass); }
 .desk .box-line { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 14px; min-height: 56px; }
-.desk .box-line + .box-line, .desk .nc-form + .box-line { border-top: 1px solid var(--rule); }
+.desk .box-line + .box-line, .desk .nc-form + .box-line, .desk .theme-form + .box-line { border-top: 1px solid var(--rule); }
 .desk .box-line input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; font-size: 15px; min-height: 40px; }
 .desk .box-line input::placeholder { color: var(--muted); }
 .desk .prefix { color: var(--brass); white-space: nowrap; }
-.desk .nc-form { padding: 16px 16px 4px; display: flex; flex-direction: column; gap: 14px; }
+.desk .nc-form, .desk .theme-form { padding: 16px 16px 4px; display: flex; flex-direction: column; gap: 14px; }
+.desk .chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.desk .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--raised-2); border: 1px solid var(--rule); border-radius: 6px; font-size: 13px; }
+.desk .chip button { background: transparent; border: 0; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 14px; line-height: 1; }
+.desk .chip button:hover { color: var(--text); }
+.desk .verdict { display: inline-block; padding: 2px 6px; border-radius: 6px; font-size: 12px; font-weight: 500; text-transform: uppercase; }
+.desk .verdict.supports { background: color-mix(in srgb, var(--sage) 18%, transparent); color: var(--sage); }
+.desk .verdict.challenges { background: color-mix(in srgb, var(--amber) 18%, transparent); color: var(--amber); }
+.desk .verdict.unknown { background: var(--raised-2); color: var(--muted); }
 .desk .nc-grid { display: grid; grid-template-columns: 160px 96px minmax(0, 1fr); gap: 16px; }
 .desk .slash { margin-bottom: 8px; background: var(--raised); border: 1px solid var(--rule-strong); border-radius: 8px; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
 .desk .opt { display: grid; grid-template-columns: 150px minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 10px 12px; border-radius: 6px; text-align: left; width: 100%; color: var(--text); }
