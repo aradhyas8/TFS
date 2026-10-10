@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { isThemeCandidate, type NewCashInput, type Position, type Snapshot, type ThemeInput } from "../../lib/contracts";
 import { accountName, fullDate, money, newCashLabel } from "./format";
+import { parseMoney } from "./route";
 
 const WORKFLOWS = [
   { cmd: "/new-cash", text: "Decide where new money should go", live: true },
@@ -181,7 +182,21 @@ export default function Composer({
       onQuestion("");
       return;
     }
-    onWorkflow("new-cash"); onQuestion(rest);
+    if (item.cmd === "/new-cash") {
+      onWorkflow("new-cash");
+      const parsed = parseMoney(rest, snapshot);
+      if (parsed.amount || parsed.currency) {
+        onNewCash({
+          ...newCash,
+          amount: parsed.amount || newCash.amount,
+          currency: parsed.currency || newCash.currency || snapshot?.reporting_currency || null,
+          confirmed: false,
+        });
+      }
+      const defaultQ = rest ? (/\b(invest|put|allocate|new cash)\b/i.test(rest) ? rest : `I have ${rest} to invest`) : "I have new cash to invest";
+      onQuestion(defaultQ);
+      return;
+    }
   }
 
   function keys(event: KeyboardEvent<HTMLInputElement>) {
