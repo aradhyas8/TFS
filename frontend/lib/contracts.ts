@@ -125,11 +125,14 @@ export type NewCashInput = { amount: string | null; cash_position_id: string | n
   account_id?: string | null; currency?: string | null };
 /** The backend binds new money to this temporary zero-balance cash row for one request; it is never saved. */
 export const NEW_CASH_DESTINATION = "new-cash-destination";
+/** A single broad ETF configured alongside portfolio rules for benchmark comparison. */
+export const BENCHMARK_FUND = "benchmark-fund";
+export type BenchmarkSetting = { ticker: string; listing: string; currency: string; name?: string | null };
 /** An imported holding whose listing or type couldn't be resolved; only what is known is filled in. */
 export type UnresolvedHolding = { account_id: string; ticker: string; shares: string; average_cost: string | null;
   currency: string | null; listing: string | null; kind: "stock" | "etf" | null; candidates: string[] };
 export type SavedPortfolio = { snapshot: Snapshot; average_costs: Record<string, string>; settings: PortfolioSettings | null;
-  unresolved: UnresolvedHolding[]; saved_at: string | null };
+  benchmark?: BenchmarkSetting | null; unresolved: UnresolvedHolding[]; saved_at: string | null };
 
 export async function del(path: string): Promise<void> {
   const response = await fetch(path, { method: "DELETE", signal: AbortSignal.timeout(30_000) });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { del, get, isSupportedStock, portfolioReviewComparison, post, put, type Analysis, type CandidateResult, type DecisionAction, type NewCashInput, type PortfolioSettings, type Position, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { BENCHMARK_FUND, del, get, isSupportedStock, portfolioReviewComparison, post, put, type Analysis, type BenchmarkSetting, type CandidateResult, type DecisionAction, type NewCashInput, type PortfolioSettings, type Position, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import Rail from "../../components/desk/Rail";
 import Composer from "../../components/desk/Composer";
 import Panel, { evidenceFor, ImportCsv } from "../../components/desk/Panel";
@@ -33,6 +33,7 @@ export default function DeskPage() {
   const [unresolved, setUnresolved] = useState<UnresolvedHolding[]>([]);
   const [restoring, setRestoring] = useState(true);
   const [settings, setSettings] = useState<PortfolioSettings>({});
+  const [benchmark, setBenchmark] = useState<BenchmarkSetting | null>(null);
   // The holdings and rules last read from or written to the saved portfolio; anything else is a user edit to save.
   const persisted = useRef("");
   const [workflow, setWorkflow] = useState<"new-cash" | null>(null);
@@ -65,16 +66,16 @@ export default function DeskPage() {
     get<SavedDecision[]>("/api/decisions").then(setDecisions).catch(() => setNotice("Saved decisions couldn't be loaded."));
   }, []);
   useEffect(() => {
-    const current = JSON.stringify({ snapshot, settings });
+    const current = JSON.stringify({ snapshot, settings, benchmark });
     if (!snapshot || current === persisted.current) return;
     // Rules are typed a character at a time; save once typing pauses.
     const timer = setTimeout(() => {
       persisted.current = current;
-      put<SavedPortfolio>("/api/portfolio", { snapshot, average_costs: averageCosts, settings: storedSettings(settings), unresolved })
+      put<SavedPortfolio>("/api/portfolio", { snapshot, average_costs: averageCosts, settings: storedSettings(settings), unresolved, benchmark: benchmark ?? null })
         .catch(error => setNotice(error instanceof Error ? `Your change wasn't saved: ${error.message}` : "Your change wasn't saved."));
     }, 400);
     return () => clearTimeout(timer);
-  }, [snapshot, settings, averageCosts, unresolved]);
+  }, [snapshot, settings, benchmark, averageCosts, unresolved]);
   useEffect(() => { if (!run) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [run]);
   useEffect(() => { const reset = () => { if (!document.hidden) document.title = TITLE; }; document.addEventListener("visibilitychange", reset); return () => document.removeEventListener("visibilitychange", reset); }, []);
   // A changed portfolio invalidates the destination and the "this is new money" confirmation, as in the classic view.
@@ -83,10 +84,12 @@ export default function DeskPage() {
 
   function adopt(saved: SavedPortfolio) {
     const restored = saved.settings || {};
-    persisted.current = JSON.stringify({ snapshot: saved.snapshot, settings: restored });
+    const restoredBenchmark = saved.benchmark ?? null;
+    persisted.current = JSON.stringify({ snapshot: saved.snapshot, settings: restored, benchmark: restoredBenchmark });
     setSnapshot(saved.snapshot); setAverageCosts(saved.average_costs); setUnresolved(saved.unresolved); setSettings(restored);
+    setBenchmark(restoredBenchmark);
     // Once a day per holding; a same-day call costs no market-data requests.
-    if (saved.snapshot.positions.some(row => row.kind !== "cash")) void refreshPrices(false);
+    if (saved.snapshot.positions.some(row => row.kind !== "cash") || saved.benchmark) void refreshPrices(false);
   }
 
   async function refreshPrices(force: boolean) {
@@ -110,7 +113,40 @@ export default function DeskPage() {
       // Saved holdings are the current portfolio: priced by the provider today, unless the user dated their own marks or FX.
       const dated = snapshot.positions.some(row => row.mark) || snapshot.fx.length > 0;
       const base = dated ? snapshot : { ...snapshot, as_of: new Date().toLocaleDateString("en-CA") };
-      const portfolio = sent.candidate ? { ...base, positions: [...base.positions, sent.candidate] } : base;
+      let benchmarkRow: Position | null = null;
+      if (benchmark) {
+        let accountId = snapshot.accounts[0]?.id || "default";
+        let includeBenchmark = true;
+        if (sent.newCash) {
+          const destCurrency = sent.newCash.currency || snapshot.reporting_currency;
+          if (benchmark.currency !== destCurrency) {
+            includeBenchmark = false;
+          } else {
+            accountId = sent.newCash.account_id || snapshot.accounts[0]?.id || "default";
+          }
+        }
+        if (includeBenchmark) {
+          benchmarkRow = {
+            id: BENCHMARK_FUND,
+            account_id: accountId,
+            kind: "etf",
+            etf_role: "diversified",
+            currency: benchmark.currency,
+            ticker: benchmark.ticker,
+            listing: benchmark.listing,
+            company_name: benchmark.name || undefined,
+            shares: "0",
+          };
+        }
+      }
+      const portfolio = {
+        ...base,
+        positions: [
+          ...base.positions,
+          ...(benchmarkRow ? [benchmarkRow] : []),
+          ...(sent.candidate ? [sent.candidate] : []),
+        ],
+      };
       // A rebalance is the existing whole-portfolio re-underwriting: no prior theses or risk context unless the user gives them, so no sizing is invented.
       const analysis = await post<Analysis>("/api/analyze", { question: sent.question, portfolio, new_cash: sent.newCash ?? undefined,
         stock: sent.stock ? { position_id: sent.stock } : undefined, settings: storedSettings(settings) ?? undefined,
@@ -231,13 +267,13 @@ export default function DeskPage() {
   }
 
   const sent = run ?? failure ?? answer;
-  const tickerOf = (id: string | null | undefined, cand?: Position | null) => id ? (cand && cand.id === id ? cand.ticker : null) || snapshot?.positions.find(row => row.id === id)?.ticker || answer?.analysis.portfolio.positions.find(row => row.supplied.id === id)?.supplied.ticker || id : null;
+  const tickerOf = (id: string | null | undefined, cand?: Position | null) => id ? (cand && cand.id === id ? cand.ticker : null) || (id === BENCHMARK_FUND ? benchmark?.ticker : null) || snapshot?.positions.find(row => row.id === id)?.ticker || answer?.analysis.portfolio.positions.find(row => row.supplied.id === id)?.supplied.ticker || id : null;
   const sentStock = tickerOf(sent?.stock, sent?.candidate);
   const sentLabel = sent?.newCash && newCashLabel(sent.newCash, snapshot);
   const ctxLabel = reopened ? `Decision · ${shortDate(reopened.saved_at)}` : sentLabel ? `New cash · ${sentLabel}` : sent ? sent.newCash ? "New cash" : sentStock ? `Stock analysis · ${sentStock}` : sent.rebalance ? "Rebalance" : "Portfolio review"
     : workflow ? "New cash" : "New analysis";
   const holdingsCount = snapshot?.positions.filter(row => row.kind !== "cash").length ?? 0;
-  const hasFund = snapshot?.positions.some(row => row.kind === "etf" && row.etf_role === "diversified");
+  const hasFund = snapshot?.positions.some(row => row.kind === "etf" && row.etf_role === "diversified") || !!benchmark;
   const portfolioLine = snapshot ? `${holdingsCount} holding${holdingsCount === 1 ? "" : "s"}${snapshot.positions.length > holdingsCount ? ` and ${snapshot.positions.length - holdingsCount} cash balance${snapshot.positions.length - holdingsCount === 1 ? "" : "s"}` : ""} in ${snapshot.accounts.length} account${snapshot.accounts.length === 1 ? "" : "s"}, your portfolio as of ${fullDate(snapshot.as_of)}` : "";
   const rulesLine = settings.single_company_cap || settings.active_budget ? `Your rules: ${settings.single_company_cap ? `${pct(settings.single_company_cap)} per company` : "no company cap"}, ${settings.active_budget ? `${pct(settings.active_budget)} in active picks` : "no active budget"}` : "No rules set, so no limits are checked";
   const scope = !snapshot ? [] : run?.stock ? [
@@ -327,7 +363,7 @@ export default function DeskPage() {
         onSubmit={() => { if (workflow === "new-cash") void analyze({ question, newCash, stock: null }); else { ask(question); setQuestion(""); } }} />}
     </main>
     <Panel tab={tab} onTab={openTab} onClose={() => setPanelOpen(false)} focus={focus} snapshot={snapshot} setSnapshot={setSnapshot} averageCosts={averageCosts} unresolved={unresolved} onImported={adopt}
-      settings={settings} setSettings={setSettings} result={reopened ? null : result} decision={reopened} running={!!run} onError={setNotice}
+      settings={settings} setSettings={setSettings} benchmark={benchmark} setBenchmark={setBenchmark} result={reopened ? null : result} decision={reopened} running={!!run} onError={setNotice}
       prices={prices} refreshing={refreshing} onRefreshPrices={() => void refreshPrices(true)} />
     <div className="scrim" onClick={() => { setPanelOpen(false); setRailOpen(false); }} aria-hidden="true" />
   </div>;

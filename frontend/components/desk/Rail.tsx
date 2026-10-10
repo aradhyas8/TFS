@@ -1,4 +1,4 @@
-import { isSupportedStock, NEW_CASH_DESTINATION, type Analysis, type PortfolioSettings, type Position, type SavedDecision, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { BENCHMARK_FUND, isSupportedStock, NEW_CASH_DESTINATION, type Analysis, type PortfolioSettings, type Position, type SavedDecision, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import { doneLabel, fullDate, money, pct, shortDate } from "./format";
 
 type Props = {
@@ -34,9 +34,9 @@ export default function Rail({ snapshot, unresolved, settings, result, decisions
         {review && <span className="portfolio-total n">{money(review.total_value, review.reporting_currency)}</span>}
       </button>
       <span className="holdings-mini n">
-        {review ? review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION && !row.supplied.id.startsWith("candidate-")).map(row =>
+        {review ? review.positions.filter(row => row.supplied.id !== NEW_CASH_DESTINATION && !row.supplied.id.startsWith("candidate-") && row.supplied.id !== BENCHMARK_FUND).map(row =>
           holding(snapshot.positions.find(held => held.id === row.supplied.id) ?? row.supplied, pct(row.weight)))
-          : snapshot.positions.map(row => holding(row, row.kind === "cash" ? money(row.cash ?? null, row.currency) : `${row.shares ?? "?"} sh`))}
+          : snapshot.positions.filter(row => row.id !== BENCHMARK_FUND).map(row => holding(row, row.kind === "cash" ? money(row.cash ?? null, row.currency) : `${row.shares ?? "?"} sh`))}
       </span>
       {unresolved.length > 0 && <span className="holdings-mini n">{unresolved.map(row => <span className="pv" key={`${row.account_id}:${row.ticker}`}>
         <span>{row.ticker}</span><span className="amber">needs {[!row.listing && "exchange", !row.kind && "type"].filter(Boolean).join(" and ")}</span></span>)}</span>}

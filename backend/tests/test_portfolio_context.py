@@ -165,3 +165,84 @@ def test_new_cash_analysis_does_not_alter_the_saved_portfolio(tmp_path):
     assert store.path.read_bytes() == before
     assert all(row["id"] != NEW_CASH_DESTINATION for row in api.get("/api/portfolio").json()["snapshot"]["positions"])
     assert saved.saved_at
+
+
+def test_benchmark_field_persists_in_saved_portfolio_outside_settings(tmp_path):
+    api = client(tmp_path)
+    saved = imported(api).json()
+    benchmark = {
+        "ticker": "SPY",
+        "listing": "XNYS",
+        "currency": "USD",
+        "name": "SPDR S&P 500 ETF Trust",
+    }
+    # Update portfolio with benchmark
+    res = api.put("/api/portfolio", json=saved | {"benchmark": benchmark})
+    assert res.status_code == 200, res.text
+    assert res.json()["benchmark"] == benchmark
+    # Stays outside settings
+    assert res.json()["settings"] is None
+
+    # Persists across process restart (save/load)
+    restarted = client(tmp_path)
+    loaded = restarted.get("/api/portfolio").json()
+    assert loaded["benchmark"] == benchmark
+    assert loaded["settings"] is None
+
+    # Re-importing CSV preserves benchmark
+    imported(api, "account,ticker,shares\nMargin,CASH,500\n", as_of="2026-10-05")
+    reloaded = client(tmp_path).get("/api/portfolio").json()
+    assert reloaded["benchmark"] == benchmark
+
+    # Clearing benchmark persists
+    cleared = api.put("/api/portfolio", json=reloaded | {"benchmark": None})
+    assert cleared.status_code == 200
+    assert cleared.json()["benchmark"] is None
+    assert client(tmp_path).get("/api/portfolio").json()["benchmark"] is None
+
+
+def test_market_refresh_includes_saved_benchmark(tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from analyst.financial_data import QuoteCache
+    from analyst.schemas import BENCHMARK_FUND, Quote
+
+    cache = QuoteCache(tmp_path / "market")
+    provider = FakeFinancialProvider(cache=cache)
+    now = datetime.now(ZoneInfo("America/New_York"))
+    cache.put({
+        "SPY.US": Quote(
+            value=Decimal("500"),
+            as_of=now.date(),
+            source="Test provider",
+            basis="unadjusted",
+            ticker="SPY",
+            listing="XNYS",
+            currency="USD",
+            status="delayed",
+            captured_at=now,
+        )
+    })
+
+    store = PortfolioStore(tmp_path / "portfolio")
+    api = TestClient(create_app(financial=provider, portfolio_store=store))
+    imported(api)
+    saved = api.get("/api/portfolio").json()
+    api.put(
+        "/api/portfolio",
+        json=saved
+        | {
+            "benchmark": {
+                "ticker": "SPY",
+                "listing": "XNYS",
+                "currency": "USD",
+                "name": "SPDR S&P 500 ETF Trust",
+            }
+        },
+    )
+
+    refreshed = api.post("/api/market/refresh", json={}).json()
+    assert BENCHMARK_FUND in refreshed["quotes"]
+    assert refreshed["quotes"][BENCHMARK_FUND]["value"] == "500"
+    assert refreshed["quotes"][BENCHMARK_FUND]["currency"] == "USD"
+

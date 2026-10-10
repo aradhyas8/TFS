@@ -34,8 +34,10 @@ from .portfolio import (
 from .providers import DataProvider, ModelProvider, OpenAIModel, SuppliedDataProvider
 from .research import ResearchProvider
 from .schemas import (
+    BENCHMARK_FUND,
     AnalysisRequest,
     AnalysisResult,
+    BenchmarkSetting,
     CandidateListing,
     CandidateRequest,
     CandidateResult,
@@ -138,10 +140,15 @@ def create_app(
             )
             raise HTTPException(422, f"Invalid portfolio CSV: {message}") from None
         imported = await enrich(imported, market_data())
-        # New holdings replace the old ones; the user's rules stay.
+        # New holdings replace the old ones; the user's rules and benchmark stay.
         current = portfolios.get()
         return portfolios.save(
-            imported.model_copy(update={"settings": current.settings if current else None})
+            imported.model_copy(
+                update={
+                    "settings": current.settings if current else None,
+                    "benchmark": current.benchmark if current else None,
+                }
+            )
         )
 
     @app.put("/api/portfolio", response_model=SavedPortfolio)
@@ -171,11 +178,31 @@ def create_app(
         provider = market_data()
         if current is None or not isinstance(provider, PersonalFinancialProvider):
             raise HTTPException(404, "No saved portfolio.")
-        result = await provider.refresh_quotes(current.snapshot.positions, force=request.force)
+        positions = list(current.snapshot.positions)
+        if current.benchmark:
+            first_account = (
+                current.snapshot.accounts[0].id
+                if current.snapshot.accounts
+                else "default"
+            )
+            positions.append(
+                Position(
+                    id=BENCHMARK_FUND,
+                    account_id=first_account,
+                    kind="etf",
+                    currency=current.benchmark.currency,
+                    ticker=current.benchmark.ticker,
+                    listing=current.benchmark.listing,
+                    company_name=current.benchmark.name,
+                    shares=Decimal(0),
+                    etf_role="diversified",
+                )
+            )
+        result = await provider.refresh_quotes(positions, force=request.force)
         cached = provider.cache.get() if provider.cache else {}
         result["quotes"] = {
             position.id: cached[symbol].model_dump(mode="json")
-            for position in current.snapshot.positions
+            for position in positions
             if (symbol := eodhd_symbol(position)) and symbol in cached
         }
         return result

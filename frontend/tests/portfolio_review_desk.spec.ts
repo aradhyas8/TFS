@@ -110,3 +110,91 @@ test("portfolio review: without rules the analyst's own answer is shown and noth
   // A follow-up is a new review of the same saved portfolio.
   await expect(ask).toHaveAttribute("placeholder", "Ask a follow-up. Each question is a fresh analysis of your saved portfolio.");
 });
+
+test("benchmark fund: configure in holdings rules, verify comparison alternative, absent from rail and weights, persist and clear", async ({ page }) => {
+  await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
+  await page.request.delete("/api/test/portfolio");
+  const stockOnly = {
+    snapshot: {
+      as_of: "2026-09-30", reporting_currency: "CAD",
+      accounts: [{ id: "tfsa", name: "TFSA" }],
+      positions: [
+        { id: "tfsa-acme", account_id: "tfsa", kind: "stock", currency: "USD", ticker: "ACME", listing: "XNAS", company_id: "acme", company_name: "Acme Corp",
+          shares: "10", mark: { value: "100", as_of: "2026-09-30", source: "Broker display" } },
+        { id: "tfsa-cash-cad", account_id: "tfsa", kind: "cash", currency: "CAD", cash: "1000" },
+      ],
+      fx: [{ from_currency: "USD", to_currency: "CAD", rate: "1.35", as_of: "2026-09-30", source: "Broker display" }],
+    },
+    average_costs: { "tfsa-acme": "80" },
+    settings: { single_company_cap: "0.5" },
+    unresolved: [],
+  };
+  expect((await page.request.put("/api/portfolio", { data: stockOnly })).ok()).toBeTruthy();
+
+  await page.goto("/");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+
+  // Open details panel on Holdings tab
+  const details = page.getByRole("complementary", { name: "Details" });
+  await details.getByRole("tab", { name: "Holdings" }).click();
+
+  // Benchmark fund rule input
+  const benchmarkInput = page.getByRole("textbox", { name: "Benchmark ETF" });
+  await expect(benchmarkInput).toBeVisible();
+  await benchmarkInput.fill("SPY");
+  await page.getByRole("button", { name: "Set" }).click();
+
+  // Verify resolved benchmark info appears in rules
+  await expect(details).toContainText("Current benchmark: SPY · SPDR S&P 500 ETF Trust");
+
+  // Verify persistence outside settings
+  await expect.poll(async () => {
+    const p = await (await page.request.get("/api/portfolio")).json();
+    return p?.benchmark?.ticker;
+  }).toBe("SPY");
+  const stored = await (await page.request.get("/api/portfolio")).json();
+  expect(stored.benchmark).toEqual({
+    ticker: "SPY",
+    listing: "XNYS",
+    currency: "USD",
+    name: "SPDR S&P 500 ETF Trust",
+  });
+  expect(stored.settings.benchmark).toBeUndefined();
+
+  // Benchmark is absent from rail
+  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  await expect(rail).not.toContainText("SPY");
+  await expect(rail).toContainText("ACME");
+
+  // Run stock analysis for ACME
+  const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
+  await ask.fill("What do you think about ACME?");
+  await page.getByRole("button", { name: "Ask", exact: true }).click();
+
+  const memo = page.getByRole("region", { name: "Stock analysis" });
+  await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
+
+  // Verify SPY appears as an option compared in the memo with unknown costs/facts
+  const optionsCompared = memo.getByRole("list", { name: "Options compared" });
+  await expect(optionsCompared.getByRole("listitem").filter({ hasText: "SPY" })).toContainText("Unknown");
+
+  // Rail shows updated weights from analysis, which sum ACME and cash only (SPY is absent)
+  await expect(rail).not.toContainText("SPY");
+  await expect(rail).toContainText("57.4%");
+  await expect(rail).toContainText("42.6%");
+
+  // Check scenarios tab: benchmark SPY is present as comparison alternative
+  await details.getByRole("tab", { name: "Scenarios" }).click();
+  const compTable = details.getByRole("table", { name: "Five-year comparison" });
+  await expect(compTable).toContainText("SPY");
+  await expect(details).toContainText(/Values are before .* which are unknown and not assumed to be zero|Unknown where costs, fund facts or drivers weren't supplied/);
+
+  // Clear benchmark in Holdings rules
+  await details.getByRole("tab", { name: "Holdings" }).click();
+  await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await expect.poll(async () => {
+    const p = await (await page.request.get("/api/portfolio")).json();
+    return p?.benchmark;
+  }).toBeNull();
+});
+
