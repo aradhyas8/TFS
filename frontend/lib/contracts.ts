@@ -309,3 +309,22 @@ export function themeComparison(snapshot: Snapshot, theme: ThemeInput): Comparis
 export function isThemeCandidate(row: Position): boolean {
   return row.kind === "etf" || (row.kind === "stock" && isSupportedStock(row));
 }
+
+export type CandidateListing = {
+  ticker: string;
+  listing?: string | null;
+  currency?: string | null;
+  kind?: "stock" | "etf" | null;
+  company_name?: string | null;
+};
+
+export type CandidateUnresolved = {
+  reason: "multiple" | "not_found";
+  listings: CandidateListing[];
+};
+
+export type CandidateResult = {
+  position?: Position | null;
+  unresolved?: CandidateUnresolved | null;
+  is_fund?: boolean;
+};

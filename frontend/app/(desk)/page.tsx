@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { del, get, portfolioReviewComparison, post, put, type Analysis, type DecisionAction, type NewCashInput, type PortfolioSettings, type Position, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { del, get, isSupportedStock, portfolioReviewComparison, post, put, type Analysis, type CandidateResult, type DecisionAction, type NewCashInput, type PortfolioSettings, type Position, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import Rail from "../../components/desk/Rail";
 import Composer from "../../components/desk/Composer";
 import Panel, { evidenceFor, ImportCsv } from "../../components/desk/Panel";
@@ -11,7 +11,7 @@ import { clock, fullDate, newCashLabel, pct, shortDate } from "../../components/
 
 /** A question and its workflow: new cash with its input, Stock Analysis of one holding (position ID), a rebalance, else a portfolio review.
  *  Each one is a fresh analysis of the saved portfolio; nothing from an earlier answer is carried over. */
-type Sent = { question: string; newCash: NewCashInput | null; stock?: string | null; rebalance?: boolean };
+type Sent = { question: string; newCash: NewCashInput | null; stock?: string | null; candidate?: Position | null; rebalance?: boolean };
 const EMPTY_CASH: NewCashInput = { amount: null, cash_position_id: null, account_id: null, currency: null, confirmed: false, risk_context: null };
 const durationsKey = (sent: Sent | null) => sent?.newCash ? "desk.newCashDurations" : sent?.stock ? "desk.stockDurations" : sent?.rebalance ? "desk.rebalanceDurations" : "desk.reviewDurations";
 const TITLE = "Analyst";
@@ -109,7 +109,8 @@ export default function DeskPage() {
     try {
       // Saved holdings are the current portfolio: priced by the provider today, unless the user dated their own marks or FX.
       const dated = snapshot.positions.some(row => row.mark) || snapshot.fx.length > 0;
-      const portfolio = dated ? snapshot : { ...snapshot, as_of: new Date().toLocaleDateString("en-CA") };
+      const base = dated ? snapshot : { ...snapshot, as_of: new Date().toLocaleDateString("en-CA") };
+      const portfolio = sent.candidate ? { ...base, positions: [...base.positions, sent.candidate] } : base;
       // A rebalance is the existing whole-portfolio re-underwriting: no prior theses or risk context unless the user gives them, so no sizing is invented.
       const analysis = await post<Analysis>("/api/analyze", { question: sent.question, portfolio, new_cash: sent.newCash ?? undefined,
         stock: sent.stock ? { position_id: sent.stock } : undefined, settings: storedSettings(settings) ?? undefined,
@@ -125,6 +126,53 @@ export default function DeskPage() {
     } catch (error) {
       if (runId.current === id) setFailure({ ...sent, message: error instanceof Error ? error.message : "The analysis could not be completed." });
     } finally { if (runId.current === id) setRun(null); }
+  }
+
+  async function handleCandidate(question: string, ticker: string, listing?: string) {
+    setNotice("");
+    try {
+      const res = await post<CandidateResult>("/api/candidates", { ticker, listing });
+      if (res.is_fund) {
+        setClarify({
+          kind: "clarify",
+          question,
+          options: [],
+          review: true,
+          message: `${ticker.toUpperCase()} is a fund, not a single company. Stock Analysis covers individual US and Canadian stocks; a portfolio review covers your funds.`,
+        });
+        setReopened(null);
+        setCollapsed(false);
+        return;
+      }
+      if (res.unresolved?.reason === "multiple") {
+        setClarify({
+          kind: "clarify",
+          question,
+          options: [],
+          review: false,
+          candidateListings: res.unresolved.listings,
+          message: `"${ticker}" matches more than one listing. Which one did you mean?`,
+        });
+        setReopened(null);
+        setCollapsed(false);
+        return;
+      }
+      if (res.unresolved?.reason === "not_found" || !res.position) {
+        setClarify({
+          kind: "clarify",
+          question,
+          options: (snapshot?.positions || []).filter(isSupportedStock),
+          review: true,
+          message: `I couldn't find "${ticker}" as a US or Canadian stock. Which holding did you mean?`,
+        });
+        setReopened(null);
+        setCollapsed(false);
+        return;
+      }
+      void analyze({ question, newCash: null, stock: res.position.id, candidate: res.position });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Candidate lookup failed.");
+    }
   }
 
   async function deleteDecision(decision: SavedDecision) {
@@ -147,6 +195,7 @@ export default function DeskPage() {
   function ask(text: string) {
     const next = route(text, snapshot);
     if (next.kind === "clarify") { setClarify(next); setReopened(null); setCollapsed(false); return; }
+    if (next.kind === "candidate") { void handleCandidate(next.question, next.ticker); return; }
     void analyze({ question: next.question, newCash: null, stock: next.kind === "stock" ? next.position.id : null, rebalance: next.kind === "rebalance" });
   }
   const analyzeStock = (position: Position, question: string) => void analyze({ question, newCash: null, stock: position.id });
@@ -182,8 +231,8 @@ export default function DeskPage() {
   }
 
   const sent = run ?? failure ?? answer;
-  const tickerOf = (id: string | null | undefined) => id ? snapshot?.positions.find(row => row.id === id)?.ticker || answer?.analysis.portfolio.positions.find(row => row.supplied.id === id)?.supplied.ticker || id : null;
-  const sentStock = tickerOf(sent?.stock);
+  const tickerOf = (id: string | null | undefined, cand?: Position | null) => id ? (cand && cand.id === id ? cand.ticker : null) || snapshot?.positions.find(row => row.id === id)?.ticker || answer?.analysis.portfolio.positions.find(row => row.supplied.id === id)?.supplied.ticker || id : null;
+  const sentStock = tickerOf(sent?.stock, sent?.candidate);
   const sentLabel = sent?.newCash && newCashLabel(sent.newCash, snapshot);
   const ctxLabel = reopened ? `Decision · ${shortDate(reopened.saved_at)}` : sentLabel ? `New cash · ${sentLabel}` : sent ? sent.newCash ? "New cash" : sentStock ? `Stock analysis · ${sentStock}` : sent.rebalance ? "Rebalance" : "Portfolio review"
     : workflow ? "New cash" : "New analysis";
@@ -213,7 +262,7 @@ export default function DeskPage() {
   if (reopened) center = <Historical decision={reopened} snapshot={snapshot} cite={cite} onConfirm={(action, notes) => confirm(reopened, action, notes)}
     onRerun={() => { setReopened(null); setWorkflow(reopened.conclusion.preferred_action === "review_only" ? null : "new-cash"); setQuestion(reopened.question); setCollapsed(false); setTab("holdings"); }} />;
   else if (run) center = <><Echo question={run.question} newCash={run.newCash} snapshot={snapshot} stock={sentStock} rebalance={run.rebalance} /><Waiting title={run.newCash ? "Analyzing your new cash." : run.stock ? `Analyzing ${sentStock}.` : run.rebalance ? "Checking whether anything should change." : "Reviewing your portfolio."} startedAt={run.startedAt} now={now} past={past} scope={scope} onStop={stopWaiting} /></>;
-  else if (clarify) center = <Clarify {...clarify} onStock={position => analyzeStock(position, clarify.question)} onReview={() => review(clarify.question.startsWith("/") ? "Review my portfolio" : clarify.question)} />;
+  else if (clarify) center = <Clarify {...clarify} onStock={position => analyzeStock(position, clarify.question)} onReview={() => review(clarify.question.startsWith("/") ? "Review my portfolio" : clarify.question)} candidateListings={clarify.candidateListings} onSelectListing={listing => void handleCandidate(clarify.question, listing.ticker, listing.listing ?? undefined)} />;
   else if (failure) center = <><Echo question={failure.question} newCash={failure.newCash} snapshot={snapshot} stock={sentStock} rebalance={failure.rebalance} /><Failure message={failure.message} onRetry={() => analyze(failure)} /></>;
   else if (answer?.analysis.reunderwriting) center = <RebalanceAnswer key={answer.analysis.portfolio.reviewed_at} result={answer.analysis} snapshot={snapshot} cite={cite} saved={saved} onTab={openTab}
     onConfirm={(action, notes) => saved ? confirm(saved, action, notes) : Promise.resolve()} />;

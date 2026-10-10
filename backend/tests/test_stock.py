@@ -1,5 +1,6 @@
 import copy
 import json
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -554,3 +555,31 @@ def test_stray_citation_is_removed_but_fabricated_evidence_fails():
     recommendation = response.json()["recommendation"]
     assert "quote-p1" not in recommendation["evidence_ids"] and recommendation["preferred_action"] == "hold"
     assert "A citation to a document not available to this analysis was removed." in recommendation["uncertainty"]
+
+
+def test_stock_analysis_zero_share_candidate_with_no_cash():
+    req = stock_request()
+    # Filter out cash rows
+    req["portfolio"]["positions"] = [p for p in req["portfolio"]["positions"] if p["kind"] != "cash"]
+    # Change p1 to a zero-share candidate row
+    candidate = {
+        "id": "candidate-acme-xnas",
+        "account_id": "tfsa",
+        "kind": "stock",
+        "ticker": "ACME",
+        "listing": "XNAS",
+        "company_id": "acme",
+        "company_name": "Acme",
+        "shares": "0",
+        "currency": "USD",
+        "mark": {"value": "100", "as_of": "2026-09-30", "source": "Broker display"},
+    }
+    req["portfolio"]["positions"] = [candidate, *[p for p in req["portfolio"]["positions"] if p["id"] != "p1"]]
+    req["stock"] = {"position_id": "candidate-acme-xnas"}
+
+    response, model = run_stock(request=req)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["stock"] is not None
+    assert result["comparison"] is not None
+    assert Decimal(result["comparison"]["starting_value"]) == Decimal(0)

@@ -1,12 +1,13 @@
 // Natural chat routing for the desk: which workflow a typed question becomes. Deterministic and local:
 // a company is matched only against the saved holdings, and anything unclear is asked, never guessed.
-import { isSupportedStock, type Position, type Snapshot } from "../../lib/contracts";
+import { isSupportedStock, type CandidateListing, type Position, type Snapshot } from "../../lib/contracts";
 
 export type Route =
   | { kind: "review"; question: string }
   | { kind: "rebalance"; question: string }
   | { kind: "stock"; question: string; position: Position }
-  | { kind: "clarify"; question: string; message: string; options: Position[]; review: boolean };
+  | { kind: "candidate"; question: string; ticker: string }
+  | { kind: "clarify"; question: string; message: string; options: Position[]; review: boolean; candidateListings?: CandidateListing[] };
 
 // Words that make a question about the whole portfolio rather than one company.
 const PORTFOLIO = /\b(portfolio|holdings|exposure|allocation|allocate|concentration|overlap|rebalanc\w*|diversif\w*|my rules|cash|money)\b/i;
@@ -69,6 +70,13 @@ function resolved(question: string, found: Position[], reference: string, stocks
     message: `I couldn't match "${reference}" to a holding in your saved portfolio. Stock Analysis works on companies you own. Which one did you mean?` };
 }
 
+function isCandidateTicker(text: string, anyCase = false): boolean {
+  const trimmed = text.trim();
+  const bare = trimmed.replace(/^\$/, "");
+  if (!/^[A-Za-z][A-Za-z0-9.-]{0,11}(\.[A-Za-z]{1,4})?$/.test(bare)) return false;
+  return anyCase || trimmed.startsWith("$") || bare === bare.toUpperCase();
+}
+
 export function route(raw: string, snapshot: Snapshot | null): Route {
   const question = raw.trim();
   const stocks = (snapshot?.positions || []).filter(row => row.kind !== "cash" && (row.shares === undefined || row.shares === null || Number(row.shares) > 0));
@@ -79,10 +87,15 @@ export function route(raw: string, snapshot: Snapshot | null): Route {
     const reference = command[2].trim();
     if (!reference) return { kind: "clarify", question, options: stocks.filter(isSupportedStock), review: false, message: "Which holding should I analyze?" };
     const found = byTicker(reference, stocks, true);
-    return resolved(question, found.length ? found : byName(reference, stocks), reference, stocks);
+    if (found.length) return resolved(question, found, reference, stocks);
+    const named = byName(reference, stocks);
+    if (named.length) return resolved(question, named, reference, stocks);
+    if (isCandidateTicker(reference, true)) return { kind: "candidate", question, ticker: reference.replace(/^\$/, "") };
+    return resolved(question, [], reference, stocks);
   }
   // Rebalancing covers every holding, so a ticker in the question doesn't narrow it to Stock Analysis.
   if (!command && REBALANCE.test(question)) return { kind: "rebalance", question };
+  if (!command && isCandidateTicker(question, false)) return { kind: "candidate", question, ticker: question.replace(/^\$/, "") };
   const tickers = companies(byTicker(question, stocks, false));
   const intent = question.match(INTENT);
   const subject = intent?.[1] || "";
@@ -95,5 +108,6 @@ export function route(raw: string, snapshot: Snapshot | null): Route {
   if (named.length) return resolved(question, named, subject, stocks);
   // "How is it going", "how's the market" and similar name no company.
   if (/^(it|this|that|the market|everything|my)\b/i.test(subject)) return { kind: "review", question };
+  if (isCandidateTicker(subject, false)) return { kind: "candidate", question, ticker: subject.trim().replace(/^\$/, "") };
   return resolved(question, [], subject, stocks);
 }

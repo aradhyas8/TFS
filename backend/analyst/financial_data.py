@@ -264,6 +264,16 @@ class PersonalFinancialProvider:
         is asked next; if it cannot name a Canadian listing or a type, EODHD search (one call) fills in.
         Whatever is still missing is asked of the user.
         """
+        if self.reference and self.reference.identities:
+            matching = [
+                row
+                for row in self.reference.identities.values()
+                if row.ticker == ticker
+                and (listing is None or row.listing == listing)
+                and (currency is None or row.currency == currency)
+            ]
+            if matching:
+                return matching
         tickers, names = await self._sec_safe()
         now = datetime.now(UTC)
         want_us = listing in US_LISTINGS or listing is None and currency in {None, "USD"}
@@ -403,7 +413,16 @@ class PersonalFinancialProvider:
 
     async def identity(self, position: Position, as_of: date) -> Identity:
         """The identity resolved at import, re-checked against SEC only. Costs no EODHD calls."""
-        reference = self.reference.identities.get(position.id)
+        reference = (
+            self.reference.identities.get(position.id)
+            or (self.reference.identities.get(position.ticker) if position.ticker else None)
+            or (self.reference.identities.get(position.ticker.lower()) if position.ticker else None)
+        )
+        if reference is None and self.reference and self.reference.identities:
+            for row in self.reference.identities.values():
+                if row and row.ticker == position.ticker and (position.listing is None or row.listing == position.listing):
+                    reference = row
+                    break
         if reference is not None:
             return reference
         identity = Identity(
@@ -423,7 +442,16 @@ class PersonalFinancialProvider:
 
     async def quote(self, position: Position, as_of: date) -> Quote | None:
         """The cached quote only. Analysis never calls the market-data source."""
-        supplied = self.reference.quotes.get(position.id)
+        supplied = (
+            self.reference.quotes.get(position.id)
+            or (self.reference.quotes.get(position.ticker) if position.ticker else None)
+            or (self.reference.quotes.get(position.ticker.lower()) if position.ticker else None)
+        )
+        if supplied is None and self.reference and self.reference.quotes:
+            for row in self.reference.quotes.values():
+                if row and row.ticker == position.ticker and (position.listing is None or row.listing == position.listing):
+                    supplied = row
+                    break
         symbol = eodhd_symbol(position)
         if supplied or self.cache is None or symbol is None:
             return supplied
