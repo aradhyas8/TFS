@@ -1645,12 +1645,14 @@ class PreparationResult(Contract):
 def model_safe(value: Any) -> Any:
     """Remove private costs/state at every nesting level, including historical JSON text."""
     if isinstance(value, dict):
+        if value.get("type") == "reasoning":
+            return {}
         if "average_cost" in str(value.get("path", "")):
             return {"description": "Private portfolio field omitted."}
         return {
             key: ({} if key == "average_costs" else None if key == "average_cost" else model_safe(item))
             for key, item in value.items()
-            if key not in {"private_continuation", "continuation", "encrypted_content", "reasoning"}
+            if key not in {"private_continuation", "continuation", "encrypted_content"}
         }
     if isinstance(value, list):
         return [model_safe(item) for item in value]

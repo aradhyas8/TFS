@@ -14,7 +14,7 @@ from analyst.config import Settings
 from analyst.orchestrator import Orchestrator
 from analyst.portfolio import PortfolioStore
 from analyst.providers import ModelTurn, ToolCall
-from analyst.schemas import SavedPortfolio, ToolOutcome
+from analyst.schemas import SavedDecision, SavedPortfolio, ToolOutcome
 
 
 def sample_portfolio() -> SavedPortfolio:
@@ -374,3 +374,71 @@ def test_oversized_historical_message_reference_still_excludes_private_fields(tm
     request = json.dumps(model.requests[0])
     assert "old-tool" in request
     assert "SECRET-COST" not in request and "SECRET-STATE" not in request
+
+
+def test_retrieved_investment_reasoning_survives_private_state_redaction(tmp_path: Path) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(sample_portfolio())
+    rationale = {"reasoning": {"thesis": "Diversification reduces issuer concentration.",
+                               "nested": [{"reasoning": "Keep enough cash for withdrawals.",
+                                           "average_cost": "PRIVATE-COST"}]}}
+    decision = SavedDecision.model_validate({
+        "id": "saved-decision", "saved_at": "2025-01-01T00:00:00Z", "as_of": "2025-01-01",
+        "question": "Why diversify?",
+        "reasoning": {"reason": "Diversification reduces issuer concentration.",
+                      "downside": "Fund values can still decline."},
+        "conclusion": {"preferred_action": "no_action"},
+    }).model_dump(mode="json")
+    model = CapturingTransport([
+        ModelTurn(calls=[ToolCall("decision", "get_artifact", '{"artifact_id":"decision"}')]),
+        ModelTurn(text="The saved rationale remains available."),
+    ])
+    with client_for(store, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        ref = store.db.get_artifact_reference("art-rev-1").model_copy(update={"id": "decision", "kind": "analysis_result"})
+        store.db.store_artifact(ref, {
+            "saved_decision": decision, "explanation": rationale,
+            "private_continuation": [{"type": "reasoning", "summary": "PRIVATE-CONTINUATION"}],
+            "nested": [{"type": "reasoning", "summary": [{"text": "PRIVATE-SUMMARY"}],
+                        "encrypted_content": "PRIVATE-TOKEN"}],
+            "average_costs": {"pos-1": "PRIVATE-COST"},
+        })
+        store.db.add_message(thread, "assistant", "Saved decision", artifact_ids=["decision"])
+        assert submit(client, thread, "Why was that decision saved?")["status"] == "completed"
+        projected = client.get("/api/artifacts/decision?projection=model").json()["payload"]
+        human = client.get("/api/artifacts/decision").json()["payload"]
+    retrieved = json.loads(model.requests[-1]["messages"][-1]["output"])["payload"]
+    for payload in [projected, retrieved]:
+        assert payload["saved_decision"] == decision
+        assert payload["explanation"]["reasoning"]["thesis"] == "Diversification reduces issuer concentration."
+        assert payload["explanation"]["reasoning"]["nested"][0]["reasoning"] == "Keep enough cash for withdrawals."
+        assert "PRIVATE-" not in json.dumps(payload)
+    assert human["saved_decision"] == decision and human["explanation"] == rationale
+    assert "PRIVATE-TOKEN" in json.dumps(human)
+
+
+def test_historical_user_json_keeps_reasoning_and_removes_private_state(tmp_path: Path) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    model = CapturingTransport([])
+    with client_for(store, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        earlier = {"reasoning": "Hold cash for next year's planned withdrawal.",
+                   "nested": [{"reasoning": {"reason": "Avoid forced sales.", "average_cost": "PRIVATE-COST"}}],
+                   "continuation": [{"type": "reasoning", "summary": "PRIVATE-STATE"}],
+                   "model_item": {"type": "reasoning", "summary": [{"text": "PRIVATE-SUMMARY"}]}}
+        old = store.db.add_message(thread, "user", json.dumps(earlier))
+        cursor = store.db.add_message(thread, "user", "Retrieve before this").id
+        model.turns = iter([
+            ModelTurn(calls=[ToolCall("older", "get_messages", json.dumps({"before_id": cursor, "limit": 20}))]),
+            ModelTurn(text="Your withdrawal rationale remains available."),
+        ])
+        assert submit(client, thread, "Explain my earlier rationale")["status"] == "completed"
+        durable = client.get(f"/api/threads/{thread}").json()["messages"]
+        assert next(m["text"] for m in durable if m["id"] == old.id) == json.dumps(earlier)
+    automatic = json.loads(model.requests[0]["messages"][2]["content"])
+    retrieved = json.loads(model.requests[-1]["messages"][-1]["output"])["messages"][0]
+    for message in [automatic, json.loads(retrieved["content"])]:
+        projected = json.loads(message["text"])
+        assert projected["reasoning"] == "Hold cash for next year's planned withdrawal."
+        assert projected["nested"][0]["reasoning"]["reason"] == "Avoid forced sales."
+        assert "PRIVATE-" not in json.dumps(projected)
