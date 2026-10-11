@@ -15,6 +15,7 @@ from .persistence import Database
 from .schemas import (
     CANADIAN_LISTINGS,
     US_LISTINGS,
+    ArtifactEnvelope,
     ArtifactReference,
     CSVRequest,
     FinancialEvidence,
@@ -252,12 +253,20 @@ class PortfolioStore:
         self,
         artifact_id: str,
         projection: Literal["human", "model"] = "human",
-    ) -> dict[str, Any] | None:
+    ) -> Any | None:
         """Retrieve stored artifact payload."""
         return self.db.get_artifact(artifact_id, projection=projection)
 
     def get_artifact_reference(self, artifact_id: str) -> ArtifactReference | None:
         """Retrieve artifact reference metadata."""
         return self.db.get_artifact_reference(artifact_id)
+
+    def get_artifact_envelope(
+        self,
+        artifact_id: str,
+        projection: Literal["human", "model"] = "human",
+    ) -> ArtifactEnvelope | None:
+        """Retrieve stored artifact envelope containing reference and projected payload."""
+        return self.db.get_artifact_envelope(artifact_id, projection=projection)
 
 

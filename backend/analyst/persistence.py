@@ -8,9 +8,10 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Generator, Literal, cast
+from typing import Any, Generator, Literal
 
 from .schemas import (
+    ArtifactEnvelope,
     ArtifactReference,
     DifferenceItem,
     PortfolioProposal,
@@ -215,11 +216,10 @@ class Database:
     def store_artifact(
         self,
         reference: ArtifactReference,
-        portfolio: SavedPortfolio,
+        payload: Any,
     ) -> None:
         """Store immutable artifact payload and metadata."""
-        # Store human-projection payload natively with Decimal serialization
-        raw_payload = build_artifact_payload(portfolio, projection="human")
+        raw_payload = build_artifact_payload(payload, kind=reference.kind, projection="human")
         payload_json = json.dumps(raw_payload, cls=DecimalEncoder)
 
         with self.connect() as conn:
@@ -281,23 +281,48 @@ class Database:
         self,
         artifact_id: str,
         projection: Literal["human", "model"] = "human",
-    ) -> dict[str, Any] | None:
+    ) -> Any | None:
         """Retrieve stored artifact payload with the chosen projection."""
         with self.connect() as conn:
             cursor = conn.execute(
-                "SELECT payload_json FROM artifacts WHERE id = ?;",
+                "SELECT kind, payload_json FROM artifacts WHERE id = ?;",
                 (artifact_id,),
             )
             row = cursor.fetchone()
             if not row:
                 return None
             data = json.loads(row["payload_json"])
+            kind = row["kind"]
 
-            if projection == "model":
-                data["average_costs"] = {}
-                for item in data.get("unresolved", []):
-                    item["average_cost"] = None
-            return cast(dict[str, Any], data)
+            if kind == "portfolio_snapshot" and projection == "model":
+                if isinstance(data, dict):
+                    data = dict(data)
+                    data["average_costs"] = {}
+                    if "unresolved" in data and isinstance(data["unresolved"], list):
+                        unresolved_clean = []
+                        for item in data["unresolved"]:
+                            if isinstance(item, dict):
+                                item_copy = dict(item)
+                                item_copy["average_cost"] = None
+                                unresolved_clean.append(item_copy)
+                            else:
+                                unresolved_clean.append(item)
+                        data["unresolved"] = unresolved_clean
+            return data
+
+    def get_artifact_envelope(
+        self,
+        artifact_id: str,
+        projection: Literal["human", "model"] = "human",
+    ) -> ArtifactEnvelope | None:
+        """Retrieve stored artifact envelope containing reference and projected payload."""
+        ref = self.get_artifact_reference(artifact_id)
+        if not ref:
+            return None
+        payload = self.get_artifact(artifact_id, projection=projection)
+        if payload is None:
+            return None
+        return ArtifactEnvelope(reference=ref, payload=payload)
 
     def get_artifact_reference(self, artifact_id: str) -> ArtifactReference | None:
         """Retrieve artifact reference metadata without the full payload."""

@@ -2,7 +2,7 @@ import csv
 import io
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -48,6 +48,7 @@ from .schemas import (
     BENCHMARK_FUND,
     AnalysisRequest,
     AnalysisResult,
+    ArtifactEnvelope,
     ArtifactReference,
     CancelProposalResult,
     CandidateListing,
@@ -296,15 +297,21 @@ def create_app(
         payload = portfolios.get_artifact(artifact_id, projection=projection)
         if payload is None:
             raise HTTPException(404, f"Artifact '{artifact_id}' not found.")
-        return payload
+        return cast(dict[str, Any], payload)
 
     @app.post("/api/artifacts", response_model=ArtifactReference)
     def create_artifact_alias(request: CreateArtifactRequest) -> ArtifactReference:
         return create_portfolio_artifact(request)
 
-    @app.get("/api/artifacts/{artifact_id}", response_model=ArtifactReference)
-    def get_artifact_alias(artifact_id: str) -> ArtifactReference:
-        return get_portfolio_artifact(artifact_id)
+    @app.get("/api/artifacts/{artifact_id}", response_model=ArtifactEnvelope)
+    def get_generic_artifact(
+        artifact_id: str,
+        projection: Literal["human", "model"] = "human",
+    ) -> ArtifactEnvelope:
+        envelope = portfolios.get_artifact_envelope(artifact_id, projection=projection)
+        if envelope is None:
+            raise HTTPException(404, f"Artifact '{artifact_id}' not found.")
+        return envelope
 
 
 

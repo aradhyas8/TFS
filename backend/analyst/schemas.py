@@ -1556,7 +1556,14 @@ class RevisionedPortfolio(Contract):
 
 
 ArtifactBasis = Literal["committed", "hypothetical", "none"]
-ArtifactKind = Literal["portfolio_snapshot"]
+ArtifactKind = Literal[
+    "portfolio_snapshot",
+    "analysis_result",
+    "company_research",
+    "financial_evidence",
+    "calculation_result",
+    "web_research",
+]
 
 
 class ArtifactReference(Contract):
@@ -1570,6 +1577,13 @@ class ArtifactReference(Contract):
     basis: ArtifactBasis = "committed"
     source_artifact_id: Identifier | None = None
     originating_run_id: Identifier | None = None
+
+
+class ArtifactEnvelope(Contract):
+    """Reference-and-typed-payload envelope with explicit projection support."""
+
+    reference: ArtifactReference
+    payload: Any
 
 
 ProposalStatus = Literal["pending", "applied", "cancelled", "stale"]
@@ -1627,14 +1641,36 @@ class PreparationResult(Contract):
         return self
 
 
-def build_artifact_payload(portfolio: SavedPortfolio, projection: Literal["human", "model"] = "human") -> dict[str, Any]:
-    """Serialize SavedPortfolio into an artifact payload, excluding average costs for model projections."""
-    data = portfolio.model_dump(mode="python")
-    if projection == "model":
-        data["average_costs"] = {}
-        for item in data.get("unresolved", []):
-            item["average_cost"] = None
-    return data
+def build_artifact_payload(
+    artifact: SavedPortfolio | Any,
+    kind: ArtifactKind = "portfolio_snapshot",
+    projection: Literal["human", "model"] = "human",
+) -> Any:
+    """Serialize artifact into a payload, excluding average costs for model projections on portfolio snapshots."""
+    if kind == "portfolio_snapshot" or isinstance(artifact, SavedPortfolio):
+        if hasattr(artifact, "model_dump"):
+            data = artifact.model_dump(mode="python")
+        elif isinstance(artifact, dict):
+            data = dict(artifact)
+        else:
+            data = artifact
+        if isinstance(data, dict) and projection == "model":
+            data = dict(data)
+            data["average_costs"] = {}
+            if "unresolved" in data and isinstance(data["unresolved"], list):
+                unresolved_clean = []
+                for item in data["unresolved"]:
+                    if isinstance(item, dict):
+                        item_copy = dict(item)
+                        item_copy["average_cost"] = None
+                        unresolved_clean.append(item_copy)
+                    else:
+                        unresolved_clean.append(item)
+                data["unresolved"] = unresolved_clean
+        return data
+    elif hasattr(artifact, "model_dump"):
+        return artifact.model_dump(mode="python")
+    return artifact
 
 
 class PortfolioProposalDetail(PortfolioProposal):
