@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from analyst.persistence import Database
+from analyst.persistence import SCHEMA_VERSION, Database
 from analyst.schemas import (
     Account,
     ArtifactReference,
@@ -58,7 +58,7 @@ def test_database_initialization_and_reopen(tmp_path: Path):
     db2 = Database(db_path)
     db2.initialize()
 
-    assert db2.get_schema_version() == 1
+    assert db2.get_schema_version() == SCHEMA_VERSION
 
 
 def test_database_path_injection_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

@@ -1721,8 +1721,82 @@ class CreateArtifactRequest(Contract):
     originating_run_id: Identifier | None = None
 
 
+RunStatus = Literal["running", "completed", "failed", "cancelled", "interrupted"]
+MessageRole = Literal["user", "assistant", "system"]
+
+
+class ToolOutcome(Contract):
+    """Execution outcome of a tool call."""
+
+    id: Identifier
+    name: Identifier
+    status: Literal["success", "error"]
+    error: Text | None = None
+    artifact_ids: list[Identifier] = Field(default_factory=list)
+
+
+class MessageRecord(Contract):
+    """Persisted message in a thread."""
+
+    id: Identifier
+    thread_id: Identifier
+    run_id: Identifier | None = None
+    role: MessageRole
+    text: str
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_ids: list[Identifier] = Field(default_factory=list)
+    clarification_required: dict[str, Any] | None = None
+    proposal_ids: list[Identifier] = Field(default_factory=list)
+    tool_outcomes: list[ToolOutcome] = Field(default_factory=list)
+    created_at: AwareDatetime
+
+
+class ThreadSummary(Contract):
+    """Summary of a thread for list endpoints."""
+
+    id: Identifier
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    last_message_preview: str | None = None
+
+
+class RunRecord(Contract):
+    """Supervised execution record of an agent run."""
+
+    id: Identifier
+    thread_id: Identifier
+    client_request_id: Identifier
+    status: RunStatus
+    bound_revision: int | None = Field(default=None, gt=0)
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    error: Text | None = None
+    message_ids: list[Identifier] = Field(default_factory=list)
+    artifact_ids: list[Identifier] = Field(default_factory=list)
+
+
+class ThreadDetail(Contract):
+    """Full detail of a thread with ordered messages and active/latest run state."""
+
+    id: Identifier
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    messages: list[MessageRecord] = Field(default_factory=list)
+    runs: list[RunRecord] = Field(default_factory=list)
+
+
+class SubmitMessageRequest(Contract):
+    """Request to submit a message to a thread."""
+
+    client_request_id: Identifier
+    text: Text
+    workflow_input: dict[str, Any] | None = None
+    hypothetical_artifact_id: Identifier | None = None
+
+
 AnalysisRequest.model_rebuild()
 AnalysisResult.model_rebuild()
+
 
 
 
