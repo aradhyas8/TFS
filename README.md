@@ -125,3 +125,25 @@ Ticket 09 adds dated ETF company overlap look-through, recursive nested fund dec
 
 Ticket 10 extends stock assessment to Canadian issuers using permitted issuer evidence and exact user-opened SEDAR+ verification links (`www.sedarplus.ca`). Supported Canadian exchanges include `XTSE` (TSX), `XTSX` (TSX Venture), `NEOE` (Cboe Canada), and `XCNQ` (CSE). The single shared FastAPI decision pipeline dispatches `get_sedar_filings` dynamically for Canadian securities while forbidding SEC retrieval for non-US issuers and SEDAR retrieval for US issuers (enforced via 502 Bad Gateway). SEDAR+ links must target valid, specific document URLs; automated SEDAR+ scraping or local database construction is strictly prohibited. The feature integrates seamlessly across stock assessment, new cash allocation, portfolio review (re-underwriting), and theme exploration through the common evidence boundary. See [docs/canadian-stock-evidence.md](docs/canadian-stock-evidence.md) for contracts, evidence boundaries, and verification procedures.
 
+## Portfolio Actions and SQLite Persistence
+
+The application uses an explicit action model and an ACID SQLite store (`portfolio.db`) located in the portfolio directory (configured via `PORTFOLIO_DIR`, defaulting to `backend/data/portfolio`).
+
+### Coordinated Deployment and Cutover
+- **Atomic Deployment**: Deploy the coordinated frontend and backend together. Tickets 02–09 must not be deployed as partial cutovers.
+- **Zero Direct-Write Paths**: There are no write bypasses, compatibility switches, or dual writes. All mutations (imports, manual edits, ETF roles, benchmarks, holding identifications) prepare immutable proposals (`POST /api/portfolio/import`, `PUT /api/portfolio`, `POST /api/portfolio/identify`) and require explicit user confirmation via `POST /api/portfolio/proposals/{id}/confirm` to commit new revisions.
+- **Rollback Limits & Stale State**: If rolling back to the legacy JSON-only application after SQLite commits have occurred, the legacy system will only see the old `current.json` file. Any revisions committed to SQLite will not be visible to the legacy application, resulting in stale portfolio state. Do not roll back to the JSON-only version once SQLite revisions have been committed.
+
+### Legacy Migration
+- On first startup with SQLite persistence, if a legacy `current.json` file exists and the database has no prior revisions, the database automatically performs a one-time migration.
+- All portfolio fields (snapshot date, reporting currency, accounts, positions, cash, FX, average costs, rules/settings, benchmark, and unresolved holdings) are copied into Revision 1.
+- The original `current.json` is preserved untouched as a historical record.
+- Re-running or restarting the server is idempotent and will not re-import or increment revisions once the migration marker is recorded.
+- Malformed legacy JSON halts startup with a `LegacyMigrationError` to prevent silent corruption or empty portfolio initialization.
+
+### Backups and Disaster Recovery
+- **Backups**: To back up the portfolio database, use SQLite backup API or copy `portfolio.db` (along with `-wal` and `-shm` files if SQLite is running in WAL mode). For cold backups, simply copy `portfolio.db` while the server process is stopped.
+- **Recovery**: To restore from a backup, stop the application, replace `portfolio.db` with the backup file, and remove any leftover `-wal` or `-shm` files. On startup, the application verifies the schema and resumes from the restored revision.
+- **Restart Guarantees**: App restarts preserve all committed revisions, pending proposals, and receipts. Unconfirmed proposals remain in `pending` status and can be reviewed or confirmed after restart.
+
+

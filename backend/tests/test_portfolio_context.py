@@ -288,7 +288,7 @@ def test_market_refresh_includes_saved_benchmark(tmp_path):
     store = PortfolioStore(tmp_path / "portfolio")
     api = TestClient(create_app(financial=provider, portfolio_store=store))
     init_port = imported_portfolio(api)
-    saved = store.save(
+    store.save(
         init_port.model_copy(
             update={
                 "benchmark": BenchmarkSetting(

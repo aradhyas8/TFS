@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { seedPortfolio } from "./test_helpers";
 
 // A portfolio saved earlier: the app should open straight into it.
 const SAVED = {
@@ -23,8 +24,7 @@ const SAVED = {
 
 test("portfolio review: the app opens on the saved portfolio and an ordinary question runs a review", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.request.delete("/api/test/portfolio");
-  expect((await page.request.put("/api/portfolio", { data: SAVED })).ok()).toBeTruthy();
+  await seedPortfolio(page, SAVED);
   const stored = await (await page.request.get("/api/portfolio")).json();
 
   await page.goto("/");
@@ -84,8 +84,7 @@ test("portfolio review: the app opens on the saved portfolio and an ordinary que
 });
 
 test("portfolio review: /review is a shortcut, and unidentified holdings block the question", async ({ page }) => {
-  await page.request.delete("/api/test/portfolio");
-  await page.request.put("/api/portfolio", { data: { ...SAVED, unresolved: [{ account_id: "tfsa", ticker: "MYST", shares: "5", average_cost: null, currency: null, listing: null, kind: null }] } });
+  await seedPortfolio(page, { ...SAVED, unresolved: [{ account_id: "tfsa", ticker: "MYST", shares: "5", average_cost: null, currency: null, listing: null, kind: null }] });
   await page.goto("/");
   await expect(page.getByRole("button", { name: "Identify 1 holding" })).toBeVisible();
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
@@ -97,8 +96,7 @@ test("portfolio review: /review is a shortcut, and unidentified holdings block t
 });
 
 test("portfolio review: without rules the analyst's own answer is shown and nothing is checked", async ({ page }) => {
-  await page.request.delete("/api/test/portfolio");
-  await page.request.put("/api/portfolio", { data: { ...SAVED, settings: null } });
+  await seedPortfolio(page, { ...SAVED, settings: {} });
   await page.goto("/");
   await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
@@ -131,7 +129,7 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
     settings: { single_company_cap: "0.5" },
     unresolved: [],
   };
-  expect((await page.request.put("/api/portfolio", { data: stockOnly })).ok()).toBeTruthy();
+  await seedPortfolio(page, stockOnly);
 
   await page.goto("/");
   await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
@@ -149,12 +147,19 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   // Verify resolved benchmark info appears in rules
   await expect(details).toContainText("Current benchmark: SPY · SPDR S&P 500 ETF Trust");
 
+  // Review and confirm changes
+  await details.getByTestId("review-changes").click();
+  const dialog = page.getByRole("dialog", { name: "Review portfolio changes" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByTestId("confirm-proposal").click();
+  await expect(dialog).toHaveCount(0);
+
   // Verify persistence outside settings
   await expect.poll(async () => {
     const p = await (await page.request.get("/api/portfolio")).json();
-    return p?.benchmark?.ticker;
+    return p?.portfolio?.benchmark?.ticker;
   }).toBe("SPY");
-  const stored = await (await page.request.get("/api/portfolio")).json();
+  const stored = (await (await page.request.get("/api/portfolio")).json()).portfolio;
   expect(stored.benchmark).toEqual({
     ticker: "SPY",
     listing: "XNYS",
@@ -194,9 +199,15 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   // Clear benchmark in Holdings rules
   await details.getByRole("tab", { name: "Holdings" }).click();
   await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await details.getByTestId("review-changes").click();
+  const clearDialog = page.getByRole("dialog", { name: "Review portfolio changes" });
+  await expect(clearDialog).toBeVisible();
+  await clearDialog.getByTestId("confirm-proposal").click();
+  await expect(clearDialog).toHaveCount(0);
+
   await expect.poll(async () => {
     const p = await (await page.request.get("/api/portfolio")).json();
-    return p?.benchmark;
+    return p?.portfolio?.benchmark;
   }).toBeNull();
 });
 
@@ -221,7 +232,6 @@ test("malformed CSV reports a clear import error", async ({ page }) => {
 
 test("missing mark displays unknown total and qualifies the completed review", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.request.delete("/api/test/portfolio");
   const missingMark = {
     ...SAVED,
     snapshot: {
@@ -229,7 +239,7 @@ test("missing mark displays unknown total and qualifies the completed review", a
       positions: SAVED.snapshot.positions.map(p => p.id === "tfsa-acme" ? { ...p, mark: null } : p),
     },
   };
-  expect((await page.request.put("/api/portfolio", { data: missingMark })).ok()).toBeTruthy();
+  await seedPortfolio(page, missingMark);
   await page.goto("/");
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
   await ask.fill("Review the incomplete portfolio");
@@ -242,8 +252,7 @@ test("missing mark displays unknown total and qualifies the completed review", a
 
 test("invalid model output clears the previous result and cannot display as a completed recommendation", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.request.delete("/api/test/portfolio");
-  expect((await page.request.put("/api/portfolio", { data: SAVED })).ok()).toBeTruthy();
+  await seedPortfolio(page, SAVED);
   await page.goto("/");
 
   // 1. Submit normal review
@@ -266,8 +275,7 @@ test("invalid model output clears the previous result and cannot display as a co
 
 test("existing analysis journey works without saving", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.request.delete("/api/test/portfolio");
-  expect((await page.request.put("/api/portfolio", { data: SAVED })).ok()).toBeTruthy();
+  await seedPortfolio(page, SAVED);
   await page.goto("/");
 
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });

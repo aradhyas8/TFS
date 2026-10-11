@@ -2,9 +2,10 @@ import sqlite3
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+
 import pytest
 
-from analyst.persistence import Database, SchemaMigrationError
+from analyst.persistence import Database
 from analyst.schemas import (
     Account,
     ArtifactReference,
@@ -104,3 +105,131 @@ def test_immutable_artifact_storage_and_projections(tmp_path: Path):
     assert stored_ref.id == "art-101"
     assert stored_ref.label == "Test Snapshot"
     assert stored_ref.basis == "committed"
+
+
+def test_restart_preserves_revisions_pending_proposals_and_receipts(tmp_path: Path):
+    db_path = tmp_path / "portfolio.db"
+    db = Database(db_path)
+    db.initialize()
+
+    port1 = sample_portfolio()
+    prop1 = db.store_proposal(
+        base_revision=None,
+        origin="import",
+        before_portfolio=None,
+        after_portfolio=port1,
+        differences=[],
+        warnings=[],
+    )
+    rev1, receipt1 = db.confirm_proposal(prop1.id)
+    assert rev1.revision == 1
+    assert receipt1.proposal_id == prop1.id
+    assert receipt1.new_revision == 1
+
+    port2 = port1.model_copy(deep=True)
+    port2.snapshot.positions[0].shares = Decimal("75")
+    prop2 = db.store_proposal(
+        base_revision=1,
+        origin="manual",
+        before_portfolio=port1,
+        after_portfolio=port2,
+        differences=[],
+        warnings=[],
+    )
+    rev2, receipt2 = db.confirm_proposal(prop2.id)
+    assert rev2.revision == 2
+    assert receipt2.new_revision == 2
+
+    # Store a pending proposal based on revision 2
+    port3 = port2.model_copy(deep=True)
+    port3.snapshot.positions[0].shares = Decimal("100")
+    prop3 = db.store_proposal(
+        base_revision=2,
+        origin="manual",
+        before_portfolio=port2,
+        after_portfolio=port3,
+        differences=[],
+        warnings=[],
+    )
+    assert prop3.status == "pending"
+
+    # Simulate app restart by dropping the db instance and instantiating a new one
+    del db
+    db_restarted = Database(db_path)
+    db_restarted.initialize()
+
+    # 1. Current portfolio survives with revision 2
+    current = db_restarted.get_current_portfolio()
+    assert current is not None
+    assert current.revision == 2
+    assert current.portfolio.snapshot.positions[0].shares == Decimal("75")
+
+    # 2. Pending proposal survives restart
+    pending = db_restarted.list_proposals(status="pending")
+    assert len(pending) == 1
+    assert pending[0].id == prop3.id
+    assert pending[0].status == "pending"
+
+    # 3. Applied receipts survive restart and can be retrieved through proposal detail
+    detail1 = db_restarted.get_proposal_detail(prop1.id)
+    assert detail1 is not None
+    assert detail1.receipt is not None
+    assert detail1.receipt.new_revision == 1
+    assert detail1.receipt.proposal_id == prop1.id
+
+    detail2 = db_restarted.get_proposal_detail(prop2.id)
+    assert detail2 is not None
+    assert detail2.receipt is not None
+    assert detail2.receipt.new_revision == 2
+    assert detail2.receipt.previous_revision == 1
+
+
+def test_backup_and_recovery(tmp_path: Path):
+    import shutil
+
+    db_path = tmp_path / "portfolio.db"
+    backup_path = tmp_path / "portfolio_backup.db"
+
+    db = Database(db_path)
+    db.initialize()
+
+    port = sample_portfolio()
+    prop = db.store_proposal(
+        base_revision=None,
+        origin="import",
+        before_portfolio=None,
+        after_portfolio=port,
+        differences=[],
+        warnings=[],
+    )
+    rev1, receipt = db.confirm_proposal(prop.id)
+    assert rev1.revision == 1
+
+    # Take backup
+    shutil.copy2(db_path, backup_path)
+
+    # Mutate primary database to revision 2
+    port2 = port.model_copy(deep=True)
+    port2.snapshot.positions[0].shares = Decimal("500")
+    prop2 = db.store_proposal(
+        base_revision=1,
+        origin="manual",
+        before_portfolio=port,
+        after_portfolio=port2,
+        differences=[],
+        warnings=[],
+    )
+    db.confirm_proposal(prop2.id)
+    assert db.get_current_portfolio().revision == 2
+
+    # Simulate disaster recovery: restore from backup
+    shutil.copy2(backup_path, db_path)
+
+    # Reopen recovered database
+    recovered_db = Database(db_path)
+    recovered_db.initialize()
+    current_recovered = recovered_db.get_current_portfolio()
+    assert current_recovered is not None
+    assert current_recovered.revision == 1
+    assert current_recovered.portfolio.snapshot.positions[0].shares == Decimal("50")
+

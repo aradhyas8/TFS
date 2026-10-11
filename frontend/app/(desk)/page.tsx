@@ -1225,6 +1225,7 @@ export default function DeskPage() {
               ];
   const review = (question: string) => void analyze({ question, newCash: null, stock: null });
 
+  const activeSnapshot = answer?.snapshot || committedSnapshot;
   let center;
   if (registerOpen)
     center = (
@@ -1310,8 +1311,7 @@ export default function DeskPage() {
         <Failure message={failure.message} onRetry={() => analyze(failure)} />
       </>
     );
-    const activeSnapshot = answer?.snapshot || committedSnapshot;
-    if (answer?.analysis.reunderwriting)
+  else if (answer?.analysis.reunderwriting)
       center = (
         <RebalanceAnswer
           key={answer.analysis.portfolio.reviewed_at}

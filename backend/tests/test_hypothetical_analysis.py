@@ -1,9 +1,8 @@
 """Tests for immutable hypothetical draft analysis, artifact storage, and validation boundaries."""
 
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 
-import pytest
 from fastapi.testclient import TestClient
 
 from analyst.api import create_app
@@ -12,7 +11,6 @@ from analyst.portfolio import PortfolioStore
 from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCall
 from analyst.schemas import (
     Account,
-    ArtifactReference,
     BenchmarkSetting,
     FinancialEvidence,
     PortfolioSettings,

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Generator, Literal
+from typing import Any, Generator, Literal, cast
 
 from .schemas import (
     ArtifactReference,
@@ -297,7 +297,7 @@ class Database:
                 data["average_costs"] = {}
                 for item in data.get("unresolved", []):
                     item["average_cost"] = None
-            return data
+            return cast(dict[str, Any], data)
 
     def get_artifact_reference(self, artifact_id: str) -> ArtifactReference | None:
         """Retrieve artifact reference metadata without the full payload."""

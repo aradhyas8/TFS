@@ -1,6 +1,5 @@
 """Shared portfolio action preparation service, deterministic differences, and guardrail warnings."""
 
-from typing import Any
 
 from .calculations import review_portfolio
 from .guardrails import apply_guardrails
@@ -14,7 +13,6 @@ from .schemas import (
     ProposalOrigin,
     SavedPortfolio,
 )
-
 
 
 def compute_differences(
