@@ -395,21 +395,7 @@ class Database:
             data = json.loads(row["payload_json"])
             kind = row["kind"]
 
-            if kind == "portfolio_snapshot" and projection == "model":
-                if isinstance(data, dict):
-                    data = dict(data)
-                    data["average_costs"] = {}
-                    if "unresolved" in data and isinstance(data["unresolved"], list):
-                        unresolved_clean = []
-                        for item in data["unresolved"]:
-                            if isinstance(item, dict):
-                                item_copy = dict(item)
-                                item_copy["average_cost"] = None
-                                unresolved_clean.append(item_copy)
-                            else:
-                                unresolved_clean.append(item)
-                        data["unresolved"] = unresolved_clean
-            return data
+            return build_artifact_payload(data, kind=kind, projection=projection)
 
     def get_artifact_envelope(
         self,
@@ -526,6 +512,20 @@ class Database:
                 revision=row["revision"],
                 portfolio=portfolio,
                 committed_at=datetime.fromisoformat(row["committed_at"]),
+            )
+
+    def get_portfolio_revision(self, revision: int) -> RevisionedPortfolio | None:
+        """Read an immutable run basis without consulting the current pointer."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT revision, committed_at, payload FROM portfolio_revisions WHERE revision = ?;",
+                (revision,),
+            ).fetchone()
+            if row is None:
+                return None
+            return RevisionedPortfolio(
+                revision=row["revision"], committed_at=datetime.fromisoformat(row["committed_at"]),
+                portfolio=SavedPortfolio.model_validate_json(row["payload"]),
             )
 
     def save_revision(self, portfolio: SavedPortfolio) -> RevisionedPortfolio:
@@ -1073,6 +1073,35 @@ class Database:
                 messages=messages,
                 runs=runs,
             )
+
+    def read_messages(
+        self, thread_id: str, *, limit: int = 20,
+        before_id: str | None = None, through_id: str,
+    ) -> list[MessageRecord]:
+        """Read a bounded chronological slice, capped at the accepted user message."""
+        if not 1 <= limit <= 20:
+            raise ValueError("Message limit must be between 1 and 20.")
+        with self.connect() as conn:
+            end = conn.execute(
+                "SELECT rowid FROM messages WHERE id = ? AND thread_id = ?;",
+                (through_id, thread_id),
+            ).fetchone()
+            if end is None:
+                raise ValueError("Message boundary not found.")
+            cutoff = end[0] + 1
+            if before_id is not None:
+                before = conn.execute(
+                    "SELECT rowid FROM messages WHERE id = ? AND thread_id = ?;",
+                    (before_id, thread_id),
+                ).fetchone()
+                if before is None or before[0] > end[0]:
+                    raise ValueError("Message cursor not found.")
+                cutoff = before[0]
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE thread_id = ? AND rowid < ? "
+                "ORDER BY rowid DESC LIMIT ?;", (thread_id, cutoff, limit),
+            ).fetchall()
+            return [self._row_to_message(row) for row in reversed(rows)]
 
     def submit_message(
         self,
