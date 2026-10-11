@@ -429,3 +429,29 @@ export type PreparationResult =
   | { status: "unchanged"; proposal?: null }
   | { status: "prepared"; proposal: PortfolioProposal };
 
+export type PortfolioProposalDetail = PortfolioProposal & {
+  before_portfolio?: SavedPortfolio | null;
+  after_portfolio?: SavedPortfolio | null;
+};
+
+export type UpdatePortfolioRequest = {
+  base_revision: number | null;
+  portfolio: SavedPortfolio;
+};
+
+export type ImportPortfolioRequest = {
+  csv: string;
+  as_of?: string | null;
+  reporting_currency?: string | null;
+  base_revision: number | null;
+};
+
+export type IdentifyHoldingRequest = {
+  account_id: string;
+  ticker: string;
+  listing?: string | null;
+  kind?: "stock" | "etf" | null;
+  base_revision: number | null;
+};
+
+

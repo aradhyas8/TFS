@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -11,6 +12,12 @@ from typing import Any, Generator, Literal
 
 from .schemas import (
     ArtifactReference,
+    DifferenceItem,
+    PortfolioProposal,
+    PortfolioProposalDetail,
+    ProposalOrigin,
+    ProposalReceipt,
+    ProposalStatus,
     RevisionedPortfolio,
     SavedPortfolio,
     build_artifact_payload,
@@ -25,6 +32,11 @@ class SchemaMigrationError(RuntimeError):
 
 class LegacyMigrationError(RuntimeError):
     """Raised when legacy JSON portfolio cannot be parsed or validated."""
+
+
+class StaleBaseRevisionError(RuntimeError):
+    """Raised when base revision does not match current committed revision."""
+
 
 
 
@@ -294,7 +306,7 @@ class Database:
             committed_at = (portfolio.saved_at or datetime.now(UTC)).isoformat()
 
             conn.execute(
-                "INSERT INTO portfolio_revisions (revision, committed_at, payload) VALUES (1, ?, ?);",
+                "INSERT OR IGNORE INTO portfolio_revisions (revision, committed_at, payload) VALUES (1, ?, ?);",
                 (committed_at, payload_json),
             )
             conn.execute(
@@ -306,7 +318,7 @@ class Database:
                 (now_iso,),
             )
             conn.execute(
-                "INSERT INTO metadata (key, value, updated_at) VALUES ('legacy_migration', 'completed', ?);",
+                "INSERT OR IGNORE INTO metadata (key, value, updated_at) VALUES ('legacy_migration', 'completed', ?);",
                 (now_iso,),
             )
 
@@ -361,4 +373,266 @@ class Database:
                 portfolio=portfolio_with_saved_at,
                 committed_at=now,
             )
+
+    def _row_to_proposal(self, row: sqlite3.Row) -> PortfolioProposal:
+        before_ref = self.get_artifact_reference(row["before_artifact_id"]) if row["before_artifact_id"] else None
+        after_ref = self.get_artifact_reference(row["after_artifact_id"])
+        if after_ref is None:
+            raise RuntimeError(f"Missing after artifact {row['after_artifact_id']} for proposal {row['id']}")
+
+        diffs_raw = json.loads(row["differences_json"])
+        differences = [DifferenceItem.model_validate(d) for d in diffs_raw]
+        warnings = json.loads(row["warnings_json"])
+
+        receipt = None
+        if row["new_revision"] is not None:
+            receipt = ProposalReceipt(
+                proposal_id=row["id"],
+                previous_revision=row["previous_revision"],
+                new_revision=row["new_revision"],
+                committed_at=datetime.fromisoformat(row["receipt_committed_at"]),
+            )
+
+        return PortfolioProposal(
+            id=row["id"],
+            base_revision=row["base_revision"],
+            origin=row["origin"],
+            thread_id=row["thread_id"],
+            run_id=row["run_id"],
+            before_artifact=before_ref,
+            after_artifact=after_ref,
+            differences=differences,
+            warnings=warnings,
+            status=row["status"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            receipt=receipt,
+        )
+
+    def store_proposal(
+        self,
+        base_revision: int | None,
+        origin: ProposalOrigin,
+        before_portfolio: SavedPortfolio | None,
+        after_portfolio: SavedPortfolio,
+        differences: list[DifferenceItem],
+        warnings: list[str],
+        thread_id: str | None = None,
+        run_id: str | None = None,
+    ) -> PortfolioProposal:
+        """Store immutable before/after artifacts and validated proposal, rechecking base revision atomically."""
+        now = datetime.now(UTC)
+        now_iso = now.isoformat()
+        proposal_id = f"prop-{uuid.uuid4().hex[:12]}"
+
+        with self.connect() as conn:
+            cursor = conn.execute("SELECT current_revision FROM portfolio_current WHERE id = 1;")
+            row = cursor.fetchone()
+            current_rev = row["current_revision"] if row else None
+            if current_rev != base_revision:
+                raise StaleBaseRevisionError(
+                    f"Base revision {base_revision} is stale; current revision is {current_rev}."
+                )
+
+            before_artifact_id: str | None = None
+            before_ref: ArtifactReference | None = None
+            if before_portfolio is not None:
+                before_artifact_id = f"art-before-{proposal_id}"
+                before_ref = ArtifactReference(
+                    id=before_artifact_id,
+                    kind="portfolio_snapshot",
+                    label=f"Committed Portfolio (Rev {base_revision})",
+                    created_at=now,
+                    revision=base_revision,
+                    basis="committed",
+                )
+                payload_json = json.dumps(
+                    build_artifact_payload(before_portfolio, projection="human"),
+                    cls=DecimalEncoder,
+                )
+                conn.execute(
+                    """
+                    INSERT INTO artifacts (
+                        id, kind, label, created_at, revision, basis,
+                        source_artifact_id, originating_run_id, payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        before_ref.id,
+                        before_ref.kind,
+                        before_ref.label,
+                        before_ref.created_at.isoformat(),
+                        before_ref.revision,
+                        before_ref.basis,
+                        None,
+                        None,
+                        payload_json,
+                    ),
+                )
+
+            after_artifact_id = f"art-after-{proposal_id}"
+            after_ref = ArtifactReference(
+                id=after_artifact_id,
+                kind="portfolio_snapshot",
+                label=f"Prepared Portfolio ({origin})",
+                created_at=now,
+                revision=None,
+                basis="hypothetical",
+                source_artifact_id=before_artifact_id,
+                originating_run_id=run_id,
+            )
+            payload_json = json.dumps(
+                build_artifact_payload(after_portfolio, projection="human"),
+                cls=DecimalEncoder,
+            )
+            conn.execute(
+                """
+                INSERT INTO artifacts (
+                    id, kind, label, created_at, revision, basis,
+                    source_artifact_id, originating_run_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    after_ref.id,
+                    after_ref.kind,
+                    after_ref.label,
+                    after_ref.created_at.isoformat(),
+                    after_ref.revision,
+                    after_ref.basis,
+                    after_ref.source_artifact_id,
+                    after_ref.originating_run_id,
+                    payload_json,
+                ),
+            )
+
+            differences_json = json.dumps(
+                [d.model_dump(mode="python") for d in differences],
+                cls=DecimalEncoder,
+            )
+            warnings_json = json.dumps(warnings)
+
+            conn.execute(
+                """
+                INSERT INTO proposals (
+                    id, base_revision, origin, thread_id, run_id,
+                    before_artifact_id, after_artifact_id, differences_json,
+                    warnings_json, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?);
+                """,
+                (
+                    proposal_id,
+                    base_revision,
+                    origin,
+                    thread_id,
+                    run_id,
+                    before_artifact_id,
+                    after_artifact_id,
+                    differences_json,
+                    warnings_json,
+                    now_iso,
+                ),
+            )
+
+            return PortfolioProposal(
+                id=proposal_id,
+                base_revision=base_revision,
+                origin=origin,
+                thread_id=thread_id,
+                run_id=run_id,
+                before_artifact=before_ref,
+                after_artifact=after_ref,
+                differences=differences,
+                warnings=warnings,
+                status="pending",
+                created_at=now,
+                receipt=None,
+            )
+
+    def get_proposal(self, proposal_id: str) -> PortfolioProposal | None:
+        """Retrieve prepared proposal by ID."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT p.id, p.base_revision, p.origin, p.thread_id, p.run_id,
+                       p.before_artifact_id, p.after_artifact_id, p.differences_json,
+                       p.warnings_json, p.status, p.created_at,
+                       r.previous_revision, r.new_revision, r.committed_at as receipt_committed_at
+                FROM proposals p
+                LEFT JOIN proposal_receipts r ON p.id = r.proposal_id
+                WHERE p.id = ?;
+                """,
+                (proposal_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._row_to_proposal(row)
+
+    def get_proposal_detail(self, proposal_id: str) -> PortfolioProposalDetail | None:
+        """Retrieve proposal with human-reviewable before/after content and differences."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT p.id, p.base_revision, p.origin, p.thread_id, p.run_id,
+                       p.before_artifact_id, p.after_artifact_id, p.differences_json,
+                       p.warnings_json, p.status, p.created_at,
+                       r.previous_revision, r.new_revision, r.committed_at as receipt_committed_at
+                FROM proposals p
+                LEFT JOIN proposal_receipts r ON p.id = r.proposal_id
+                WHERE p.id = ?;
+                """,
+                (proposal_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            base_proposal = self._row_to_proposal(row)
+            before_payload = (
+                self.get_artifact(row["before_artifact_id"], projection="human")
+                if row["before_artifact_id"]
+                else None
+            )
+            after_payload = self.get_artifact(row["after_artifact_id"], projection="human")
+
+            before_portfolio = SavedPortfolio.model_validate(before_payload) if before_payload else None
+            after_portfolio = SavedPortfolio.model_validate(after_payload) if after_payload else None
+
+            return PortfolioProposalDetail(
+                **base_proposal.model_dump(),
+                before_portfolio=before_portfolio,
+                after_portfolio=after_portfolio,
+            )
+
+    def list_proposals(self, status: ProposalStatus | None = None) -> list[PortfolioProposal]:
+        """List proposals, optionally filtered by status, ordered by creation time descending."""
+        with self.connect() as conn:
+            if status is not None:
+                cursor = conn.execute(
+                    """
+                    SELECT p.id, p.base_revision, p.origin, p.thread_id, p.run_id,
+                           p.before_artifact_id, p.after_artifact_id, p.differences_json,
+                           p.warnings_json, p.status, p.created_at,
+                           r.previous_revision, r.new_revision, r.committed_at as receipt_committed_at
+                    FROM proposals p
+                    LEFT JOIN proposal_receipts r ON p.id = r.proposal_id
+                    WHERE p.status = ?
+                    ORDER BY p.created_at DESC;
+                    """,
+                    (status,),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT p.id, p.base_revision, p.origin, p.thread_id, p.run_id,
+                           p.before_artifact_id, p.after_artifact_id, p.differences_json,
+                           p.warnings_json, p.status, p.created_at,
+                           r.previous_revision, r.new_revision, r.committed_at as receipt_committed_at
+                    FROM proposals p
+                    LEFT JOIN proposal_receipts r ON p.id = r.proposal_id
+                    ORDER BY p.created_at DESC;
+                    """
+                )
+            rows = cursor.fetchall()
+            return [self._row_to_proposal(row) for row in rows]
+
 

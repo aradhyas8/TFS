@@ -1633,3 +1633,30 @@ def build_artifact_payload(portfolio: SavedPortfolio, projection: Literal["human
             item["average_cost"] = None
     return data
 
+
+class PortfolioProposalDetail(PortfolioProposal):
+    """Proposal with human-reviewable before/after content and differences."""
+
+    before_portfolio: SavedPortfolio | None = None
+    after_portfolio: SavedPortfolio | None = None
+
+
+class UpdatePortfolioRequest(Contract):
+    """Request to prepare an update to a portfolio."""
+
+    base_revision: int | None = Field(..., description="Base revision, or null for first creation.", gt=0)
+    portfolio: SavedPortfolio
+
+
+class ImportPortfolioRequest(CSVRequest):
+    """Request to prepare an import replacement or first creation."""
+
+    base_revision: int | None = Field(..., description="Base revision, or null for first creation.", gt=0)
+
+
+class IdentifyHoldingRequest(IdentifyHolding):
+    """Request to answer identification for an unresolved holding."""
+
+    base_revision: int | None = Field(..., description="Base revision, or null for first creation.", gt=0)
+
+

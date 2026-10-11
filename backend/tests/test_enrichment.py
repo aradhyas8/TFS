@@ -87,9 +87,21 @@ def app(tmp_path, market: Market, reviews: int = 1) -> TestClient:
 
 
 def imported(api: TestClient, csv: str = HOLDINGS) -> dict:
-    response = api.post("/api/portfolio/import", json={"csv": csv, "as_of": TODAY.isoformat(), "reporting_currency": "CAD"})
+    cur = api.get("/api/portfolio").json()
+    base_rev = cur["revision"] if cur else None
+    response = api.post(
+        "/api/portfolio/import",
+        json={"csv": csv, "as_of": TODAY.isoformat(), "reporting_currency": "CAD", "base_revision": base_rev},
+    )
     assert response.status_code == 200, response.text
-    return response.json()
+    prop_id = response.json()["proposal"]["id"]
+    detail = api.get(f"/api/portfolio/proposals/{prop_id}").json()
+    after = detail["after_portfolio"]
+    store = getattr(api.app.state, "portfolio_store", None)
+    if store is not None:
+        store.save(SavedPortfolio.model_validate(after))
+    return after
+
 
 
 def reviewed(api: TestClient, snapshot: dict) -> dict:
@@ -196,7 +208,12 @@ def test_ambiguous_listing_asks_with_only_the_matching_listings(tmp_path):
     unresolved = {row["ticker"]: row for row in saved["unresolved"]}
     assert unresolved["CM"]["candidates"] == ["XNYS", "XTSE"]
     assert unresolved["ZZZZ"]["candidates"] == []
-    answered = api.post("/api/portfolio/identify", json={"account_id": "tfsa", "ticker": "CM", "listing": "XTSE"}).json()
+    cur = api.get("/api/portfolio").json()
+    base_rev = cur["revision"] if cur else None
+    res = api.post("/api/portfolio/identify", json={"base_revision": base_rev, "account_id": "tfsa", "ticker": "CM", "listing": "XTSE"})
+    assert res.status_code == 200, res.text
+    prop_id = res.json()["proposal"]["id"]
+    answered = api.get(f"/api/portfolio/proposals/{prop_id}").json()["after_portfolio"]
     cm = next(row for row in answered["snapshot"]["positions"] if row["ticker"] == "CM")
     assert (cm["listing"], cm["currency"], cm["kind"], cm["company_name"]) == ("XTSE", "CAD", "stock", "Canadian Imperial Bank Of Commerce")
 

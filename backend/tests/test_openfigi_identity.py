@@ -66,10 +66,25 @@ def app(tmp_path, sources: Sources, eodhd: bool = False) -> TestClient:
 
 
 def imported(api: TestClient, rows: str) -> dict:
-    response = api.post("/api/portfolio/import", json={"csv": "account,ticker,shares,currency\n" + rows, "as_of": TODAY.isoformat(),
-                                                       "reporting_currency": "CAD"})
+    cur = api.get("/api/portfolio").json()
+    base_rev = cur["revision"] if cur else None
+    response = api.post(
+        "/api/portfolio/import",
+        json={
+            "csv": "account,ticker,shares,currency\n" + rows,
+            "as_of": TODAY.isoformat(),
+            "reporting_currency": "CAD",
+            "base_revision": base_rev,
+        },
+    )
     assert response.status_code == 200, response.text
-    return response.json()
+    prop_id = response.json()["proposal"]["id"]
+    detail = api.get(f"/api/portfolio/proposals/{prop_id}").json()
+    after = detail["after_portfolio"]
+    store = getattr(api.app.state, "portfolio_store", None)
+    if store is not None:
+        store.save(SavedPortfolio.model_validate(after))
+    return after
 
 
 def positions(saved: dict) -> dict[str, dict]:
@@ -91,7 +106,11 @@ def test_bare_cad_cm_asks_only_for_the_exchange_without_eodhd_and_uses_eodhd_whe
     [waiting] = imported(api, "TFSA,CM,20,CAD\n")["unresolved"]
     # OpenFIGI's venue codes do not say which Canadian exchange lists CM, so none is guessed.
     assert (waiting["listing"], waiting["currency"], waiting["kind"], waiting["candidates"]) == (None, "CAD", "stock", [])
-    answered = api.post("/api/portfolio/identify", json={"account_id": "tfsa", "ticker": "CM", "listing": "XTSE"}).json()
+    cur = api.get("/api/portfolio").json()
+    base_rev = cur["revision"] if cur else None
+    res = api.post("/api/portfolio/identify", json={"base_revision": base_rev, "account_id": "tfsa", "ticker": "CM", "listing": "XTSE"})
+    assert res.status_code == 200, res.text
+    answered = api.get(f"/api/portfolio/proposals/{res.json()['proposal']['id']}").json()["after_portfolio"]
     assert positions(answered)["CM"]["company_id"] == "CIK0001045520"
     assert sources.openfigi == ["CM"]  # the answer re-used the cached identity
 
@@ -129,7 +148,12 @@ def test_us_etfs_nasdaq_resolves_and_arca_asks_for_the_exchange(tmp_path):
     [spy] = saved["unresolved"]
     assert (spy["ticker"], spy["listing"], spy["currency"], spy["kind"], spy["candidates"]) == ("SPY", None, "USD", "etf", [])
     assert sources.openfigi == ["QQQ", "SPY"] and sources.market.eodhd == []
-    answered = positions(api.post("/api/portfolio/identify", json={"account_id": "tfsa", "ticker": "SPY", "listing": "XNYS"}).json())["SPY"]
+    cur = api.get("/api/portfolio").json()
+    base_rev = cur["revision"] if cur else None
+    res = api.post("/api/portfolio/identify", json={"base_revision": base_rev, "account_id": "tfsa", "ticker": "SPY", "listing": "XNYS"})
+    assert res.status_code == 200, res.text
+    prop_id = res.json()["proposal"]["id"]
+    answered = positions(api.get(f"/api/portfolio/proposals/{prop_id}").json()["after_portfolio"])["SPY"]
     assert (answered["kind"], answered["listing"], answered["company_name"], answered["company_id"]) == ("etf", "XNYS", "SPDR S&P 500 ETF TRUST", None)
 
 
