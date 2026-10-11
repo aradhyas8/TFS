@@ -12,12 +12,8 @@ from analyst.schemas import (
     DecisionAlternative,
     DecisionConclusion,
     DecisionReasoning,
-    DecisionSubject,
-    DecisionWorkflow,
     EvidenceReference,
-    NewCashSubject,
     SavedDecision,
-    ThemeSubject,
 )
 from tests.test_analysis import recommendation, snapshot
 

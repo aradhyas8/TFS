@@ -1540,3 +1540,96 @@ class IdentifyHolding(Contract):
     ticker: Identifier
     listing: Identifier | None = None
     kind: Literal["stock", "etf"] | None = None
+
+
+# Shared persistence, revision, artifact, and proposal contracts (Spec 2 Foundation)
+
+class RevisionedPortfolio(Contract):
+    """Committed portfolio with positive revision number and commit timestamp."""
+
+    revision: int = Field(gt=0)
+    portfolio: SavedPortfolio
+    committed_at: AwareDatetime
+
+
+ArtifactBasis = Literal["committed", "hypothetical", "none"]
+ArtifactKind = Literal["portfolio_snapshot"]
+
+
+class ArtifactReference(Contract):
+    """Lightweight reference to an immutable artifact."""
+
+    id: Identifier
+    kind: ArtifactKind = "portfolio_snapshot"
+    label: Text
+    created_at: AwareDatetime
+    revision: int | None = Field(default=None, gt=0)
+    basis: ArtifactBasis = "committed"
+    source_artifact_id: Identifier | None = None
+    originating_run_id: Identifier | None = None
+
+
+ProposalStatus = Literal["pending", "applied", "cancelled", "stale"]
+ProposalOrigin = Literal["chat", "manual", "import", "identify"]
+
+
+class DifferenceItem(Contract):
+    """Deterministic structured difference item between before and after states."""
+
+    kind: Text
+    path: Text
+    description: Text
+    before: Any | None = None
+    after: Any | None = None
+
+
+class ProposalReceipt(Contract):
+    """Receipt issued when a proposal is applied."""
+
+    proposal_id: Identifier
+    previous_revision: int | None = Field(default=None, gt=0)
+    new_revision: int = Field(gt=0)
+    committed_at: AwareDatetime
+
+
+class PortfolioProposal(Contract):
+    """Prepared portfolio mutation proposal with exact before/after artifact references."""
+
+    id: Identifier
+    base_revision: int | None = Field(default=None, gt=0)
+    origin: ProposalOrigin
+    thread_id: Identifier | None = None
+    run_id: Identifier | None = None
+    before_artifact: ArtifactReference | None = None
+    after_artifact: ArtifactReference
+    differences: list[DifferenceItem] = Field(default_factory=list)
+    warnings: list[Text] = Field(default_factory=list)
+    status: ProposalStatus = "pending"
+    created_at: AwareDatetime
+    receipt: ProposalReceipt | None = None
+
+
+class PreparationResult(Contract):
+    """Discriminated result of preparing a portfolio mutation."""
+
+    status: Literal["unchanged", "prepared"]
+    proposal: PortfolioProposal | None = None
+
+    @model_validator(mode="after")
+    def validate_proposal(self) -> Self:
+        if self.status == "unchanged" and self.proposal is not None:
+            raise ValueError("Proposal must be None when status is unchanged.")
+        if self.status == "prepared" and self.proposal is None:
+            raise ValueError("Proposal is required when status is prepared.")
+        return self
+
+
+def build_artifact_payload(portfolio: SavedPortfolio, projection: Literal["human", "model"] = "human") -> dict[str, Any]:
+    """Serialize SavedPortfolio into an artifact payload, excluding average costs for model projections."""
+    data = portfolio.model_dump(mode="python")
+    if projection == "model":
+        data["average_costs"] = {}
+        for item in data.get("unresolved", []):
+            item["average_cost"] = None
+    return data
+

@@ -369,3 +369,63 @@ export type CandidateResult = {
   unresolved?: CandidateUnresolved | null;
   is_fund?: boolean;
 };
+
+// Shared portfolio persistence, revision, artifact, and proposal contracts (Spec 2 Foundation)
+
+export type RevisionedPortfolio = {
+  revision: number;
+  portfolio: SavedPortfolio;
+  committed_at: string;
+};
+
+export type ArtifactBasis = "committed" | "hypothetical" | "none";
+export type ArtifactKind = "portfolio_snapshot";
+
+export type ArtifactReference = {
+  id: string;
+  kind?: ArtifactKind;
+  label: string;
+  created_at: string;
+  revision?: number | null;
+  basis: ArtifactBasis;
+  source_artifact_id?: string | null;
+  originating_run_id?: string | null;
+};
+
+export type ProposalStatus = "pending" | "applied" | "cancelled" | "stale";
+export type ProposalOrigin = "chat" | "manual" | "import" | "identify";
+
+export type DifferenceItem = {
+  kind: string;
+  path: string;
+  description: string;
+  before?: unknown;
+  after?: unknown;
+};
+
+export type ProposalReceipt = {
+  proposal_id: string;
+  previous_revision?: number | null;
+  new_revision: number;
+  committed_at: string;
+};
+
+export type PortfolioProposal = {
+  id: string;
+  base_revision?: number | null;
+  origin: ProposalOrigin;
+  thread_id?: string | null;
+  run_id?: string | null;
+  before_artifact?: ArtifactReference | null;
+  after_artifact: ArtifactReference;
+  differences: DifferenceItem[];
+  warnings: string[];
+  status: ProposalStatus;
+  created_at: string;
+  receipt?: ProposalReceipt | null;
+};
+
+export type PreparationResult =
+  | { status: "unchanged"; proposal?: null }
+  | { status: "prepared"; proposal: PortfolioProposal };
+

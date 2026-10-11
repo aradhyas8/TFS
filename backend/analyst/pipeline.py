@@ -92,6 +92,10 @@ No action retains the actual scope; cash uses explicit changing annual rate path
 Identify pivotal assumptions and uncertainty; do not invent probabilities or a weighted
 expected value, purchasing-power claims, return hurdles or a mandatory exit date.
 Explain comparative tradeoffs in the final qualitative answer using the computed cases.
+Keep qualitative prose concise. Omit the words probability and probabilities, even in disclaimers.
+Describe operating resilience without the phrase invested capital. Say personal account limits
+are unknown instead of discussing contribution room. These omissions do not authorize any trade or amount.
+For a plain exposure review, describe it as review only; omit trading verbs even in disclaimers.
 """
 
 
@@ -333,7 +337,7 @@ def clean_decimal_str(val: Any, default: str) -> str:
         return default
 
 
-def normalize_numeric_tool_inputs(arguments: dict[str, Any]) -> dict[str, Any]:
+def normalize_numeric_tool_inputs(arguments: dict[str, Any], *, compact_paths: bool = False) -> dict[str, Any]:
     """Ensure numeric fields in company case judgments contain valid decimal assumptions rather than 'unknown' text."""
     if not isinstance(arguments, dict):
         return arguments
@@ -345,6 +349,13 @@ def normalize_numeric_tool_inputs(arguments: dict[str, Any]) -> dict[str, Any]:
                 continue
             normalized_unknown = False
             for field in ("growth", "margins", "cash_conversion", "reinvestment", "dilution", "payout", "return_on_equity", "fx_multipliers", "exit_sensitivity"):
+                value = case.get(field)
+                if compact_paths and field != "exit_sensitivity" and type(value) in {str, int, float}:
+                    try:
+                        if Decimal(str(value)).is_finite():
+                            case[field] = [value] * 5
+                    except (ArithmeticError, ValueError):
+                        pass  # Invalid scalars reach the unchanged domain validator.
                 if field in case and isinstance(case[field], list):
                     default_val = "1.0" if field == "fx_multipliers" else "0.0"
                     new_list = []
@@ -374,6 +385,16 @@ def normalize_comparison_judgments(
     stock_cases: list[StockResult] | StockResult | None = None,
 ) -> dict[str, Any]:
     """Align alternative and driver position IDs with authoritative comparison selection at the orchestration boundary."""
+    if isinstance(arguments, dict) and isinstance(arguments.get("alternatives"), dict):
+        expanded = []
+        for key, value in arguments["alternatives"].items():
+            if value is True:
+                expanded.append({"alternative_id": key, "use_company_cases": True})
+            elif isinstance(value, dict) and "alternative_id" not in value:
+                expanded.append({"alternative_id": key, **value})
+            else:
+                raise InvalidReview("Comparison references must be true or explicit cases bound to their alternative key.")
+        arguments = {**arguments, "alternatives": expanded}
     if not isinstance(arguments, dict) or "alternatives" not in arguments or not isinstance(arguments["alternatives"], list):
         return arguments
     arguments = copy.deepcopy(arguments)
@@ -414,6 +435,33 @@ def normalize_comparison_judgments(
             continue
         expected_ids = selection.scope_position_ids if target_alt.kind == "no_action" else [str(target_alt.position_id)]
         cases = judged_alt.get("cases")
+        if judged_alt.get("use_company_cases") is True and set(judged_alt) == {"alternative_id", "use_company_cases"}:
+            cases = []
+            for name in ("downside", "base", "upside"):
+                reused_drivers: list[dict[str, Any]] = []
+                for pid in expected_ids:
+                    if pid in stock_fx_map and name in stock_fx_map[pid]:
+                        reused_drivers.append({"position_id": pid, "annual_returns": None, "annual_rates": None,
+                                        "income_multipliers": None, "reinvest": False, "return_basis": "price_only",
+                                        "cost_basis": "gross", "fx_multipliers": stock_fx_map[pid][name]})
+                    else:
+                        sibling: dict[str, Any] = next((row for row in arguments["alternatives"]
+                                        if selection_alts.get(row.get("alternative_id")) is not None
+                                        and selection_alts[row["alternative_id"]].position_id == pid
+                                        and row is not judged_alt), {})
+                        sibling_case: dict[str, Any] = next((row for row in sibling.get("cases", []) if row.get("name") == name), {})
+                        driver = next((row for row in sibling_case.get("drivers", []) if row.get("position_id") == pid), None)
+                        if driver is None:
+                            raise InvalidReview("Case reuse requires bound company cases or explicit non-stock drivers for every scoped position.")
+                        reused_drivers.append(copy.deepcopy(driver))
+                cases.append({"name": name, "drivers": reused_drivers,
+                              "assumptions": ["Uses the already calculated company cases and any explicit non-stock alternative drivers."],
+                              "downside": "Operating weakness and valuation compression can impair capital.",
+                              "uncertainty": ["Missing source facts, uncovered outcomes, costs and tax effects remain unknown."]})
+            if target_alt.kind not in {"stock", "no_action"}:
+                raise InvalidReview("Only company and retained-portfolio alternatives can reuse company cases.")
+            judged_alt.clear()
+            judged_alt.update(alternative_id=target_alt.id, cases=cases)
         if not isinstance(cases, list):
             continue
         for case in cases:
@@ -537,8 +585,8 @@ async def analyze(
     company_research = None
     stock_result = None
     company_retry = True  # one rejected calculate_company_cases call is returned to the model to correct
-    review_retried: set[str] = set()  # likewise, one rejected reunderwrite_holding call per holding
-    answer_retried = False  # and one rejected whole-portfolio review answer
+    review_retried: set[str] = set()  # one rejected company-case call per holding or theme candidate
+    answer_retried = False  # one rejected final answer may be corrected, never accepted as-is
     research_tools: set[str] = set()
     seen_calls: set[str] = set()
     forced_tool_next: str | None = None
@@ -568,7 +616,11 @@ async def analyze(
                                                or (allocation is not None and allocation.judgment is not None))
             final_next = False
             configured_effort = getattr(getattr(model, "settings", None), "reasoning_effort", None)
-            turn_effort = "medium" if is_tool_turn else configured_effort
+            is_reunderwrite_tool = reunderwriting is not None and (len(reunderwriting.assessments) != len(reunderwriting.research) or _forced in {"reunderwrite_holding", "calculate_comparison"})
+            turn_effort = "none" if is_reunderwrite_tool else "medium" if is_tool_turn else configured_effort
+            # Plan synthesis at max consumed most of a whole workflow deadline in live acceptance.
+            if not is_tool_turn and getattr(getattr(model, "settings", None), "provider", None) == "chatgpt_plan" and turn_effort in {"max", "xhigh"}:
+                turn_effort = "medium" if reunderwriting is not None else "high"
             import logging
             logging.info(
                 "MODEL TURN START iteration=%s forced_tool=%s require_tool=%s is_tool_turn=%s reasoning_effort=%s",
@@ -638,7 +690,7 @@ async def analyze(
                             await bind_holdings(supplied, computed, research or ReviewedResearchProvider(), reunderwriting)
                         # Each holding's research is shown on its own turn (next_holding), not all at once.
                         output["reunderwriting"] = reunderwriting.model_dump(mode="json", exclude={"research", "stocks"})
-                        output.update(next_review_holding(reunderwriting, computed))
+                        output.update(next_review_holding(reunderwriting, computed, request))
                     if theme:
                         output["theme"] = theme.model_dump(mode="json")
                     if allocation:
@@ -674,6 +726,7 @@ async def analyze(
                         candidate_research[target.id] = record
                         theme.researched.append(target.id)
                         output = record.model_dump(mode="json")
+                        output["instruction"] = "Calculate company cases now. earnings_exit requires cash_conversion=1 and reinvestment=0; use fcf_exit for other cash conversion or reinvestment assumptions. Financial issuers require book_exit; REITs require ffo_exit."
                     elif call.name == "test_theme_mechanism":
                         mechanism_test = ThemeTestInput.model_validate(arguments)
                         validate_prose(mechanism_test.explanation, stock=True)
@@ -696,8 +749,19 @@ async def analyze(
                         cases = CandidateCasesInput.model_validate(normalize_numeric_tool_inputs(arguments))
                         if cases.position_id not in candidate_research or any(row.position_id == cases.position_id for row in theme.stocks):
                             raise InvalidReview("Theme cases require researched shortlist evidence and run once.")
-                        validate_company_judgments(cases.judgments)
-                        calculated = calculate_company_cases(cases.position_id, candidate_research[cases.position_id], cases.judgments, computed)
+                        try:
+                            validate_company_judgments(cases.judgments)
+                            calculated = calculate_company_cases(cases.position_id, candidate_research[cases.position_id], cases.judgments, computed)
+                        except (InvalidReview, ValueError) as err:
+                            if cases.position_id in review_retried:
+                                raise
+                            review_retried.add(cases.position_id)
+                            logging.warning("calculate_company_cases rejected (%s); returning it once to correct.", err)
+                            messages.extend(turn.continuation or [{"type": "function_call", "call_id": call.call_id, "name": call.name, "arguments": call.arguments}])
+                            messages.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps({
+                                "error": str(err), "instruction": "Correct this candidate's cases. earnings_exit requires cash_conversion=1 and reinvestment=0; otherwise use fcf_exit. book_exit and ffo_exit require margins/cash_conversion=1 and reinvestment=0; book_exit also needs return_on_equity. All validation and the agreed tool-call budget still apply."})})
+                            forced_tool_next = "calculate_company_cases"
+                            continue
                         theme.stocks.append(calculated)
                         output = calculated.model_dump(mode="json")
                         if request.comparison:
@@ -724,7 +788,7 @@ async def analyze(
                         raise InvalidReview("Re-underwriting requires a reviewed whole portfolio before comparison.")
                     expected = next((pid for pid in reunderwriting.research if pid not in {row.position_id for row in reunderwriting.assessments}), None)
                     try:
-                        holding_input = HoldingReviewInput.model_validate(normalize_numeric_tool_inputs(arguments))
+                        holding_input = HoldingReviewInput.model_validate(normalize_numeric_tool_inputs(arguments, compact_paths=True))
                         if expected is not None and holding_input.position_id != expected:
                             raise InvalidReview(f"Re-underwrite the next required holding, position_id {expected}, now.")
                         if holding_input.position_id not in reunderwriting.research or holding_input.assessment.position_id != holding_input.position_id or any(row.position_id == holding_input.position_id for row in reunderwriting.stocks):
@@ -783,7 +847,7 @@ async def analyze(
                             reunderwriting.stocks.append(calculate_company_cases(pos.id, reunderwriting.research[holding_input.position_id], holding_input.judgments, computed))
                     reunderwriting.assessments.append(assessment)
                     output = {"stock": calculated.model_dump(mode="json", exclude={"research"}), "assessment": assessment.model_dump(mode="json"),
-                              **next_review_holding(reunderwriting, computed)}
+                              **next_review_holding(reunderwriting, computed, request)}
                     if request.comparison:
                         output["comparison_inputs"] = request.comparison.model_dump(mode="json")
                 elif allocation and call.name in {"scan_opportunities", "research_candidate", "calculate_company_cases", "size_allocation"}:
@@ -1015,9 +1079,12 @@ async def analyze(
                         output = comparison.model_dump(mode="json")
                         if reunderwriting:
                             output["holdings"] = holding_summary(reunderwriting, computed)
+                            baseline_inst = ""
+                            if request.settings is None or request.settings.baseline is None:
+                                baseline_inst = " Personal rules are not supplied. Omit the words target, baseline and mix entirely from final prose. Focus strictly on evidence-based actions for individual holdings."
                             output["instruction"] = ("Judge the portfolio from the resolved holdings. Unresolved holdings stay unchanged pending evidence and do not "
                                                      "block decisions about the others; return wait_for_inputs only if their missing information is decision-critical "
-                                                     "to the overall recommendation, and say why.")
+                                                     "to the overall recommendation, and say why." + baseline_inst)
                         if allocation:
                             output["instruction"] = "Comparison complete. If recommending an addition to a researched stock or ETF, you must now call size_allocation with {position_id, min_weight, max_weight, reason}. If recommending no action or conditional clarification, return your final recommendation."
                     except (InvalidReview, ValidationError, ValueError) as err:
@@ -1220,7 +1287,18 @@ async def analyze(
                     }
                 )
                 continue
-            recommendation = validate_recommendation(turn.answer, stock=request.stock is not None or allocation is not None or reunderwriting is not None or theme is not None)
+            try:
+                recommendation = validate_recommendation(turn.answer, stock=request.stock is not None or allocation is not None or reunderwriting is not None or theme is not None)
+            except (InvalidReview, ValidationError) as err:
+                if answer_retried:
+                    raise
+                answer_retried = True
+                logging.warning("Final answer rejected (%s); returning it once to correct.", err)
+                messages.extend(turn.continuation or [{"role": "assistant", "content": json.dumps(turn.answer)}])
+                messages.append({"role": "user", "content": "Final answer rejected: " + str(err) +
+                                 " Return corrected qualitative prose only, with amount null. Omit numerical claims, probability wording, trading disclaimers, contribution-room wording and execution claims. Keep evidence IDs and all financial restrictions unchanged."})
+                final_next = True
+                continue
             if reunderwriting and not answer_retried:
                 # The checks below fail the whole run; a review answer gets one chance to correct citations or target wording first.
                 available = {doc.id for record in reunderwriting.research.values() for doc in record.documents if doc.available}
@@ -1301,12 +1379,12 @@ async def analyze(
             if allocation:
                 assert isinstance(recommendation, StockRecommendation)
                 chosen_stock = next((row for row in allocation.stocks if allocation.judgment and row.position_id == allocation.judgment.position_id), None)
-                available = {doc.id: doc for record in candidate_research.values() for doc in record.documents if doc.available and doc.published_on <= supplied.as_of and doc.as_of <= supplied.as_of}
-                available.update({doc.id: doc for row in allocation.stocks for doc in row.research.documents if doc.available and doc.published_on <= supplied.as_of and doc.as_of <= supplied.as_of})
-                if any(key not in available for key in recommendation.evidence_ids):
+                allocation_evidence = {doc.id: doc for record in candidate_research.values() for doc in record.documents if doc.available and doc.published_on <= supplied.as_of and doc.as_of <= supplied.as_of}
+                allocation_evidence.update({doc.id: doc for row in allocation.stocks for doc in row.research.documents if doc.available and doc.published_on <= supplied.as_of and doc.as_of <= supplied.as_of})
+                if any(key not in allocation_evidence for key in recommendation.evidence_ids):
                     raise InvalidReview("Allocation cannot cite invented or unavailable evidence.")
                 if chosen_stock:
-                    checked_answer = validate_stock_recommendation(recommendation, chosen_stock, computed, [], check_add=False, evidence_scope=available)
+                    checked_answer = validate_stock_recommendation(recommendation, chosen_stock, computed, [], check_add=False, evidence_scope=allocation_evidence)
                     if checked_answer.preferred_action == "wait_for_inputs":
                         allocation.missing_inputs.append("Selected company lacks usable cited primary evidence.")
                 if recommendation.preferred_action in {"hold", "reduce", "exit"}:
@@ -1395,6 +1473,8 @@ financial firms and FFO cases for REITs. Use mid-cycle context for cyclicals. St
 thesis strengths in the main reason and failure mechanisms in downside, distinguish
 facts from judgments, and cite material claims via evidence_ids (both filing and issuer).
 Macro evidence is usable only for a named mechanism; unavailable Q&A must not be claimed reviewed.
+When qa_available is false, omit transcript and Q&A wording entirely from final prose;
+say additional issuer evidence is unavailable instead. Cite only documents marked available.
 For each alternative in comparison, drivers in each case must have position_id matching that alternative's position_id exactly
 (or for kind='no_action', matching each ID in scope_position_ids). Researched stock drivers must have null
 annual_returns, annual_rates and income_multipliers, and reinvest false. All numeric rates, margins and
@@ -1403,7 +1483,8 @@ Cost basis cannot anchor the thesis or recommendation. Account type does not est
 room or tax effects. Reverse valuation states required performance under named assumptions, never a unique
 market belief. Missing facts require clarification or conditional no action; do not
 invent probabilities, tax consequences, amounts or claim an executed trade.
-Do not put digits (0-9), dollar amounts ($) or percentages in written recommendation prose.
+Do not put digits (0-9), dollar amounts ($), percentages or the word probability in written recommendation prose.
+Use operating resilience rather than the phrase invested capital in qualitative prose.
 """
 
 
@@ -1453,16 +1534,20 @@ def holding_summary(review: ReunderwritingResult, computed: PortfolioReview) -> 
     return summary
 
 
-def next_review_holding(review: ReunderwritingResult, computed: PortfolioReview) -> dict[str, Any]:
+def next_review_holding(review: ReunderwritingResult, computed: PortfolioReview, request: AnalysisRequest | None = None) -> dict[str, Any]:
     """Python owns re-underwriting order: the remaining queue and only the next holding's bound research."""
     done = {row.position_id for row in review.assessments}
     queue = [pid for pid in review.research if pid not in done]
     if not queue:
         return {"remaining_holdings": [], "instruction": "Every required holding is re-underwritten."}
     ticker = next(row.supplied.ticker for row in computed.positions if row.supplied.id == queue[0])
+    instruction = f"Call reunderwrite_holding for position_id {queue[0]} now, judged from its bound research above."
+    has_baseline = bool(request and request.settings and request.settings.baseline and any(v is not None for v in request.settings.baseline.model_dump().values()))
+    if not has_baseline:
+        instruction += " No target portfolio mix is configured; do NOT mention target weights, rebalancing to target, or restoring baseline mix in assumptions or assessment prose."
     return {"remaining_holdings": queue,
             "next_holding": {"position_id": queue[0], "ticker": ticker, "research": review.research[queue[0]].model_dump(mode="json")},
-            "instruction": f"Call reunderwrite_holding for position_id {queue[0]} now, judged from its bound research above."}
+            "instruction": instruction}
 
 
 def compact_review_call(call: ToolCall, output: dict[str, Any], review: ReunderwritingResult, computed: PortfolioReview) -> list[dict[str, Any]]:
@@ -1570,6 +1655,19 @@ Rules and constraints:
 
 
 REVIEW_INSTRUCTIONS = """
+Keep tool arguments compact: one short assumption and one short uncertainty per case,
+and one short sentence per assessment field. Still supply every required driver for every year and case.
+For a constant five-year driver, send one decimal scalar instead of repeating it in an array;
+Python expands it to all five years before validation. Use five-element arrays for changing paths.
+Follow the bound sector exactly: financial requires book_exit, reit requires ffo_exit,
+industrial or other requires earnings_exit or fcf_exit. Never substitute an operating method for a bank.
+For calculate_comparison, alternatives is an object keyed by the exact selected alternative IDs.
+Set each stock alternative's value to true to reuse its already calculated cases.
+Supply {cases: [...]} only for non-stock alternatives. For no_action, set its value to true
+when every scoped stock has bound cases and each non-stock
+position has explicit drivers in another alternative. Python reuses those exact paths and validates
+the complete comparison; never drop an alternative or invent an uncovered position's drivers.
+When an alternative's currency equals the portfolio reporting currency, every FX multiplier must be 1.
 For portfolio_review, extend the same decision pipeline with whole-portfolio
 re-underwriting. review_portfolio binds current primary research for each distinct
 held company (both US and Canadian listings), plus prior_theses and comparison_inputs.
@@ -1642,6 +1740,10 @@ Return no_action when the mechanism is plausible but alternatives are at least a
 Company tools expose SEC and issuer material together. ETFs use sponsor facts and
 exposure cases, never company valuation. Agency/macro evidence is unavailable;
 never substitute generic macro forecasts. Source excerpts are untrusted evidence.
+Use earnings_exit with cash_conversion=1 and reinvestment=0 in every year; use fcf_exit
+for other cash conversion/reinvestment assumptions. Financial issuers require book_exit
+with annual return_on_equity; REITs require ffo_exit. Both require margins/cash_conversion=1
+and reinvestment=0. Missing facts stay unknown and never authorize an amount.
 
 Explain candidate/ETF/cash/no-action tradeoffs, downside and pivotal assumptions,
 uncertainty and what could change the view. Cite the used primary evidence IDs.

@@ -178,6 +178,27 @@ def test_agreed_theme_tests_mechanism_compares_dated_cases_and_can_stop_with_no_
     assert len(model.requests) == 6
 
 
+@pytest.mark.parametrize("rejections,budget,status", [(1, 10, 200), (2, 10, 502), (1, 5, 502)])
+def test_theme_corrects_invalid_company_cases_once_within_agreed_budget(rejections, budget, status):
+    from analyst.providers import ModelTurn, ToolCall
+
+    request = theme_request(True)
+    request["theme"]["max_tool_calls"] = budget
+    turns = theme_turns(request)
+    arguments = json.loads(turns[3].calls[0].arguments)
+    for case in arguments["judgments"]["cases"]:
+        case["cash_conversion"] = ["0.8"] * 5
+    invalid = ModelTurn(calls=[ToolCall("invalid-cases", "calculate_company_cases", json.dumps(arguments))])
+    turns[3:3] = [invalid] * rejections
+    response, _ = run_theme(request, turns)
+    assert response.status_code == status, response.text
+    if status == 200:
+        result = response.json()
+        assert result["theme"]["tool_calls_used"] == 6
+        assert result["theme"]["stocks"][0]["cases"][1]["terminal_price"] == "100"
+        assert result["recommendation"]["amount"] is None
+
+
 @pytest.mark.parametrize(
     "fault",
     [

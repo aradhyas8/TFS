@@ -7,7 +7,8 @@
     "build": "next build --webpack",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:live": "node run_live_acceptance.cjs"
   },
   "dependencies": {
     "next": "^16.0.0",

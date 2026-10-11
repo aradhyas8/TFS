@@ -230,7 +230,7 @@ def test_invalid_judgments_cannot_complete_a_comparison(fault):
 
 
 def test_zero_share_diversified_etf_picked_up_by_default_comparison_builders():
-    from analyst.schemas import AnalysisRequest, BENCHMARK_FUND
+    from analyst.schemas import BENCHMARK_FUND, AnalysisRequest
 
     # Portfolio with only a stock (no ETFs held) plus injected zero-share benchmark fund
     req = {

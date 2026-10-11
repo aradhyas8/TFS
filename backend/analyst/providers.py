@@ -220,7 +220,14 @@ class OpenAIModel:
             if target_pos and (target_pos.get("currency") == "CAD" or target_pos.get("listing") in {"XTSE", "XTSX", "NEOE", "XCNQ"}):
                 stock_tools = [SEDAR_TOOL, STOCK_TOOLS[1], STOCK_TOOLS[2]]
         if review:
-            stock_tools = [{"type": "function", "name": "reunderwrite_holding", "description": "Challenge a bound current holding thesis against current primary evidence and any supplied prior thesis, then compute company cases. All numeric judgment fields (growth, margins, discount_rate, exit_multiple, etc.) must contain valid numeric decimal strings; never pass 'unknown' or text in numeric fields. State unknown facts in assumptions, uncertainty or assessment status. No price history or facts may be invented. Each bound US company runs once before comparison.", "parameters": sanitize_schema(HoldingReviewInput.model_json_schema()), "strict": True},
+            holding_schema = sanitize_schema(HoldingReviewInput.model_json_schema())
+            for node in holding_schema["$defs"]["CompanyCase"]["properties"].values():
+                choices = node.get("anyOf", [node.copy()])
+                annual_path = next((choice for choice in choices if choice.get("type") == "array" and choice.get("minItems") == 5), None)
+                if annual_path:
+                    node.clear()
+                    node["anyOf"] = [*choices, annual_path["items"]]
+            stock_tools = [{"type": "function", "name": "reunderwrite_holding", "description": "Challenge a bound current holding thesis against current primary evidence and any supplied prior thesis, then compute company cases. All numeric judgment fields (growth, margins, discount_rate, exit_multiple, etc.) must contain valid numeric decimal strings; never pass 'unknown' or text in numeric fields. State unknown facts in assumptions, uncertainty or assessment status. No price history or facts may be invented. Each bound US company runs once before comparison.", "parameters": holding_schema, "strict": True},
                            {"type": "function", "name": "size_review", "description": "Translate an explained whole-portfolio issuer exposure range into local adjustment amounts after evidence-backed holding review and comparison. Python checks both endpoints, funding, source inputs, supplied risk context, costs/tax effects and configured cap/budget. Unknown inputs never authorize an amount.", "parameters": sanitize_schema(ReviewSizingInput.model_json_schema()), "strict": True}]
         if allocation:
             stock_tools = [{**STOCK_TOOLS[-1], "parameters": sanitize_schema(CandidateCasesInput.model_json_schema())}]
@@ -228,6 +235,24 @@ class OpenAIModel:
             stock_tools = [{"type": "function", "name": "size_review", "description": "After completed agreed theme cases and comparison, propose a justified exposure range for a supported shortlisted addition funded by a supplied same-account/currency cash balance. Shared Python sizing enforces risk context, source inputs, dated costs/tax and cap/budget endpoints; missing inputs leave amounts unknown.", "parameters": sanitize_schema(ReviewSizingInput.model_json_schema()), "strict": True}, ALLOCATION_TOOLS[1], {**STOCK_TOOLS[-1], "parameters": sanitize_schema(CandidateCasesInput.model_json_schema())},
                            {"type": "function", "name": "test_theme_mechanism", "description": "Test the agreed economic mechanism for exactly one shortlisted candidate using its backend-bound evidence IDs. Explain support, challenge or unknown qualitatively; ETF citations use fund-POSITION_ID for dated sponsor facts. No numerical claims, probabilities or new facts.", "parameters": sanitize_schema(ThemeTestInput.model_json_schema()), "strict": True}]
         raw_tools = [PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL, *stock_tools, *(ALLOCATION_TOOLS if allocation else [])]
+        if review:
+            comparison_schema = sanitize_schema(ComparisonJudgments.model_json_schema())
+            selection = request.get("comparison") or {}
+            selected = selection.get("alternatives", [])
+            covered = {alt["position_id"] for alt in selected if alt["position_id"] is not None}
+            alternatives = {}
+            for alt in selected:
+                if alt["kind"] == "stock" or alt["kind"] == "no_action" and set(selection["scope_position_ids"]) <= covered:
+                    alternatives[alt["id"]] = {"type": "boolean", "enum": [True]}
+                else:
+                    case_schema = copy.deepcopy(comparison_schema["$defs"]["AlternativeJudgment"])
+                    del case_schema["properties"]["alternative_id"]
+                    case_schema["required"].remove("alternative_id")
+                    alternatives[alt["id"]] = case_schema
+            comparison_schema["properties"]["alternatives"] = {
+                "type": "object", "properties": alternatives, "required": list(alternatives), "additionalProperties": False,
+            }
+            raw_tools = [{**tool, "parameters": comparison_schema} if tool["name"] == "calculate_comparison" else tool for tool in raw_tools]
         tools: list[FunctionToolParam] = [
             cast(FunctionToolParam, {**tool, "parameters": sanitize_schema(tool["parameters"])} if "parameters" in tool else tool)
             for tool in raw_tools

@@ -7,8 +7,20 @@ from analyst.api import create_app
 from analyst.financial_data import FakeFinancialProvider
 from analyst.portfolio import PortfolioStore
 from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCall
-from analyst.schemas import NEW_CASH_DESTINATION, AnalysisRequest, FinancialEvidence, SavedPortfolio, Snapshot
-from tests.test_allocation import allocation_answer, allocation_evidence, allocation_request, comparison_judgments, run_allocation
+from analyst.schemas import (
+    NEW_CASH_DESTINATION,
+    AnalysisRequest,
+    FinancialEvidence,
+    SavedPortfolio,
+    Snapshot,
+)
+from tests.test_allocation import (
+    allocation_answer,
+    allocation_evidence,
+    allocation_request,
+    comparison_judgments,
+    run_allocation,
+)
 
 SIMPLE = "account,ticker,shares,average_cost,type\nTFSA,XEQT.TO,120,31.50,etf\nTFSA,AAPL,10,,\nRRSP,VFV.TO,5,88,\n"
 
@@ -204,6 +216,7 @@ def test_benchmark_field_persists_in_saved_portfolio_outside_settings(tmp_path):
 def test_market_refresh_includes_saved_benchmark(tmp_path):
     from datetime import datetime
     from zoneinfo import ZoneInfo
+
     from analyst.financial_data import QuoteCache
     from analyst.schemas import BENCHMARK_FUND, Quote
 

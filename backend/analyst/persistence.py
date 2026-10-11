@@ -1,0 +1,248 @@
+"""SQLite persistence foundation for portfolio revisions, artifacts, and proposals."""
+
+import json
+import os
+import sqlite3
+from contextlib import contextmanager
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from pathlib import Path
+from typing import Any, Generator, Literal
+
+from .schemas import (
+    ArtifactReference,
+    SavedPortfolio,
+    build_artifact_payload,
+)
+
+SCHEMA_VERSION = 1
+
+
+class SchemaMigrationError(RuntimeError):
+    """Raised when database schema version is incompatible."""
+
+
+def default_database_path() -> Path:
+    portfolio_dir = os.environ.get("PORTFOLIO_DIR")
+    if portfolio_dir:
+        return Path(portfolio_dir) / "portfolio.db"
+    return Path(__file__).resolve().parents[1] / "data" / "portfolio" / "portfolio.db"
+
+
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, o: Any) -> Any:
+        if isinstance(o, Decimal):
+            return str(o)
+        if isinstance(o, (datetime, date)):
+            return o.isoformat()
+        return super().default(o)
+
+
+
+class Database:
+    """Manages SQLite connection lifecycle, schema initialization, and immutable artifact storage."""
+
+    def __init__(self, path: Path | str | None = None) -> None:
+        self.path = Path(path) if path else default_database_path()
+
+    @contextmanager
+    def connect(self) -> Generator[sqlite3.Connection, None, None]:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.path, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode = WAL;")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_schema_version(self) -> int:
+        if not self.path.exists():
+            return 0
+        with self.connect() as conn:
+            cursor = conn.execute("PRAGMA user_version;")
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    def initialize(self) -> None:
+        """Initialize database schema idempotently."""
+        with self.connect() as conn:
+            cursor = conn.execute("PRAGMA user_version;")
+            current_version = int(cursor.fetchone()[0])
+            if current_version == 0:
+                self._apply_initial_schema(conn)
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
+            elif current_version > SCHEMA_VERSION:
+                raise SchemaMigrationError(
+                    f"Database schema version {current_version} is higher than supported {SCHEMA_VERSION}."
+                )
+
+    def _apply_initial_schema(self, conn: sqlite3.Connection) -> None:
+        # Schema metadata / migration tracker
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+        """)
+
+        # Revisions table for committed portfolios
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio_revisions (
+                revision INTEGER PRIMARY KEY CHECK(revision > 0),
+                committed_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+        """)
+
+        # Current portfolio pointer
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio_current (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                current_revision INTEGER,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (current_revision) REFERENCES portfolio_revisions(revision)
+            );
+        """)
+
+        # Immutable artifacts table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS artifacts (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                label TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                revision INTEGER,
+                basis TEXT NOT NULL,
+                source_artifact_id TEXT,
+                originating_run_id TEXT,
+                payload_json TEXT NOT NULL
+            );
+        """)
+
+        # Action proposals table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS proposals (
+                id TEXT PRIMARY KEY,
+                base_revision INTEGER,
+                origin TEXT NOT NULL,
+                thread_id TEXT,
+                run_id TEXT,
+                before_artifact_id TEXT,
+                after_artifact_id TEXT NOT NULL,
+                differences_json TEXT NOT NULL,
+                warnings_json TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('pending', 'applied', 'cancelled', 'stale')),
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (before_artifact_id) REFERENCES artifacts(id),
+                FOREIGN KEY (after_artifact_id) REFERENCES artifacts(id)
+            );
+        """)
+
+        # Action proposal receipts table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS proposal_receipts (
+                proposal_id TEXT PRIMARY KEY,
+                previous_revision INTEGER,
+                new_revision INTEGER NOT NULL UNIQUE,
+                committed_at TEXT NOT NULL,
+                FOREIGN KEY (proposal_id) REFERENCES proposals(id),
+                FOREIGN KEY (new_revision) REFERENCES portfolio_revisions(revision)
+            );
+        """)
+
+        # Migration metadata table (used by Ticket 02 to record legacy migration status)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?);",
+            (SCHEMA_VERSION, datetime.now(UTC).isoformat()),
+        )
+
+    def store_artifact(
+        self,
+        reference: ArtifactReference,
+        portfolio: SavedPortfolio,
+    ) -> None:
+        """Store immutable artifact payload and metadata."""
+        # Store human-projection payload natively with Decimal serialization
+        raw_payload = build_artifact_payload(portfolio, projection="human")
+        payload_json = json.dumps(raw_payload, cls=DecimalEncoder)
+
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO artifacts (
+                    id, kind, label, created_at, revision, basis,
+                    source_artifact_id, originating_run_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    reference.id,
+                    reference.kind,
+                    reference.label,
+                    reference.created_at.isoformat(),
+                    reference.revision,
+                    reference.basis,
+                    reference.source_artifact_id,
+                    reference.originating_run_id,
+                    payload_json,
+                ),
+            )
+
+    def get_artifact(
+        self,
+        artifact_id: str,
+        projection: Literal["human", "model"] = "human",
+    ) -> dict[str, Any] | None:
+        """Retrieve stored artifact payload with the chosen projection."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "SELECT payload_json FROM artifacts WHERE id = ?;",
+                (artifact_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            data = json.loads(row["payload_json"])
+
+            if projection == "model":
+                data["average_costs"] = {}
+                for item in data.get("unresolved", []):
+                    item["average_cost"] = None
+            return data
+
+    def get_artifact_reference(self, artifact_id: str) -> ArtifactReference | None:
+        """Retrieve artifact reference metadata without the full payload."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, kind, label, created_at, revision, basis, source_artifact_id, originating_run_id
+                FROM artifacts WHERE id = ?;
+                """,
+                (artifact_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return ArtifactReference(
+                id=row["id"],
+                kind=row["kind"],
+                label=row["label"],
+                created_at=datetime.fromisoformat(row["created_at"]),
+                revision=row["revision"],
+                basis=row["basis"],
+                source_artifact_id=row["source_artifact_id"],
+                originating_run_id=row["originating_run_id"],
+            )
