@@ -139,11 +139,23 @@ export async function del(path: string): Promise<void> {
   if (!response.ok) throw new Error("The delete could not be completed.");
 }
 
+function extractError(data: unknown): string {
+  if (data && typeof data === "object") {
+    const detail = (data as { detail?: unknown }).detail;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      const messages = detail.map((d: unknown) => (d && typeof d === "object" && "msg" in d ? String(d.msg) : JSON.stringify(d))).filter(Boolean);
+      if (messages.length) return messages.join("; ");
+    }
+  }
+  return "The request could not be completed.";
+}
+
 export async function put<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000) });
   const data = await response.json();
-  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "The request could not be completed.");
+  if (!response.ok) throw new Error(extractError(data));
   return data as T;
 }
 export type AllocationAmount = { minimum: string; maximum: string; currency: string; position_id: string };
@@ -267,7 +279,7 @@ export async function post<T>(path: string, body: unknown, timeoutMs?: number): 
   const data = await response.json();
   if (!response.ok) {
     const fields = Array.isArray(data.fields) ? ` Fields: ${data.fields.join(", ")}` : "";
-    throw new Error((typeof data.detail === "string" ? data.detail : "The request could not be completed.") + fields);
+    throw new Error(extractError(data) + fields);
   }
   return data as T;
 }

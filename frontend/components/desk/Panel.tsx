@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { BENCHMARK_FUND, NEW_CASH_DESTINATION, post, type Analysis, type BenchmarkSetting, type CandidateResult, type GuardrailReview, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { BENCHMARK_FUND, NEW_CASH_DESTINATION, post, type Analysis, type Baseline, type BenchmarkSetting, type CandidateResult, type GuardrailReview, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import { BeforeAfter, rebalancePlan, type Tab } from "./Memo";
 import { caseCurrency, compact, fullDate, money, pct, positionName, shortDate } from "./format";
 
@@ -403,6 +403,20 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
   if (!snapshot) return <p className="cap">Import a portfolio to see holdings.</p>;
   const review = result?.portfolio;
   const editable = !running;
+  function updateBaseline(category: keyof Baseline, fraction: string | null) {
+    setSettings(s => {
+      const currentBaseline = s.baseline || {};
+      const nextBaseline: Baseline = { ...currentBaseline, [category]: fraction };
+      const hasAny = Object.values(nextBaseline).some(v => v !== undefined && v !== null);
+      return { ...s, baseline: hasAny ? nextBaseline : null };
+    });
+  }
+  const baselineSum = ["stocks", "diversified_etfs", "sector_theme_etfs", "cash"].reduce((acc, key) => {
+    const v = settings.baseline?.[key as keyof Baseline];
+    return acc + (v ? Number(v) : 0);
+  }, 0);
+  const baselineOver = baselineSum > 1.00001;
+
   return <>
     {decision && <p className="cap">Today&apos;s portfolio. Historical weights weren&apos;t saved with this decision.</p>}
     <PriceStatus prices={prices} refreshing={refreshing} disabled={running} onRefresh={onRefreshPrices} />
@@ -447,10 +461,17 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
         <select className="in" value={settings.cash_is_deliberate_tilt === undefined || settings.cash_is_deliberate_tilt === null ? "" : String(settings.cash_is_deliberate_tilt)}
           onChange={event => setSettings(s => ({ ...s, cash_is_deliberate_tilt: event.target.value === "" ? null : event.target.value === "true" }))}>
           <option value="">Not set</option><option value="true">Yes</option><option value="false">No</option></select></label>
+      <span className="cap" style={{ display: "block", marginTop: 12, marginBottom: 6 }}>Target portfolio mix</span>
+      <div className="rules">
+        <PercentInput label="Stocks (%)" value={settings.baseline?.stocks} onChange={stocks => updateBaseline("stocks", stocks)} />
+        <PercentInput label="Diversified ETFs (%)" value={settings.baseline?.diversified_etfs} onChange={diversified_etfs => updateBaseline("diversified_etfs", diversified_etfs)} />
+        <PercentInput label="Sector/theme ETFs (%)" value={settings.baseline?.sector_theme_etfs} onChange={sector_theme_etfs => updateBaseline("sector_theme_etfs", sector_theme_etfs)} />
+        <PercentInput label="Cash (%)" value={settings.baseline?.cash} onChange={cash => updateBaseline("cash", cash)} />
+      </div>
+      {baselineOver && <span className="cap amber" role="alert">Target mix cannot exceed 100% (currently {Number((baselineSum * 100).toFixed(2))}%)</span>}
       <BenchmarkInput benchmark={benchmark} onChange={setBenchmark} disabled={!editable} onError={onError} />
     </fieldset>
     <ImportCsv snapshot={snapshot} onImported={onImported} onError={onError} disabled={!editable} label="Replace with a new CSV" />
-    <p className="cap">Need to edit individual positions or set a target mix? Use the <a href="/classic">classic view</a>.</p>
   </>;
 }
 

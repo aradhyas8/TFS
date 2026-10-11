@@ -230,3 +230,82 @@ test("a dual-listed ticker prompts to disambiguate listing and runs Stock Analys
   await expect(memo).toContainText("SEDAR+");
   expect(sent.map(body => body.stock?.position_id)).toEqual(["candidate-BMO-XTSE"]);
 });
+
+test("named Canadian stock completes SEDAR+ research, company cases and cash comparison in the shared journey", async ({ page }) => {
+  const canadianPortfolio = {
+    snapshot: {
+      as_of: "2026-09-30",
+      reporting_currency: "CAD",
+      accounts: [{ id: "broker", name: "Brokerage" }],
+      positions: [
+        {
+          id: "p2",
+          account_id: "broker",
+          kind: "stock",
+          currency: "CAD",
+          ticker: "ACME",
+          listing: "XTSE",
+          company_id: "acme",
+          company_name: "Acme",
+          shares: "5",
+          mark: { value: "200", as_of: "2026-09-30", source: "Manual mark" },
+        },
+        { id: "c1", account_id: "broker", kind: "cash", currency: "CAD", cash: "1000" },
+      ],
+      fx: [],
+    },
+    average_costs: { p2: "150" },
+    settings: { single_company_cap: "0.6", active_budget: "0.8", indirect_cap_policy: "direct_only" },
+    unresolved: [],
+  };
+  await open(page, canadianPortfolio);
+  await send(page, "/stock ACME");
+  const memo = page.getByRole("region", { name: "Stock analysis" });
+  await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
+  await expect(memo).toContainText("SEDAR+");
+
+  const details = page.getByRole("complementary", { name: "Details" });
+  await details.getByRole("tab", { name: /Evidence/ }).click();
+  await expect(details).toContainText("Acme Canadian annual filing (SEDAR+)");
+  const sedarLink = details.locator('a[href*="sedarplus.ca/csa-party/records"]');
+  await expect(sedarLink).toBeVisible();
+});
+
+test("missing Canadian stock research returns a completed conditional answer with unknown cases", async ({ page }) => {
+  const missingResearchPortfolio = {
+    snapshot: {
+      as_of: "2026-09-30",
+      reporting_currency: "CAD",
+      accounts: [{ id: "broker", name: "Brokerage" }],
+      positions: [
+        {
+          id: "p2",
+          account_id: "broker",
+          kind: "stock",
+          currency: "CAD",
+          ticker: "ACME",
+          listing: "XTSE",
+          company_id: "acme",
+          company_name: "Acme",
+          shares: "5",
+          mark: { value: "200", as_of: "2026-09-30", source: "Fixture missing_research" },
+        },
+        { id: "c1", account_id: "broker", kind: "cash", currency: "CAD", cash: "1000" },
+      ],
+      fx: [],
+    },
+    average_costs: { p2: "150" },
+    settings: { single_company_cap: "0.6" },
+    unresolved: [],
+  };
+  await open(page, missingResearchPortfolio);
+  await send(page, "Review unavailable primary facts for ACME");
+  const memo = page.getByRole("region", { name: "Stock analysis" });
+  await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
+  await expect(memo).toContainText("Clarify missing inputs");
+
+  const details = page.getByRole("complementary", { name: "Details" });
+  await details.getByRole("tab", { name: "Scenarios" }).click();
+  await expect(details).toContainText("Unknown");
+});
+

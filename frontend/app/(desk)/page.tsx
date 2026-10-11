@@ -21,7 +21,17 @@ const ANSWER_KEY = "desk.lastAnswer";
 
 /** Only rules the user actually set; an all-unset rule set is sent and saved as none. */
 function storedSettings(settings: PortfolioSettings): PortfolioSettings | null {
-  return Object.values(settings).some(value => value !== undefined && value !== null) ? settings : null;
+  const baseline = settings.baseline;
+  const hasBaseline = baseline && Object.values(baseline).some(value => value !== undefined && value !== null);
+  const cleaned: PortfolioSettings = {
+    ...settings,
+    baseline: hasBaseline ? baseline : null,
+  };
+  const hasAny = Object.entries(cleaned).some(([k, v]) => {
+    if (k === "baseline") return v !== null && v !== undefined;
+    return v !== undefined && v !== null;
+  });
+  return hasAny ? cleaned : null;
 }
 
 function pastDurations(sent: Sent | null): number[] {
@@ -82,7 +92,7 @@ export default function DeskPage() {
   }, [snapshot, settings, benchmark, averageCosts, unresolved]);
   useEffect(() => { if (!run) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, [run]);
   useEffect(() => { const reset = () => { if (!document.hidden) document.title = TITLE; }; document.addEventListener("visibilitychange", reset); return () => document.removeEventListener("visibilitychange", reset); }, []);
-  // A changed portfolio invalidates the destination and the "this is new money" confirmation, as in the classic view.
+  // A changed portfolio invalidates the destination and the "this is new money" confirmation.
   useEffect(() => { setNewCash(current => ({ ...current, confirmed: false, currency: current.currency || snapshot?.reporting_currency || null,
     account_id: snapshot?.accounts.some(account => account.id === current.account_id) ? current.account_id : snapshot?.accounts.length === 1 ? snapshot.accounts[0].id : null })); }, [snapshot]);
 
