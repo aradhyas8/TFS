@@ -38,6 +38,8 @@ class ToolCall:
 class ModelTurn:
     calls: list[ToolCall] = field(default_factory=list)
     answer: dict[str, Any] | None = None
+    text: str | None = None
+    citations: list[dict[str, Any]] = field(default_factory=list)
     continuation: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -184,12 +186,28 @@ ALLOCATION_TOOLS: list[FunctionToolParam] = [
 ]
 
 
-class OpenAIModel:
-    def __init__(self, settings: Settings) -> None:
+class OpenAIResponseTransport:
+    """Explicit model transport over the OpenAI Responses API.
+
+    Accepts explicit messages, tools, tool_choice, and optional output_schema.
+    Rejects routed third-party model configurations (e.g. OpenRouter) when invoked directly.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        client: AsyncOpenAI | None = None,
+        allow_routed: bool = False,
+    ) -> None:
         if not settings.api_key or not settings.model:
             raise ValueError("Backend OpenAI configuration is missing.")
+        if not allow_routed and ("openrouter.ai" in (settings.base_url or "") or settings.provider == "openrouter"):
+            raise ValueError(
+                f"Routed third-party model configuration '{settings.base_url}' is not supported for new orchestration."
+            )
         self.settings = settings
-        self.client = AsyncOpenAI(
+        self.client = client or AsyncOpenAI(
             api_key=settings.api_key,
             base_url=settings.base_url,
             timeout=settings.request_timeout,
@@ -197,99 +215,58 @@ class OpenAIModel:
             max_retries=0 if settings.provider == "chatgpt_plan" else 2,
         )
 
+    async def close(self) -> None:
+        await self.client.close()
+
     async def respond(
         self,
         messages: list[dict[str, Any]],
         *,
-        require_tool: bool,
-        forced_tool: str | None = None,
+        tools: list[FunctionToolParam] | None = None,
+        tool_choice: ToolChoice | None = None,
+        output_schema: dict[str, Any] | None = None,
+        output_schema_name: str = "portfolio_recommendation",
         reasoning_effort: str | None = None,
-        final: bool = False,
+        timeout: float | None = None,
     ) -> ModelTurn:
-        choice: ToolChoiceFunctionParam = {"type": "function", "name": forced_tool if forced_tool else "review_portfolio"}
-        request = json.loads(messages[1]["content"])
-        allocation = bool(request.get("new_cash"))
-        review = bool(request.get("portfolio_review"))
-        theme = bool(request.get("theme"))
-        schema = sanitize_schema((StockRecommendation if request.get("stock") or allocation or review or theme else Recommendation).model_json_schema())
-        schema["properties"]["amount"] = {"type": "null"}
-        stock_tools: list[FunctionToolParam] = copy.deepcopy(STOCK_TOOLS)
-        if request.get("stock"):
-            target_id = request["stock"].get("position_id")
-            target_pos = next((p for p in request.get("portfolio", {}).get("positions", []) if p.get("id") == target_id), None)
-            if target_pos and (target_pos.get("currency") == "CAD" or target_pos.get("listing") in {"XTSE", "XTSX", "NEOE", "XCNQ"}):
-                stock_tools = [SEDAR_TOOL, STOCK_TOOLS[1], STOCK_TOOLS[2]]
-        if review:
-            holding_schema = sanitize_schema(HoldingReviewInput.model_json_schema())
-            for node in holding_schema["$defs"]["CompanyCase"]["properties"].values():
-                choices = node.get("anyOf", [node.copy()])
-                annual_path = next((choice for choice in choices if choice.get("type") == "array" and choice.get("minItems") == 5), None)
-                if annual_path:
-                    node.clear()
-                    node["anyOf"] = [*choices, annual_path["items"]]
-            stock_tools = [{"type": "function", "name": "reunderwrite_holding", "description": "Challenge a bound current holding thesis against current primary evidence and any supplied prior thesis, then compute company cases. All numeric judgment fields (growth, margins, discount_rate, exit_multiple, etc.) must contain valid numeric decimal strings; never pass 'unknown' or text in numeric fields. State unknown facts in assumptions, uncertainty or assessment status. No price history or facts may be invented. Each bound US company runs once before comparison.", "parameters": holding_schema, "strict": True},
-                           {"type": "function", "name": "size_review", "description": "Translate an explained whole-portfolio issuer exposure range into local adjustment amounts after evidence-backed holding review and comparison. Python checks both endpoints, funding, source inputs, supplied risk context, costs/tax effects and configured cap/budget. Unknown inputs never authorize an amount.", "parameters": sanitize_schema(ReviewSizingInput.model_json_schema()), "strict": True}]
-        if allocation:
-            stock_tools = [{**STOCK_TOOLS[-1], "parameters": sanitize_schema(CandidateCasesInput.model_json_schema())}]
-        if theme:
-            stock_tools = [{"type": "function", "name": "size_review", "description": "After completed agreed theme cases and comparison, propose a justified exposure range for a supported shortlisted addition funded by a supplied same-account/currency cash balance. Shared Python sizing enforces risk context, source inputs, dated costs/tax and cap/budget endpoints; missing inputs leave amounts unknown.", "parameters": sanitize_schema(ReviewSizingInput.model_json_schema()), "strict": True}, ALLOCATION_TOOLS[1], {**STOCK_TOOLS[-1], "parameters": sanitize_schema(CandidateCasesInput.model_json_schema())},
-                           {"type": "function", "name": "test_theme_mechanism", "description": "Test the agreed economic mechanism for exactly one shortlisted candidate using its backend-bound evidence IDs. Explain support, challenge or unknown qualitatively; ETF citations use fund-POSITION_ID for dated sponsor facts. No numerical claims, probabilities or new facts.", "parameters": sanitize_schema(ThemeTestInput.model_json_schema()), "strict": True}]
-        raw_tools = [PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL, *stock_tools, *(ALLOCATION_TOOLS if allocation else [])]
-        if review:
-            comparison_schema = sanitize_schema(ComparisonJudgments.model_json_schema())
-            selection = request.get("comparison") or {}
-            selected = selection.get("alternatives", [])
-            covered = {alt["position_id"] for alt in selected if alt["position_id"] is not None}
-            alternatives = {}
-            for alt in selected:
-                if alt["kind"] == "stock" or alt["kind"] == "no_action" and set(selection["scope_position_ids"]) <= covered:
-                    alternatives[alt["id"]] = {"type": "boolean", "enum": [True]}
-                else:
-                    case_schema = copy.deepcopy(comparison_schema["$defs"]["AlternativeJudgment"])
-                    del case_schema["properties"]["alternative_id"]
-                    case_schema["required"].remove("alternative_id")
-                    alternatives[alt["id"]] = case_schema
-            comparison_schema["properties"]["alternatives"] = {
-                "type": "object", "properties": alternatives, "required": list(alternatives), "additionalProperties": False,
-            }
-            raw_tools = [{**tool, "parameters": comparison_schema} if tool["name"] == "calculate_comparison" else tool for tool in raw_tools]
-        tools: list[FunctionToolParam] = [
-            cast(FunctionToolParam, {**tool, "parameters": sanitize_schema(tool["parameters"])} if "parameters" in tool else tool)
-            for tool in raw_tools
-        ]
         effort = cast(Any, reasoning_effort if reasoning_effort is not None else self.settings.reasoning_effort)
-        openrouter = "openrouter.ai" in self.settings.base_url
+        openrouter = "openrouter.ai" in (self.settings.base_url or "")
         t0 = time.monotonic()
+
+        text_format: Any = omit
+        if output_schema is not None:
+            text_format = {
+                "format": {
+                    "type": "json_schema",
+                    "name": output_schema_name,
+                    "schema": sanitize_schema(output_schema),
+                    "strict": True,
+                }
+            }
+
         params: dict[str, Any] = dict(
             model=self.settings.model,
             reasoning={"effort": effort},
             input=cast(ResponseInputParam, messages),
-            # The final synthesis request offers no callable tools; the strict answer schema below is unchanged.
-            tools=omit if final else tools,
-            tool_choice=omit if final else cast(ToolChoice, choice if (require_tool or forced_tool) else "auto"),
+            tools=omit if tools is None else tools,
+            tool_choice=omit if tool_choice is None else tool_choice,
             # OpenRouter cannot route parallel_tool_calls with require_parameters; the pipeline still rejects multiple calls.
-            parallel_tool_calls=omit if final or openrouter else False,
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "portfolio_recommendation",
-                    "schema": schema,
-                    "strict": True,
-                }
-            },
+            parallel_tool_calls=omit if (tools is None or openrouter) else False,
+            text=text_format,
             max_output_tokens=16000,
             store=False,
             include=["reasoning.encrypted_content"],
             # OpenRouter only: pin the first-party OpenAI endpoint, honour every parameter, never fall back to another host.
             extra_body={"provider": {"only": ["openai"], "allow_fallbacks": False, "require_parameters": True}} if openrouter else None,
         )
+
+        effective_timeout = timeout or self.settings.request_timeout
         if self.settings.provider == "chatgpt_plan":
-            # Plan route transport only: max_output_tokens is unsupported there, and responses are streamed under one
-            # deadline per turn. Tools, forced choice, parallel_tool_calls=False, strict schemas and store=false are unchanged.
             del params["max_output_tokens"]
-            response = await stream_response(self.client, params, self.settings.request_timeout)
+            response = await stream_response(self.client, params, effective_timeout)
         else:
             response = await self.client.responses.create(**params)
+
         duration = time.monotonic() - t0
         tool_names = [item.name for item in response.output if item.type == "function_call"]
         usage = response.usage
@@ -310,6 +287,7 @@ class OpenAIModel:
             reasoning_tok,
             getattr(usage, "cost", None),
         )
+
         if response.status != "completed":
             inc_reason = getattr(response.incomplete_details, "reason", None) if response.incomplete_details else None
             partial_tools = [getattr(item, "name", None) for item in response.output if getattr(item, "type", None) == "function_call"]
@@ -320,13 +298,42 @@ class OpenAIModel:
             )
             logging.error("OPENAI INCOMPLETE RESPONSE: %s", msg)
             raise ValueError(msg)
+
+        # Check for model refusals in output items
+        for item in response.output:
+            if getattr(item, "type", None) == "message":
+                for content_part in getattr(item, "content", []):
+                    if getattr(content_part, "type", None) == "refusal":
+                        refusal_text = getattr(content_part, "refusal", "Model refused to generate response.")
+                        raise ValueError(f"Model refused: {refusal_text}")
+
         continuation = []
+        citations: list[dict[str, Any]] = []
+        plain_texts: list[str] = []
+
         for item in response.output:
             dumped = item.model_dump(mode="json", exclude_none=True)
             dumped.pop("status", None)
             dumped.pop("caller", None)
             dumped.pop("namespace", None)
             continuation.append(dumped)
+
+            if getattr(item, "type", None) == "message":
+                for content_part in getattr(item, "content", []):
+                    if getattr(content_part, "type", None) == "output_text":
+                        text_val = getattr(content_part, "text", "")
+                        if text_val:
+                            plain_texts.append(text_val)
+                        for annotation in getattr(content_part, "annotations", []) or []:
+                            if getattr(annotation, "type", None) == "url_citation":
+                                citations.append({
+                                    "type": "url_citation",
+                                    "url": getattr(annotation, "url", ""),
+                                    "title": getattr(annotation, "title", ""),
+                                    "start_index": getattr(annotation, "start_index", 0),
+                                    "end_index": getattr(annotation, "end_index", 0),
+                                })
+
         calls = [
             ToolCall(item.call_id, item.name, item.arguments)
             for item in response.output
@@ -334,9 +341,187 @@ class OpenAIModel:
         ]
         if calls:
             return ModelTurn(calls=calls, continuation=continuation)
-        if not response.output_text:
-            raise ValueError("The model did not return a recommendation.")
-        answer = json.loads(response.output_text)
-        if not isinstance(answer, dict):
-            raise ValueError("Expected a recommendation object.")
-        return ModelTurn(answer=answer, continuation=continuation)
+
+        answer: dict[str, Any] | None = None
+        raw_text = response.output_text or ("".join(plain_texts) if plain_texts else None)
+        if output_schema is not None:
+            if not raw_text:
+                raise ValueError("The model did not return a recommendation.")
+            parsed = json.loads(raw_text)
+            if not isinstance(parsed, dict):
+                raise ValueError("Expected a recommendation object.")
+            answer = parsed
+
+        return ModelTurn(
+            calls=[],
+            answer=answer,
+            text=raw_text,
+            citations=citations,
+            continuation=continuation,
+        )
+
+
+def build_workflow_tools(request: dict[str, Any]) -> tuple[list[FunctionToolParam], dict[str, Any]]:
+    """Build the workflow-specific tool set and recommendation schema from an AnalysisRequest dict."""
+    allocation = bool(request.get("new_cash"))
+    review = bool(request.get("portfolio_review"))
+    theme = bool(request.get("theme"))
+    schema = sanitize_schema(
+        (StockRecommendation if request.get("stock") or allocation or review or theme else Recommendation).model_json_schema()
+    )
+    schema["properties"]["amount"] = {"type": "null"}
+    stock_tools: list[FunctionToolParam] = copy.deepcopy(STOCK_TOOLS)
+    if request.get("stock"):
+        target_id = request["stock"].get("position_id")
+        target_pos = next((p for p in request.get("portfolio", {}).get("positions", []) if p.get("id") == target_id), None)
+        if target_pos and (target_pos.get("currency") == "CAD" or target_pos.get("listing") in {"XTSE", "XTSX", "NEOE", "XCNQ"}):
+            stock_tools = [SEDAR_TOOL, STOCK_TOOLS[1], STOCK_TOOLS[2]]
+    if review:
+        holding_schema = sanitize_schema(HoldingReviewInput.model_json_schema())
+        for node in holding_schema["$defs"]["CompanyCase"]["properties"].values():
+            choices = node.get("anyOf", [node.copy()])
+            annual_path = next((choice for choice in choices if choice.get("type") == "array" and choice.get("minItems") == 5), None)
+            if annual_path:
+                node.clear()
+                node["anyOf"] = [*choices, annual_path["items"]]
+        stock_tools = [
+            {
+                "type": "function",
+                "name": "reunderwrite_holding",
+                "description": "Challenge a bound current holding thesis against current primary evidence and any supplied prior thesis, then compute company cases. All numeric judgment fields (growth, margins, discount_rate, exit_multiple, etc.) must contain valid numeric decimal strings; never pass 'unknown' or text in numeric fields. State unknown facts in assumptions, uncertainty or assessment status. No price history or facts may be invented. Each bound US company runs once before comparison.",
+                "parameters": holding_schema,
+                "strict": True,
+            },
+            {
+                "type": "function",
+                "name": "size_review",
+                "description": "Translate an explained whole-portfolio issuer exposure range into local adjustment amounts after evidence-backed holding review and comparison. Python checks both endpoints, funding, source inputs, supplied risk context, costs/tax effects and configured cap/budget. Unknown inputs never authorize an amount.",
+                "parameters": sanitize_schema(ReviewSizingInput.model_json_schema()),
+                "strict": True,
+            },
+        ]
+    if allocation:
+        stock_tools = [{**STOCK_TOOLS[-1], "parameters": sanitize_schema(CandidateCasesInput.model_json_schema())}]
+    if theme:
+        stock_tools = [
+            {
+                "type": "function",
+                "name": "size_review",
+                "description": "After completed agreed theme cases and comparison, propose a justified exposure range for a supported shortlisted addition funded by a supplied same-account/currency cash balance. Shared Python sizing enforces risk context, source inputs, dated costs/tax and cap/budget endpoints; missing inputs leave amounts unknown.",
+                "parameters": sanitize_schema(ReviewSizingInput.model_json_schema()),
+                "strict": True,
+            },
+            ALLOCATION_TOOLS[1],
+            {**STOCK_TOOLS[-1], "parameters": sanitize_schema(CandidateCasesInput.model_json_schema())},
+            {
+                "type": "function",
+                "name": "test_theme_mechanism",
+                "description": "Test the agreed economic mechanism for exactly one shortlisted candidate using its backend-bound evidence IDs. Explain support, challenge or unknown qualitatively; ETF citations use fund-POSITION_ID for dated sponsor facts. No numerical claims, probabilities or new facts.",
+                "parameters": sanitize_schema(ThemeTestInput.model_json_schema()),
+                "strict": True,
+            },
+        ]
+    raw_tools = [PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL, *stock_tools, *(ALLOCATION_TOOLS if allocation else [])]
+    if review:
+        comparison_schema = sanitize_schema(ComparisonJudgments.model_json_schema())
+        selection = request.get("comparison") or {}
+        selected = selection.get("alternatives", [])
+        covered = {alt["position_id"] for alt in selected if alt["position_id"] is not None}
+        alternatives = {}
+        for alt in selected:
+            if alt["kind"] == "stock" or alt["kind"] == "no_action" and set(selection["scope_position_ids"]) <= covered:
+                alternatives[alt["id"]] = {"type": "boolean", "enum": [True]}
+            else:
+                case_schema = copy.deepcopy(comparison_schema["$defs"]["AlternativeJudgment"])
+                del case_schema["properties"]["alternative_id"]
+                case_schema["required"].remove("alternative_id")
+                alternatives[alt["id"]] = case_schema
+        comparison_schema["properties"]["alternatives"] = {
+            "type": "object",
+            "properties": alternatives,
+            "required": list(alternatives),
+            "additionalProperties": False,
+        }
+        raw_tools = [{**tool, "parameters": comparison_schema} if tool["name"] == "calculate_comparison" else tool for tool in raw_tools]
+
+    tools: list[FunctionToolParam] = [
+        cast(FunctionToolParam, {**tool, "parameters": sanitize_schema(tool["parameters"])} if "parameters" in tool else tool)
+        for tool in raw_tools
+    ]
+    return tools, schema
+
+
+class WorkflowModelAdapter:
+    """Adapts explicit model transport to the workflow-facing ModelProvider protocol."""
+
+    def __init__(self, transport: Any, *, settings: Settings | None = None) -> None:
+        self.transport = transport
+        self.settings = settings or getattr(transport, "settings", None)
+
+    @property
+    def client(self) -> Any:
+        return getattr(self.transport, "client", None)
+
+    async def respond(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        require_tool: bool,
+        forced_tool: str | None = None,
+        reasoning_effort: str | None = None,
+        final: bool = False,
+    ) -> ModelTurn:
+        request_obj: dict[str, Any] = {}
+        for msg in messages:
+            if msg.get("role") == "user":
+                try:
+                    parsed = json.loads(msg.get("content", ""))
+                    if isinstance(parsed, dict) and ("portfolio" in parsed or "question" in parsed):
+                        request_obj = parsed
+                        break
+                except Exception:
+                    continue
+        if not request_obj and len(messages) > 1:
+            try:
+                request_obj = json.loads(messages[1].get("content", "{}"))
+            except Exception:
+                request_obj = {}
+
+        tools, schema = build_workflow_tools(request_obj)
+        choice: ToolChoiceFunctionParam = {"type": "function", "name": forced_tool if forced_tool else "review_portfolio"}
+        tool_choice: ToolChoice | None = None if final else cast(ToolChoice, choice if (require_tool or forced_tool) else "auto")
+        effective_tools = None if final else tools
+
+        # If underlying transport supports explicit tools / output_schema:
+        if hasattr(self.transport, "respond"):
+            import inspect
+            sig = inspect.signature(self.transport.respond)
+            if "tools" in sig.parameters:
+                return await self.transport.respond(
+                    messages,
+                    tools=effective_tools,
+                    tool_choice=tool_choice,
+                    output_schema=schema,
+                    output_schema_name="portfolio_recommendation",
+                    reasoning_effort=reasoning_effort,
+                )
+            else:
+                return await self.transport.respond(
+                    messages,
+                    require_tool=require_tool,
+                    forced_tool=forced_tool,
+                    reasoning_effort=reasoning_effort,
+                    final=final,
+                )
+        raise ValueError("Invalid transport object.")
+
+
+class OpenAIModel(WorkflowModelAdapter):
+    """Workflow model provider backed by OpenAI Responses transport.
+
+    Preserves backward compatibility with all existing pipeline callers and tests.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        transport = OpenAIResponseTransport(settings, allow_routed=True)
+        super().__init__(transport, settings=settings)
