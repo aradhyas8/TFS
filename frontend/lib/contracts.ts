@@ -542,3 +542,91 @@ export async function prepareIdentifyHolding(
   return post<PreparationResult>("/api/portfolio/identify", request);
 }
 
+export type RunStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export type MessageRole = "user" | "assistant" | "system";
+
+export type ToolOutcome = {
+  id: string;
+  name: string;
+  status: "success" | "error";
+  error?: string | null;
+  artifact_ids: string[];
+};
+
+export type MessageRecord = {
+  id: string;
+  thread_id: string;
+  run_id?: string | null;
+  role: MessageRole;
+  text: string;
+  citations: Array<Record<string, unknown>>;
+  artifact_ids: string[];
+  clarification_required?: Record<string, unknown> | null;
+  proposal_ids: string[];
+  tool_outcomes: ToolOutcome[];
+  created_at: string;
+};
+
+export type ThreadSummary = {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  last_message_preview?: string | null;
+};
+
+export type RunRecord = {
+  id: string;
+  thread_id: string;
+  client_request_id: string;
+  status: RunStatus;
+  bound_revision?: number | null;
+  created_at: string;
+  updated_at: string;
+  error?: string | null;
+  message_ids: string[];
+  artifact_ids: string[];
+};
+
+export type ThreadDetail = {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  messages: MessageRecord[];
+  runs: RunRecord[];
+};
+
+export type SubmitMessageRequest = {
+  client_request_id: string;
+  text: string;
+  workflow_input?: Record<string, unknown> | null;
+  hypothetical_artifact_id?: string | null;
+};
+
+export async function createThread(): Promise<ThreadSummary> {
+  return postEmpty<ThreadSummary>("/api/threads");
+}
+
+export async function listThreads(): Promise<ThreadSummary[]> {
+  return get<ThreadSummary[]>("/api/threads");
+}
+
+export async function getThread(threadId: string): Promise<ThreadDetail> {
+  return get<ThreadDetail>(`/api/threads/${threadId}`);
+}
+
+export async function submitThreadMessage(
+  threadId: string,
+  request: SubmitMessageRequest
+): Promise<RunRecord> {
+  return post<RunRecord>(`/api/threads/${threadId}/messages`, request);
+}
+
+export async function getThreadRun(threadId: string, runId: string): Promise<RunRecord> {
+  return get<RunRecord>(`/api/threads/${threadId}/runs/${runId}`);
+}
+
+export async function cancelThreadRun(threadId: string, runId: string): Promise<RunRecord> {
+  return postEmpty<RunRecord>(`/api/threads/${threadId}/runs/${runId}/cancel`);
+}
+
+

@@ -1,5 +1,6 @@
 """SQLite persistence foundation for portfolio revisions, artifacts, and proposals."""
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -14,17 +15,25 @@ from .schemas import (
     ArtifactEnvelope,
     ArtifactReference,
     DifferenceItem,
+    MessageRecord,
+    MessageRole,
     PortfolioProposal,
     PortfolioProposalDetail,
     ProposalOrigin,
     ProposalReceipt,
     ProposalStatus,
     RevisionedPortfolio,
+    RunRecord,
+    RunStatus,
     SavedPortfolio,
+    SubmitMessageRequest,
+    ThreadDetail,
+    ThreadSummary,
+    ToolOutcome,
     build_artifact_payload,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class SchemaMigrationError(RuntimeError):
@@ -49,6 +58,14 @@ class InvalidProposalStateError(RuntimeError):
 
 class DatabaseLockError(RuntimeError):
     """Raised when SQLite operations fail due to a lock or busy condition."""
+
+
+class ThreadNotFoundError(RuntimeError):
+    """Raised when a thread ID is not found."""
+
+
+class RunConflictError(RuntimeError):
+    """Raised when a run payload conflicts with an existing client request ID or another run is active."""
 
 
 
@@ -113,17 +130,34 @@ class Database:
             return int(row[0]) if row else 0
 
     def initialize(self) -> None:
-        """Initialize database schema idempotently."""
+        """Initialize database schema idempotently with forward migrations and automated backup."""
         with self.connect() as conn:
             cursor = conn.execute("PRAGMA user_version;")
             current_version = int(cursor.fetchone()[0])
             if current_version == 0:
                 self._apply_initial_schema(conn)
+                self._apply_migration_v2(conn)
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
+            elif current_version == 1:
+                # Backup database before forward migration
+                self._backup_database(conn)
+                self._apply_migration_v2(conn)
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
             elif current_version > SCHEMA_VERSION:
                 raise SchemaMigrationError(
                     f"Database schema version {current_version} is higher than supported {SCHEMA_VERSION}."
                 )
+
+    def _backup_database(self, source_conn: sqlite3.Connection) -> Path:
+        """Create an atomic backup using SQLite backup API before forward migration."""
+        backup_path = self.path.with_name(f"{self.path.stem}.backup{self.path.suffix}")
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        backup_conn = sqlite3.connect(backup_path)
+        try:
+            source_conn.backup(backup_conn)
+        finally:
+            backup_conn.close()
+        return backup_path
 
     def _apply_initial_schema(self, conn: sqlite3.Connection) -> None:
         # Schema metadata / migration tracker
@@ -209,8 +243,75 @@ class Database:
         """)
 
         conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?);",
-            (SCHEMA_VERSION, datetime.now(UTC).isoformat()),
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?);",
+            (datetime.now(UTC).isoformat(),),
+        )
+
+    def _apply_migration_v2(self, conn: sqlite3.Connection) -> None:
+        """Apply migration v2: conversation tables (threads, messages, runs, private_continuation)."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS threads (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS runs (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                client_request_id TEXT NOT NULL,
+                request_payload_hash TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'cancelled', 'interrupted')),
+                bound_revision INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                error TEXT,
+                message_ids_json TEXT NOT NULL,
+                artifact_ids_json TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id),
+                UNIQUE(thread_id, client_request_id)
+            );
+        """)
+
+        # At most one running run per thread at database level
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_single_running
+            ON runs(thread_id)
+            WHERE status = 'running';
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                run_id TEXT,
+                role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+                text TEXT NOT NULL,
+                citations_json TEXT NOT NULL,
+                artifact_ids_json TEXT NOT NULL,
+                clarification_required_json TEXT,
+                proposal_ids_json TEXT NOT NULL,
+                tool_outcomes_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id),
+                FOREIGN KEY (run_id) REFERENCES runs(id)
+            );
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS private_continuation (
+                run_id TEXT PRIMARY KEY,
+                continuation_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (run_id) REFERENCES runs(id)
+            );
+        """)
+
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?);",
+            (datetime.now(UTC).isoformat(),),
         )
 
     def store_artifact(
@@ -886,6 +987,475 @@ class Database:
                 (proposal_id,),
             )
             return "cancelled"
+
+    # =========================================================================
+    # Conversation & Run Lifecycle Methods (Ticket 03)
+    # =========================================================================
+
+    def create_thread(self, thread_id: str | None = None) -> ThreadSummary:
+        """Create a new conversation thread."""
+        tid = thread_id or f"th-{uuid.uuid4().hex[:12]}"
+        now = datetime.now(UTC)
+        now_iso = now.isoformat()
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO threads (id, created_at, updated_at) VALUES (?, ?, ?);",
+                (tid, now_iso, now_iso),
+            )
+        return ThreadSummary(
+            id=tid,
+            created_at=now,
+            updated_at=now,
+            last_message_preview=None,
+        )
+
+    def list_threads(self) -> list[ThreadSummary]:
+        """List conversation threads ordered by updated_at descending with last message preview."""
+        with self.connect() as conn:
+            cursor = conn.execute("""
+                SELECT t.id, t.created_at, t.updated_at,
+                       (SELECT m.text FROM messages m WHERE m.thread_id = t.id ORDER BY m.created_at DESC LIMIT 1) as last_msg
+                FROM threads t
+                ORDER BY t.updated_at DESC;
+            """)
+            rows = cursor.fetchall()
+            summaries: list[ThreadSummary] = []
+            for r in rows:
+                preview = r["last_msg"]
+                if preview and len(preview) > 120:
+                    preview = preview[:117] + "..."
+                summaries.append(
+                    ThreadSummary(
+                        id=r["id"],
+                        created_at=datetime.fromisoformat(r["created_at"]),
+                        updated_at=datetime.fromisoformat(r["updated_at"]),
+                        last_message_preview=preview,
+                    )
+                )
+            return summaries
+
+    def get_thread(self, thread_id: str) -> ThreadDetail | None:
+        """Get thread detail including ordered messages and runs."""
+        with self.connect() as conn:
+            cursor = conn.execute("SELECT id, created_at, updated_at FROM threads WHERE id = ?;", (thread_id,))
+            t_row = cursor.fetchone()
+            if not t_row:
+                return None
+
+            msg_cursor = conn.execute(
+                """
+                SELECT id, thread_id, run_id, role, text, citations_json, artifact_ids_json,
+                       clarification_required_json, proposal_ids_json, tool_outcomes_json, created_at
+                FROM messages
+                WHERE thread_id = ?
+                ORDER BY created_at ASC;
+                """,
+                (thread_id,),
+            )
+            messages = [self._row_to_message(m) for m in msg_cursor.fetchall()]
+
+            run_cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, status, bound_revision,
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json
+                FROM runs
+                WHERE thread_id = ?
+                ORDER BY created_at ASC;
+                """,
+                (thread_id,),
+            )
+            runs = [self._row_to_run(rn) for rn in run_cursor.fetchall()]
+
+            return ThreadDetail(
+                id=t_row["id"],
+                created_at=datetime.fromisoformat(t_row["created_at"]),
+                updated_at=datetime.fromisoformat(t_row["updated_at"]),
+                messages=messages,
+                runs=runs,
+            )
+
+    def submit_message(
+        self,
+        thread_id: str,
+        request: SubmitMessageRequest,
+        bound_revision: int | None,
+    ) -> tuple[RunRecord, bool]:
+        """
+        Submit a message to a thread transactionally.
+        Returns (RunRecord, is_new).
+        Raises ThreadNotFoundError if thread does not exist.
+        Raises RunConflictError if payload differs for matching client_request_id or competing run is running.
+        """
+        # Canonical hash of request payload
+        payload_dict = {
+            "client_request_id": request.client_request_id,
+            "text": request.text,
+            "workflow_input": request.workflow_input,
+            "hypothetical_artifact_id": request.hypothetical_artifact_id,
+        }
+        canonical_str = json.dumps(payload_dict, sort_keys=True, cls=DecimalEncoder)
+        payload_hash = hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
+
+        with self.connect() as conn:
+            # Check thread existence
+            cursor = conn.execute("SELECT id FROM threads WHERE id = ?;", (thread_id,))
+            if not cursor.fetchone():
+                raise ThreadNotFoundError(f"Thread '{thread_id}' not found.")
+
+            # Check if run with same client_request_id already exists in this thread
+            cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, request_payload_hash, status,
+                       bound_revision, created_at, updated_at, error, message_ids_json, artifact_ids_json
+                FROM runs
+                WHERE thread_id = ? AND client_request_id = ?;
+                """,
+                (thread_id, request.client_request_id),
+            )
+            existing_run = cursor.fetchone()
+            if existing_run:
+                if existing_run["request_payload_hash"] == payload_hash:
+                    # Idempotent match: return existing run
+                    return self._row_to_run(existing_run), False
+                else:
+                    raise RunConflictError(
+                        f"Client request ID '{request.client_request_id}' has already been submitted with a different payload."
+                    )
+
+            # Check if there is already an active running run on this thread
+            cursor = conn.execute(
+                "SELECT id FROM runs WHERE thread_id = ? AND status = 'running';",
+                (thread_id,),
+            )
+            if cursor.fetchone():
+                raise RunConflictError(
+                    f"Thread '{thread_id}' already has an active running run. Only one running run per thread is permitted."
+                )
+
+            # Insert new run first, then initial user message (to satisfy foreign key from messages to runs)
+            run_id = f"run-{uuid.uuid4().hex[:12]}"
+            msg_id = f"msg-{uuid.uuid4().hex[:12]}"
+            now = datetime.now(UTC)
+            now_iso = now.isoformat()
+
+            conn.execute(
+                """
+                INSERT INTO runs (
+                    id, thread_id, client_request_id, request_payload_hash, status,
+                    bound_revision, created_at, updated_at, error, message_ids_json, artifact_ids_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    run_id,
+                    thread_id,
+                    request.client_request_id,
+                    payload_hash,
+                    "running",
+                    bound_revision,
+                    now_iso,
+                    now_iso,
+                    None,
+                    json.dumps([msg_id]),
+                    "[]",
+                ),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO messages (
+                    id, thread_id, run_id, role, text, citations_json, artifact_ids_json,
+                    clarification_required_json, proposal_ids_json, tool_outcomes_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    msg_id,
+                    thread_id,
+                    run_id,
+                    "user",
+                    request.text,
+                    "[]",
+                    "[]",
+                    None,
+                    "[]",
+                    "[]",
+                    now_iso,
+                ),
+            )
+
+            # Update thread updated_at
+            conn.execute("UPDATE threads SET updated_at = ? WHERE id = ?;", (now_iso, thread_id))
+
+            run_record = RunRecord(
+                id=run_id,
+                thread_id=thread_id,
+                client_request_id=request.client_request_id,
+                status="running",
+                bound_revision=bound_revision,
+                created_at=now,
+                updated_at=now,
+                error=None,
+                message_ids=[msg_id],
+                artifact_ids=[],
+            )
+            return run_record, True
+
+    def get_run(self, thread_id: str, run_id: str) -> RunRecord | None:
+        """Get run record ensuring cross-thread lookup returns None."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, status, bound_revision,
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json
+                FROM runs
+                WHERE id = ? AND thread_id = ?;
+                """,
+                (run_id, thread_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._row_to_run(row)
+
+    def cancel_run(self, thread_id: str, run_id: str) -> RunRecord | None:
+        """
+        Cancel a run if currently running.
+        Atomically updates status to 'cancelled'. If already in a terminal state, preserves it.
+        Returns the updated/current RunRecord, or None if not found in this thread.
+        """
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, status, bound_revision,
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json
+                FROM runs
+                WHERE id = ? AND thread_id = ?;
+                """,
+                (run_id, thread_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            status = row["status"]
+            if status == "running":
+                now_iso = datetime.now(UTC).isoformat()
+                conn.execute(
+                    "UPDATE runs SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'running';",
+                    (now_iso, run_id),
+                )
+                conn.execute("UPDATE threads SET updated_at = ? WHERE id = ?;", (now_iso, thread_id))
+                # Re-fetch
+                cursor = conn.execute(
+                    """
+                    SELECT id, thread_id, client_request_id, status, bound_revision,
+                           created_at, updated_at, error, message_ids_json, artifact_ids_json
+                    FROM runs
+                    WHERE id = ?;
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+
+            return self._row_to_run(row)
+
+    def update_run(
+        self,
+        run_id: str,
+        status: RunStatus,
+        error: str | None = None,
+        additional_message_ids: list[str] | None = None,
+        additional_artifact_ids: list[str] | None = None,
+    ) -> RunRecord | None:
+        """
+        Atomically update run status, ensuring terminal states cannot be overwritten.
+        Only transitions if current status is 'running'.
+        """
+        now = datetime.now(UTC)
+        now_iso = now.isoformat()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, status, bound_revision,
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json
+                FROM runs
+                WHERE id = ?;
+                """,
+                (run_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            current_status = row["status"]
+            if current_status != "running":
+                # Terminal state already reached; do not overwrite!
+                return self._row_to_run(row)
+
+            msg_ids = json.loads(row["message_ids_json"])
+            if additional_message_ids:
+                for mid in additional_message_ids:
+                    if mid not in msg_ids:
+                        msg_ids.append(mid)
+
+            art_ids = json.loads(row["artifact_ids_json"])
+            if additional_artifact_ids:
+                for aid in additional_artifact_ids:
+                    if aid not in art_ids:
+                        art_ids.append(aid)
+
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = ?, updated_at = ?, error = ?, message_ids_json = ?, artifact_ids_json = ?
+                WHERE id = ? AND status = 'running';
+                """,
+                (
+                    status,
+                    now_iso,
+                    error,
+                    json.dumps(msg_ids),
+                    json.dumps(art_ids),
+                    run_id,
+                ),
+            )
+            conn.execute("UPDATE threads SET updated_at = ? WHERE id = ?;", (now_iso, row["thread_id"]))
+
+            # Re-read
+            cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, status, bound_revision,
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json
+                FROM runs
+                WHERE id = ?;
+                """,
+                (run_id,),
+            )
+            updated_row = cursor.fetchone()
+            return self._row_to_run(updated_row)
+
+    def add_message(
+        self,
+        thread_id: str,
+        role: MessageRole,
+        text: str,
+        run_id: str | None = None,
+        citations: list[dict[str, Any]] | None = None,
+        artifact_ids: list[str] | None = None,
+        clarification_required: dict[str, Any] | None = None,
+        proposal_ids: list[str] | None = None,
+        tool_outcomes: list[ToolOutcome] | None = None,
+    ) -> MessageRecord:
+        """Add an assistant or user message to a thread."""
+        msg_id = f"msg-{uuid.uuid4().hex[:12]}"
+        now = datetime.now(UTC)
+        now_iso = now.isoformat()
+        tool_outcomes_dicts = [t.model_dump(mode="python") for t in (tool_outcomes or [])]
+
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO messages (
+                    id, thread_id, run_id, role, text, citations_json, artifact_ids_json,
+                    clarification_required_json, proposal_ids_json, tool_outcomes_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    msg_id,
+                    thread_id,
+                    run_id,
+                    role,
+                    text,
+                    json.dumps(citations or []),
+                    json.dumps(artifact_ids or []),
+                    json.dumps(clarification_required) if clarification_required else None,
+                    json.dumps(proposal_ids or []),
+                    json.dumps(tool_outcomes_dicts, cls=DecimalEncoder),
+                    now_iso,
+                ),
+            )
+            conn.execute("UPDATE threads SET updated_at = ? WHERE id = ?;", (now_iso, thread_id))
+
+        return MessageRecord(
+            id=msg_id,
+            thread_id=thread_id,
+            run_id=run_id,
+            role=role,
+            text=text,
+            citations=citations or [],
+            artifact_ids=artifact_ids or [],
+            clarification_required=clarification_required,
+            proposal_ids=proposal_ids or [],
+            tool_outcomes=tool_outcomes or [],
+            created_at=now,
+        )
+
+    def store_private_continuation(self, run_id: str, continuation: Any) -> None:
+        """Store private model continuation items in server-only table."""
+        now_iso = datetime.now(UTC).isoformat()
+        continuation_json = json.dumps(continuation, cls=DecimalEncoder)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO private_continuation (run_id, continuation_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET continuation_json = excluded.continuation_json, updated_at = excluded.updated_at;
+                """,
+                (run_id, continuation_json, now_iso),
+            )
+
+    def get_private_continuation(self, run_id: str) -> Any | None:
+        """Retrieve private continuation for a run."""
+        with self.connect() as conn:
+            cursor = conn.execute("SELECT continuation_json FROM private_continuation WHERE run_id = ?;", (run_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return json.loads(row["continuation_json"])
+
+    def recover_interrupted_runs(self) -> int:
+        """
+        Mark all currently 'running' runs as 'interrupted' upon process restart without replaying.
+        Returns the number of runs transitioned.
+        """
+        now_iso = datetime.now(UTC).isoformat()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE runs SET status = 'interrupted', updated_at = ? WHERE status = 'running';",
+                (now_iso,),
+            )
+            return cursor.rowcount
+
+    def _row_to_run(self, row: sqlite3.Row) -> RunRecord:
+        return RunRecord(
+            id=row["id"],
+            thread_id=row["thread_id"],
+            client_request_id=row["client_request_id"],
+            status=row["status"],
+            bound_revision=row["bound_revision"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+            error=row["error"],
+            message_ids=json.loads(row["message_ids_json"]),
+            artifact_ids=json.loads(row["artifact_ids_json"]),
+        )
+
+    def _row_to_message(self, row: sqlite3.Row) -> MessageRecord:
+        tool_outcomes_raw = json.loads(row["tool_outcomes_json"])
+        outcomes = [ToolOutcome.model_validate(o) for o in tool_outcomes_raw]
+        clarification = json.loads(row["clarification_required_json"]) if row["clarification_required_json"] else None
+        return MessageRecord(
+            id=row["id"],
+            thread_id=row["thread_id"],
+            run_id=row["run_id"],
+            role=row["role"],
+            text=row["text"],
+            citations=json.loads(row["citations_json"]),
+            artifact_ids=json.loads(row["artifact_ids_json"]),
+            clarification_required=clarification,
+            proposal_ids=json.loads(row["proposal_ids_json"]),
+            tool_outcomes=outcomes,
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
 
 
 

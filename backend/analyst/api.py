@@ -21,11 +21,14 @@ from .financial_data import (
     eodhd_symbol,
 )
 from .issuer_research import IssuerResearchProvider
+from .orchestrator import Orchestrator
 from .persistence import (
     DatabaseLockError,
     InvalidProposalStateError,
     ProposalNotFoundError,
+    RunConflictError,
     StaleBaseRevisionError,
+    ThreadNotFoundError,
 )
 from .pipeline import InvalidReview, analyze
 from .portfolio import (
@@ -70,9 +73,13 @@ from .schemas import (
     ProposalStatus,
     RefreshPrices,
     RevisionedPortfolio,
+    RunRecord,
     SavedDecision,
     SaveDecisionRequest,
     Snapshot,
+    SubmitMessageRequest,
+    ThreadDetail,
+    ThreadSummary,
     UpdatePortfolioRequest,
 )
 from .sec_research import SecResearchProvider
@@ -88,13 +95,46 @@ def create_app(
     discovery: DiscoveryProvider | None = None,
     store: DecisionStore | None = None,
     portfolio_store: PortfolioStore | None = None,
+    orchestrator: Orchestrator | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Personal Investment Analyst", version="0.1.0")
     source = data or SuppliedDataProvider()
     decisions = store or DecisionStore()
     portfolios = portfolio_store or PortfolioStore()
+    app_settings = settings or Settings.from_environment()
+
+    # Recover interrupted runs on startup without replaying
+    portfolios.db.recover_interrupted_runs()
+
+    # Create orchestrator if provided or lazily initialized
+    orch: Orchestrator | None = orchestrator
+    if orch is None:
+        transport: Any = None
+        if model is not None:
+            transport = getattr(model, "transport", model)
+        else:
+            try:
+                from .providers import OpenAIResponseTransport
+                transport = OpenAIResponseTransport(app_settings, allow_routed=True)
+            except ValueError:
+                # API key/model not configured at creation time; will error if orchestrator is called
+                transport = None
+        if transport is not None:
+            orch = Orchestrator(db=portfolios.db, transport=transport, settings=app_settings)
+
     app.state.portfolio_store = portfolios
     app.state.decision_store = decisions
+    app.state.orchestrator = orch
+
+    def get_orchestrator() -> Orchestrator:
+        nonlocal orch
+        if orch is not None:
+            return orch
+        from .providers import OpenAIResponseTransport
+        transport = OpenAIResponseTransport(app_settings, allow_routed=True)
+        orch = Orchestrator(db=portfolios.db, transport=transport, settings=app_settings)
+        app.state.orchestrator = orch
+        return orch
 
     @app.exception_handler(RequestValidationError)
     async def invalid_input(_request: Request, error: RequestValidationError) -> JSONResponse:
@@ -131,6 +171,20 @@ def create_app(
 
     @app.exception_handler(InvalidProposalStateError)
     async def handle_invalid_proposal_state(_request: Request, exc: InvalidProposalStateError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(ThreadNotFoundError)
+    async def handle_thread_not_found(_request: Request, exc: ThreadNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(RunConflictError)
+    async def handle_run_conflict(_request: Request, exc: RunConflictError) -> JSONResponse:
         return JSONResponse(
             status_code=409,
             content={"detail": str(exc)},
@@ -578,6 +632,63 @@ def create_app(
             return decisions.confirm_action(decision_id, action=request.action, notes=request.notes)
         except KeyError:
             raise HTTPException(404, "Decision not found.")
+
+    # =========================================================================
+    # Conversation & Run Endpoints (Ticket 03)
+    # =========================================================================
+
+    @app.post("/api/threads", response_model=ThreadSummary, status_code=201)
+    def create_thread() -> ThreadSummary:
+        return portfolios.db.create_thread()
+
+    @app.get("/api/threads", response_model=list[ThreadSummary])
+    def list_threads() -> list[ThreadSummary]:
+        return portfolios.db.list_threads()
+
+    @app.get("/api/threads/{thread_id}", response_model=ThreadDetail)
+    def get_thread(thread_id: str) -> ThreadDetail:
+        thread = portfolios.db.get_thread(thread_id)
+        if thread is None:
+            raise HTTPException(404, f"Thread '{thread_id}' not found.")
+        return thread
+
+    @app.post("/api/threads/{thread_id}/messages", response_model=RunRecord, status_code=202)
+    async def submit_thread_message(thread_id: str, request: SubmitMessageRequest) -> RunRecord:
+        # Bind revision once at acceptance: latest committed portfolio revision or None if absent
+        current_rev = portfolios.get_revisioned()
+        bound_revision = current_rev.revision if current_rev else None
+
+        run_record, is_new = portfolios.db.submit_message(
+            thread_id=thread_id,
+            request=request,
+            bound_revision=bound_revision,
+        )
+
+        if is_new:
+            get_orchestrator().submit_supervised_run(
+                thread_id=thread_id,
+                run_record=run_record,
+                user_text=request.text,
+                workflow_input=request.workflow_input,
+                hypothetical_artifact_id=request.hypothetical_artifact_id,
+            )
+
+        return run_record
+
+    @app.get("/api/threads/{thread_id}/runs/{run_id}", response_model=RunRecord)
+    def get_thread_run(thread_id: str, run_id: str) -> RunRecord:
+        # Cross-thread lookups must return 404
+        run_record = portfolios.db.get_run(thread_id, run_id)
+        if run_record is None:
+            raise HTTPException(404, f"Run '{run_id}' not found in thread '{thread_id}'.")
+        return run_record
+
+    @app.post("/api/threads/{thread_id}/runs/{run_id}/cancel", response_model=RunRecord)
+    async def cancel_thread_run(thread_id: str, run_id: str) -> RunRecord:
+        run_record = await get_orchestrator().cancel_run(thread_id, run_id)
+        if run_record is None:
+            raise HTTPException(404, f"Run '{run_id}' not found in thread '{thread_id}'.")
+        return run_record
 
     return app
 

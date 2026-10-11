@@ -91,10 +91,11 @@ class ScriptedModel:
         self,
         messages: list[dict[str, Any]],
         *,
-        require_tool: bool,
+        require_tool: bool = False,
         forced_tool: str | None = None,
         reasoning_effort: str | None = None,
         final: bool = False,
+        **kwargs: Any,
     ) -> ModelTurn:
         self.requests.append(copy.deepcopy(messages))
         self.reasoning_efforts.append(reasoning_effort)
@@ -497,21 +498,27 @@ class WorkflowModelAdapter:
             import inspect
             sig = inspect.signature(self.transport.respond)
             if "tools" in sig.parameters:
-                return await self.transport.respond(
-                    messages,
-                    tools=effective_tools,
-                    tool_choice=tool_choice,
-                    output_schema=schema,
-                    output_schema_name="portfolio_recommendation",
-                    reasoning_effort=reasoning_effort,
+                return cast(
+                    ModelTurn,
+                    await self.transport.respond(
+                        messages,
+                        tools=effective_tools,
+                        tool_choice=tool_choice,
+                        output_schema=schema,
+                        output_schema_name="portfolio_recommendation",
+                        reasoning_effort=reasoning_effort,
+                    ),
                 )
             else:
-                return await self.transport.respond(
-                    messages,
-                    require_tool=require_tool,
-                    forced_tool=forced_tool,
-                    reasoning_effort=reasoning_effort,
-                    final=final,
+                return cast(
+                    ModelTurn,
+                    await self.transport.respond(
+                        messages,
+                        require_tool=require_tool,
+                        forced_tool=forced_tool,
+                        reasoning_effort=reasoning_effort,
+                        final=final,
+                    ),
                 )
         raise ValueError("Invalid transport object.")
 
