@@ -309,6 +309,19 @@ export default function DeskPage() {
     if (next.kind === "theme") {
       setWorkflow("theme");
       if (next.name) updateTheme(t => ({ ...t, name: next.name || t.name, confirmed: false }));
+      setQuestion(next.question);
+      setCollapsed(false);
+      return;
+    }
+    if (next.kind === "new-cash") {
+      setWorkflow("new-cash");
+      setNewCash(prev => ({
+        ...prev,
+        amount: next.amount || null,
+        currency: next.currency || prev.currency || snapshot?.reporting_currency || null,
+        confirmed: false,
+      }));
+      setQuestion(next.question);
       setCollapsed(false);
       return;
     }
@@ -453,7 +466,15 @@ export default function DeskPage() {
         onSubmit={() => {
           if (workflow === "new-cash") void analyze({ question, newCash, stock: null });
           else if (workflow === "theme") void analyze({ question: question.trim() || `Explore theme: ${theme.name}`, newCash: null, theme: { ...theme, confirmed: false }, themeCandidates });
-          else { ask(question); setQuestion(""); }
+          else {
+            const next = route(question, snapshot);
+            if (next.kind === "new-cash" || next.kind === "theme") {
+              ask(question);
+            } else {
+              ask(question);
+              setQuestion("");
+            }
+          }
         }} />}
     </main>
     <Panel tab={tab} onTab={openTab} onClose={() => setPanelOpen(false)} focus={focus} snapshot={snapshot} setSnapshot={setSnapshot} averageCosts={averageCosts} unresolved={unresolved} onImported={adopt}
