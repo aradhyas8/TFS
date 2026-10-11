@@ -234,4 +234,31 @@ class PortfolioStore:
         revisioned = self.db.save_revision(record)
         return revisioned.portfolio
 
+    def store_hypothetical_artifact(
+        self,
+        portfolio: SavedPortfolio,
+        label: str = "Hypothetical Draft Portfolio",
+        source_artifact_id: str | None = None,
+        originating_run_id: str | None = None,
+    ):
+        """Store immutable hypothetical draft portfolio artifact."""
+        return self.db.store_hypothetical_artifact(
+            portfolio,
+            label=label,
+            source_artifact_id=source_artifact_id,
+            originating_run_id=originating_run_id,
+        )
+
+    def get_artifact(
+        self,
+        artifact_id: str,
+        projection: str = "human",
+    ) -> dict[str, Any] | None:
+        """Retrieve stored artifact payload."""
+        return self.db.get_artifact(artifact_id, projection=projection)
+
+    def get_artifact_reference(self, artifact_id: str):
+        """Retrieve artifact reference metadata."""
+        return self.db.get_artifact_reference(artifact_id)
+
 

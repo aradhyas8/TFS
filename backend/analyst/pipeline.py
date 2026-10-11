@@ -554,6 +554,7 @@ async def analyze(
         current = review_portfolio(supplied, clarification_evidence, holdings_as_of)
         apply_guardrails(current, request.settings)
         clarification = AnalysisResult(question=request.question, portfolio=current, theme=theme,
+            artifact_reference=getattr(request, "artifact_reference", None),
             recommendation=Recommendation(preferred_action="wait_for_inputs", amount=None,
                 reason="Agree the economic mechanism, bounded shortlist and candidate/tool-call effort limits before candidate research.",
                 alternatives=[Alternative(action="no_action", reason="Keep the portfolio while the theme is clarified.")],
@@ -1422,6 +1423,7 @@ async def analyze(
                 allocation=allocation,
                 reunderwriting=reunderwriting,
                 theme=theme,
+                artifact_reference=getattr(request, "artifact_reference", None),
             )
             if secret and secret in result.model_dump_json():
                 raise InvalidReview("Response contains backend-only configuration.")

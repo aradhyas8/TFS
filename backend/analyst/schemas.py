@@ -521,6 +521,8 @@ class AnalysisRequest(Contract):
     # Explicit historical valuation date. Absent, the analysis is current: holdings stay as last confirmed on
     # portfolio.as_of and are valued with the latest acceptable prices on or before today.
     analysis_date: date | None = None
+    artifact_reference: Any | None = None
+    artifact_id: Identifier | None = None
 
     @model_validator(mode="after")
     def analysis_after_holdings(self) -> Self:
@@ -1375,6 +1377,7 @@ class AnalysisResult(Contract):
     allocation: AllocationResult | None = None
     reunderwriting: ReunderwritingResult | None = None
     theme: ThemeResult | None = None
+    artifact_reference: Any | None = None
 
 
 DecisionAction = Literal[
@@ -1671,6 +1674,19 @@ class CancelProposalResult(Contract):
     """Result of cancelling a proposal."""
 
     status: ProposalStatus
+
+
+class CreateArtifactRequest(Contract):
+    """Request to store an immutable hypothetical portfolio artifact."""
+
+    portfolio: SavedPortfolio
+    label: Text = "Hypothetical Draft Portfolio"
+    source_artifact_id: Identifier | None = None
+    originating_run_id: Identifier | None = None
+
+
+AnalysisRequest.model_rebuild()
+AnalysisResult.model_rebuild()
 
 
 

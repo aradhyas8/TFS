@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { actionLabel, BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot, type ThemeInput } from "../../lib/contracts";
+import { actionLabel, BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type ArtifactReference, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot, type ThemeInput } from "../../lib/contracts";
 import { accountName, answerSentence, caseCurrency, clock, compact, decisionLabel, POSITION_LABEL, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
 
 export type Tab = "evidence" | "scenarios" | "proposed" | "holdings" | "guardrails";
@@ -32,7 +32,67 @@ function Expandable({ title, count, children }: { title: string; count: string; 
 
 const Bullets = ({ items }: { items: string[] }) => <ul className="bullets">{items.map((item, index) => <li key={index}>{item}</li>)}</ul>;
 
-export function Echo({ question, newCash, snapshot, stock, rebalance, theme }: { question: string; newCash: NewCashInput | null; snapshot: Snapshot | null; stock?: string | null; rebalance?: boolean; theme?: ThemeInput | null }) {
+export function HypotheticalBanner({ reference }: { reference?: ArtifactReference | null }) {
+  if (!reference || reference.basis !== "hypothetical") return null;
+  return (
+    <div
+      data-testid="hypothetical-banner"
+      style={{
+        background: "var(--raised)",
+        border: "1px solid var(--rule-strong)",
+        padding: "10px 14px",
+        borderRadius: 8,
+        marginBottom: 16,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 8,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="lbl amber" data-testid="hypothetical-badge">Hypothetical analysis</span>
+        <span className="cap" data-testid="artifact-source-ref">
+          Source: {reference.id} ({reference.label})
+        </span>
+      </div>
+      <span className="cap m">Committed portfolio revision unchanged</span>
+    </div>
+  );
+}
+
+export function Echo({
+  question,
+  newCash,
+  snapshot,
+  stock,
+  rebalance,
+  theme,
+  isHypothetical,
+  artifactReference,
+}: {
+  question: string;
+  newCash: NewCashInput | null;
+  snapshot: Snapshot | null;
+  stock?: string | null;
+  rebalance?: boolean;
+  theme?: ThemeInput | null;
+  isHypothetical?: boolean;
+  artifactReference?: ArtifactReference | null;
+}) {
+  if (isHypothetical || artifactReference?.basis === "hypothetical") {
+    return (
+      <div className="echo" data-testid="hypothetical-echo">
+        <span className="q">{question}</span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}>
+          <span className="lbl amber" data-testid="hypothetical-label">Hypothetical</span>
+          <span className="cap n" data-testid="hypothetical-source-reference">
+            Based on draft artifact {artifactReference?.id || "uncommitted"} ({artifactReference?.label || "Draft"}) · committed portfolio unchanged
+          </span>
+        </div>
+      </div>
+    );
+  }
   if (rebalance) return <div className="echo"><span className="q">{question}</span>
     <span className="cap n">Rebalance · your whole saved portfolio as of {fullDate(snapshot?.as_of)}. Nothing in it is changed.</span></div>;
   if (stock) return <div className="echo"><span className="q">{question}</span>
@@ -183,8 +243,9 @@ export function Answer({ result, sent, snapshot, cite, saved, onTab, onRerun, on
   const amountText = rec.amount ? range(rec.amount.minimum, rec.amount.maximum, rec.amount.currency) : null;
 
   return <div>
-    <Echo question={result.question} newCash={sent.newCash} snapshot={snapshot} />
+    <Echo question={result.question} newCash={sent.newCash} snapshot={snapshot} isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
     <div className="memo" aria-label="Analyst memo" role="region">
+      <HypotheticalBanner reference={result.artifact_reference} />
       <Row label="Recommendation" kind="rec">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 className="display">{amountText && sentence.includes(amountText) ? <>{sentence.split(amountText)[0]}<span className="amt">{amountText}</span>{sentence.split(amountText)[1]}</> : sentence}</h2>
@@ -236,8 +297,9 @@ export function ReviewAnswer({ result, snapshot, cite, saved, onTab, onConfirm }
   // The backend already groups missing values by cause; per-holding detail stays in Holdings.
   const unknowns = review.qualifications;
   return <div>
-    <Echo question={result.question} newCash={null} snapshot={snapshot} />
+    <Echo question={result.question} newCash={null} snapshot={snapshot} isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
     <div className="memo" aria-label="Analyst memo" role="region">
+      <HypotheticalBanner reference={result.artifact_reference} />
       <Row label="Recommendation" kind="rec">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 className="display">{rec.preferred_action === "review_only" && over ? `Your portfolio breaks ${over === 1 ? "one" : over} of your rules.` : answerSentence(rec.preferred_action, rec.amount, "", null)}</h2>
@@ -427,8 +489,9 @@ export function RebalanceAnswer({ result, snapshot, cite, saved, onTab, onConfir
     {items.map(item => <span key={item.row.supplied.id}>{item.label}{item.why && <span className="m"> · {item.why}</span>}</span>)}</div>;
 
   return <div>
-    <Echo question={result.question} newCash={null} snapshot={snapshot} rebalance />
+    <Echo question={result.question} newCash={null} snapshot={snapshot} rebalance isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
     <div className="memo" aria-label="Rebalance" role="region">
+      <HypotheticalBanner reference={result.artifact_reference} />
       <Row label="Recommendation" kind="rec">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 className="display">{rebalanceSentence(rec.preferred_action, plan, rec.amount, over)}</h2>
@@ -577,8 +640,9 @@ export function StockAnswer({ result, snapshot, cite, saved, onTab, onConfirm }:
   const unmodeled = [...new Set(comparison?.alternatives.flatMap(alt => alt.cases.flatMap(c => c.terminal_value ? [] : c.unmodeled || [])) || [])];
 
   return <div>
-    <Echo question={result.question} newCash={null} snapshot={snapshot} stock={ticker} />
+    <Echo question={result.question} newCash={null} snapshot={snapshot} stock={ticker} isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
     <div className="memo" aria-label="Stock analysis" role="region">
+      <HypotheticalBanner reference={result.artifact_reference} />
       <Row label="Recommendation" kind="rec">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 className="display">{rec.preferred_action === "review_only" && cap?.status === "breached" ? `${ticker} is over your ${pct(cap.cap)} company cap.`
@@ -713,8 +777,9 @@ export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onAgree, onC
 
   if (theme.status === "awaiting_agreement") {
     return <div>
-      <Echo question={result.question} newCash={null} snapshot={snapshot} theme={theme.context} />
+      <Echo question={result.question} newCash={null} snapshot={snapshot} theme={theme.context} isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
       <div className="memo" aria-label="Analyst memo" role="region">
+        <HypotheticalBanner reference={result.artifact_reference} />
         <Row label="Recommendation" kind="rec">
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <h2 className="display">Agree the theme mechanism and shortlist before researching.</h2>
@@ -763,8 +828,9 @@ export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onAgree, onC
   }).filter((p): p is Position => !!p);
 
   return <div>
-    <Echo question={result.question} newCash={null} snapshot={snapshot} theme={theme.context} />
+    <Echo question={result.question} newCash={null} snapshot={snapshot} theme={theme.context} isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
     <div className="memo" aria-label="Analyst memo" role="region">
+      <HypotheticalBanner reference={result.artifact_reference} />
       <Row label="Recommendation" kind="rec">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 className="display">{amountText && sentence.includes(amountText) ? <>{sentence.split(amountText)[0]}<span className="amt">{amountText}</span>{sentence.split(amountText)[1]}</> : sentence}</h2>

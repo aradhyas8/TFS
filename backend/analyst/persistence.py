@@ -243,6 +243,40 @@ class Database:
                 ),
             )
 
+    def store_hypothetical_artifact(
+        self,
+        portfolio: SavedPortfolio,
+        label: str = "Hypothetical Draft Portfolio",
+        source_artifact_id: str | None = None,
+        originating_run_id: str | None = None,
+    ) -> ArtifactReference:
+        """Store immutable hypothetical draft portfolio artifact."""
+        now = datetime.now(UTC)
+        artifact_id = f"art-hypo-{uuid.uuid4().hex[:12]}"
+        if source_artifact_id is None:
+            current = self.get_current_portfolio()
+            if current:
+                with self.connect() as conn:
+                    cursor = conn.execute(
+                        "SELECT id FROM artifacts WHERE revision = ? AND basis = 'committed' ORDER BY created_at DESC LIMIT 1;",
+                        (current.revision,),
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        source_artifact_id = row["id"]
+        ref = ArtifactReference(
+            id=artifact_id,
+            kind="portfolio_snapshot",
+            label=label,
+            created_at=now,
+            revision=None,
+            basis="hypothetical",
+            source_artifact_id=source_artifact_id,
+            originating_run_id=originating_run_id,
+        )
+        self.store_artifact(ref, portfolio)
+        return ref
+
     def get_artifact(
         self,
         artifact_id: str,
@@ -391,6 +425,26 @@ class Database:
                 ON CONFLICT(id) DO UPDATE SET current_revision = excluded.current_revision, updated_at = excluded.updated_at;
                 """,
                 (next_rev, committed_at_iso),
+            )
+            art_id = f"art-rev-{next_rev}"
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO artifacts (
+                    id, kind, label, created_at, revision, basis,
+                    source_artifact_id, originating_run_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    art_id,
+                    "portfolio_snapshot",
+                    f"Committed Portfolio (rev {next_rev})",
+                    committed_at_iso,
+                    next_rev,
+                    "committed",
+                    None,
+                    None,
+                    json.dumps(build_artifact_payload(portfolio_with_saved_at, projection="human"), cls=DecimalEncoder),
+                ),
             )
             return RevisionedPortfolio(
                 revision=next_rev,

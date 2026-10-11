@@ -171,7 +171,8 @@ export type ReunderwritingResult = { context: PortfolioReviewInput; research: Re
     action: string; current_thesis: string; change_reason: string; downside: string; what_could_change: string[]; evidence_ids: string[] }[];
   qualifications: string[] };
 export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation;
-  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null; allocation: AllocationResult | null; reunderwriting: ReunderwritingResult | null; theme: ThemeResult | null };
+  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null; allocation: AllocationResult | null; reunderwriting: ReunderwritingResult | null; theme: ThemeResult | null;
+  artifact_reference?: ArtifactReference | null };
 
 export type DecisionAction =
   | "review_only"
@@ -500,6 +501,21 @@ export async function cancelProposal(proposalId: string): Promise<CancelProposal
 
 export async function getProposalDetail(proposalId: string): Promise<PortfolioProposalDetail> {
   return get<PortfolioProposalDetail>(`/api/portfolio/proposals/${proposalId}`);
+}
+
+export type CreateArtifactRequest = {
+  portfolio: SavedPortfolio;
+  label?: string;
+  source_artifact_id?: string | null;
+  originating_run_id?: string | null;
+};
+
+export async function createArtifact(request: CreateArtifactRequest): Promise<ArtifactReference> {
+  return post<ArtifactReference>("/api/portfolio/artifacts", request);
+}
+
+export async function getArtifactReference(artifactId: string): Promise<ArtifactReference> {
+  return get<ArtifactReference>(`/api/portfolio/artifacts/${artifactId}`);
 }
 
 
