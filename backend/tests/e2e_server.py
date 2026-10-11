@@ -72,7 +72,9 @@ class BrowserTestModel:
             rows = request["portfolio"]["positions"]
             fund = next(row["id"] for row in rows if row.get("ticker") == "BROAD")
             # Without an existing cash balance the fund is a larger share of the funded portfolio.
-            held_cash = any(row["kind"] == "cash" and row["id"] != NEW_CASH_DESTINATION for row in rows)
+            held_cash_row = next((row["id"] for row in rows if row["kind"] == "cash" and row["id"] != NEW_CASH_DESTINATION), None)
+            held_cash = held_cash_row is not None
+            cash_alt = held_cash_row or "cash"
             low, high = ("0.55", "0.65") if held_cash else ("0.6", "0.7")
             for name, args in [("scan_opportunities", {}), ("calculate_comparison", comparison_judgments((fund, "cash", "keep"))),
                                ("size_allocation", {"position_id": fund, "min_weight": low, "max_weight": high,
@@ -397,6 +399,7 @@ app = create_app(
 def forget_portfolio() -> None:
     """Test server only: each browser journey starts without a saved portfolio or a leftover source fixture."""
     portfolio_store.path.unlink(missing_ok=True)
+    decision_store.clear()
     financial.reference = e2e_evidence()
     stock_research.records = e2e_research()
 

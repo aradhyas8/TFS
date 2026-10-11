@@ -12,8 +12,12 @@ from analyst.schemas import (
     DecisionAlternative,
     DecisionConclusion,
     DecisionReasoning,
+    DecisionSubject,
+    DecisionWorkflow,
     EvidenceReference,
+    NewCashSubject,
     SavedDecision,
+    ThemeSubject,
 )
 from tests.test_analysis import recommendation, snapshot
 
@@ -327,3 +331,135 @@ def test_decisions_can_be_deleted_one_at_a_time_or_all(tmp_path):
     assert [row["id"] for row in api.get("/api/decisions").json()] == [second.id]
     assert api.delete("/api/decisions").json() == {"deleted": 1}
     assert api.get("/api/decisions").json() == []
+
+
+def test_decisions_workflow_and_subject_roundtrip(tmp_path: Path) -> None:
+    store = DecisionStore(tmp_path)
+    api = TestClient(create_app(data=FakeDataProvider(), store=store))
+    res = make_sample_result().model_dump(mode="json")
+
+    # 1. Stock decision
+    stock_payload = {
+        "result": res,
+        "workflow": "stock",
+        "subject": {
+            "label": "NVDA",
+            "ticker": "NVDA",
+            "listing": "NASDAQ",
+        },
+    }
+    stock_saved = api.post("/api/decisions", json=stock_payload).json()
+    assert stock_saved["workflow"] == "stock"
+    assert stock_saved["subject"]["label"] == "NVDA"
+    assert stock_saved["subject"]["ticker"] == "NVDA"
+    assert stock_saved["subject"]["listing"] == "NASDAQ"
+
+    # 2. New cash decision
+    new_cash_payload = {
+        "result": res,
+        "workflow": "new_cash",
+        "subject": {
+            "label": "C$2,000 → TFSA",
+            "new_cash": {
+                "amount": "2000",
+                "account_id": "tfsa",
+                "currency": "CAD",
+            },
+        },
+    }
+    cash_saved = api.post("/api/decisions", json=new_cash_payload).json()
+    assert cash_saved["workflow"] == "new_cash"
+    assert cash_saved["subject"]["label"] == "C$2,000 → TFSA"
+    assert str(cash_saved["subject"]["new_cash"]["amount"]).startswith("2000")
+    assert cash_saved["subject"]["new_cash"]["account_id"] == "tfsa"
+
+    # 3. Theme decision
+    theme_payload = {
+        "result": res,
+        "workflow": "theme",
+        "subject": {
+            "label": "AI infrastructure",
+            "theme": {
+                "name": "AI infrastructure",
+                "mechanism": "Semiconductor manufacturing",
+                "shortlist": ["p1", "p2"],
+            },
+        },
+    }
+    theme_saved = api.post("/api/decisions", json=theme_payload).json()
+    assert theme_saved["workflow"] == "theme"
+    assert theme_saved["subject"]["label"] == "AI infrastructure"
+    assert theme_saved["subject"]["theme"]["name"] == "AI infrastructure"
+    assert theme_saved["subject"]["theme"]["mechanism"] == "Semiconductor manufacturing"
+    assert theme_saved["subject"]["theme"]["shortlist"] == ["p1", "p2"]
+
+    # Verify reload from disk via store.get
+    loaded_stock = store.get(stock_saved["id"])
+    assert loaded_stock is not None
+    assert loaded_stock.workflow == "stock"
+    assert loaded_stock.subject is not None
+    assert loaded_stock.subject.label == "NVDA"
+    assert loaded_stock.subject.ticker == "NVDA"
+
+    loaded_cash = store.get(cash_saved["id"])
+    assert loaded_cash is not None
+    assert loaded_cash.workflow == "new_cash"
+    assert loaded_cash.subject is not None
+    assert loaded_cash.subject.new_cash is not None
+    assert loaded_cash.subject.new_cash.account_id == "tfsa"
+
+    loaded_theme = store.get(theme_saved["id"])
+    assert loaded_theme is not None
+    assert loaded_theme.workflow == "theme"
+    assert loaded_theme.subject is not None
+    assert loaded_theme.subject.theme is not None
+    assert loaded_theme.subject.theme.shortlist == ["p1", "p2"]
+
+
+def test_decisions_backwards_compatibility_legacy_file(tmp_path: Path) -> None:
+    store = DecisionStore(tmp_path)
+    # Write a legacy JSON file with NO workflow or subject fields
+    legacy_json = """{
+      "id": "dec-legacy-123",
+      "saved_at": "2026-09-15T12:00:00Z",
+      "as_of": "2026-09-15",
+      "question": "What is my direct exposure?",
+      "evidence_references": [],
+      "reasoning": {
+        "reason": "Direct concentration is moderate.",
+        "assumptions": [],
+        "uncertainty": [],
+        "what_could_change": [],
+        "downside": "Drawdowns possible.",
+        "alternatives": []
+      },
+      "conclusion": {
+        "preferred_action": "review_only",
+        "amount": null
+      },
+      "confirmed_action": null
+    }"""
+    (tmp_path / "dec-legacy-123.json").write_text(legacy_json, encoding="utf-8")
+
+    # store.get loads cleanly
+    loaded = store.get("dec-legacy-123")
+    assert loaded is not None
+    assert loaded.id == "dec-legacy-123"
+    assert loaded.workflow is None
+    assert loaded.subject is None
+
+    # store.list_decisions loads cleanly
+    all_decisions = store.list_decisions()
+    assert len(all_decisions) == 1
+    assert all_decisions[0].id == "dec-legacy-123"
+    assert all_decisions[0].workflow is None
+    assert all_decisions[0].subject is None
+
+    # API returns it cleanly
+    api = TestClient(create_app(data=FakeDataProvider(), store=store))
+    res = api.get("/api/decisions/dec-legacy-123")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["workflow"] is None
+    assert data["subject"] is None
+

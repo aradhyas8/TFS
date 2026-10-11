@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { actionLabel, BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot, type ThemeInput } from "../../lib/contracts";
-import { accountName, answerSentence, caseCurrency, clock, compact, POSITION_LABEL, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
+import { accountName, answerSentence, caseCurrency, clock, compact, decisionLabel, POSITION_LABEL, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
 
 export type Tab = "evidence" | "scenarios" | "proposed" | "holdings" | "guardrails";
 type Cite = { numbers: Map<string, number>; onCite: (id: string) => void };
@@ -855,26 +855,35 @@ export function Historical({ decision, snapshot, cite, onRerun, onConfirm }: His
   const target = targetId ? positionName(snapshot?.positions.find(row => row.id === targetId), targetId) : "the candidate";
   const sentence = answerSentence(conclusion.preferred_action, conclusion.amount, target, null);
   const amountText = conclusion.amount ? range(conclusion.amount.minimum, conclusion.amount.maximum, conclusion.amount.currency) : null;
-  return <div aria-label="Reopened decision" role="region">
-    <div className="historical-band" data-testid="historical-band" style={{ background: "var(--raised)", border: "1px solid var(--rule)", borderRadius: 8, padding: "10px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
-      <span style={{ color: "var(--text-2)" }}>Historical. Prices, filings and your rules are as of the {shortDate(decision.as_of)} snapshot and are not updated.</span>
-      <button type="button" className="btn secondary small" onClick={onRerun}>Re-run with today&apos;s portfolio</button>
-    </div>
-    <div className="echo"><span className="q">{decision.question}</span><span className="cap">Saved {shortDate(decision.saved_at)} · snapshot {shortDate(decision.as_of)}</span></div>
-    <div className="memo">
-      <Row label="Recommendation" kind="rec">
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <h2 className="display">{amountText && sentence.includes(amountText) ? <>{sentence.split(amountText)[0]}<span className="amt">{amountText}</span>{sentence.split(amountText)[1]}</> : sentence}</h2>
-          <span className="cap">{actionLabel(conclusion.preferred_action)} · at the time</span>
+      const choices = decision.workflow === "stock"
+        ? STOCK_CHOICES
+        : decision.workflow === "theme"
+        ? THEME_CHOICES
+        : decision.workflow === "new_cash"
+        ? CASH_CHOICES(target)
+        : decision.workflow === "rebalance" || decision.workflow === "review" || conclusion.preferred_action === "review_only"
+        ? REVIEW_CHOICES
+        : CASH_CHOICES(target);
+      return <div aria-label="Reopened decision" role="region">
+        <div className="historical-band" data-testid="historical-band" style={{ background: "var(--raised)", border: "1px solid var(--rule)", borderRadius: 8, padding: "10px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
+          <span style={{ color: "var(--text-2)" }}>Historical. Prices, filings and your rules are as of the {shortDate(decision.as_of)} snapshot and are not updated.</span>
+          <button type="button" className="btn secondary small" onClick={onRerun}>Re-run with today&apos;s portfolio</button>
         </div>
-      </Row>
-      <Row label="Why"><p className="body">{reasoning.reason}<Cites ids={decision.evidence_references.map(ref => ref.id)} cite={cite} /></p></Row>
-      {reasoning.alternatives.length > 0 && <Row label="Alternatives"><div className="alts">
-        {reasoning.alternatives.map((alt, index) => <div className="alt" key={index}><span>{actionLabel(alt.action)}</span><span className="m">{alt.reason}</span></div>)}
-      </div></Row>}
-      <Row label="Downside"><p className="body">{reasoning.downside}</p></Row>
-      <Reasoning assumptions={reasoning.assumptions} uncertainty={reasoning.uncertainty} change={reasoning.what_could_change} />
-      {decision.confirmed_action ? <DidRow decision={decision} /> : <Row label="You did"><ConfirmForm choices={conclusion.preferred_action === "review_only" ? REVIEW_CHOICES : CASH_CHOICES(target)} onConfirm={onConfirm} /></Row>}
-    </div>
-  </div>;
-}
+        <div className="echo"><span className="q">{decision.question}</span><span className="cap"><span data-testid="decision-workflow">{decisionLabel(decision)}</span> · Saved {shortDate(decision.saved_at)} · snapshot {shortDate(decision.as_of)}</span></div>
+        <div className="memo">
+          <Row label="Recommendation" kind="rec">
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <h2 className="display">{amountText && sentence.includes(amountText) ? <>{sentence.split(amountText)[0]}<span className="amt">{amountText}</span>{sentence.split(amountText)[1]}</> : sentence}</h2>
+              <span className="cap">{actionLabel(conclusion.preferred_action)} · at the time</span>
+            </div>
+          </Row>
+          <Row label="Why"><p className="body">{reasoning.reason}<Cites ids={decision.evidence_references.map(ref => ref.id)} cite={cite} /></p></Row>
+          {reasoning.alternatives.length > 0 && <Row label="Alternatives"><div className="alts">
+            {reasoning.alternatives.map((alt, index) => <div className="alt" key={index}><span>{actionLabel(alt.action)}</span><span className="m">{alt.reason}</span></div>)}
+          </div></Row>}
+          <Row label="Downside"><p className="body">{reasoning.downside}</p></Row>
+          <Reasoning assumptions={reasoning.assumptions} uncertainty={reasoning.uncertainty} change={reasoning.what_could_change} />
+          {decision.confirmed_action ? <DidRow decision={decision} /> : <Row label="You did"><ConfirmForm choices={choices} onConfirm={onConfirm} /></Row>}
+        </div>
+      </div>;
+    }

@@ -1424,6 +1424,30 @@ class UserConfirmedAction(Contract):
     notes: Text | None = None
 
 
+DecisionWorkflow = Literal["review", "rebalance", "stock", "new_cash", "theme"]
+
+
+class NewCashSubject(Contract):
+    amount: Quantity | None = None
+    account_id: Identifier | None = None
+    currency: Currency | None = None
+    cash_position_id: Identifier | None = None
+
+
+class ThemeSubject(Contract):
+    name: Text | None = None
+    mechanism: Text | None = None
+    shortlist: list[Identifier] = Field(default_factory=list)
+
+
+class DecisionSubject(Contract):
+    label: Text
+    ticker: Identifier | None = None
+    listing: Identifier | None = None
+    new_cash: NewCashSubject | None = None
+    theme: ThemeSubject | None = None
+
+
 class SavedDecision(Contract):
     id: Identifier
     saved_at: AwareDatetime
@@ -1433,12 +1457,16 @@ class SavedDecision(Contract):
     reasoning: DecisionReasoning
     conclusion: DecisionConclusion
     confirmed_action: UserConfirmedAction | None = None
+    workflow: DecisionWorkflow | None = None
+    subject: DecisionSubject | None = None
 
 
 class SaveDecisionRequest(Contract):
     result: AnalysisResult | None = None
     decision: SavedDecision | None = None
     confirmed_action: UserConfirmedAction | None = None
+    workflow: DecisionWorkflow | None = None
+    subject: DecisionSubject | None = None
 
     @model_validator(mode="after")
     def validate_payload(self) -> Self:

@@ -1,15 +1,15 @@
 import { BENCHMARK_FUND, isSupportedStock, NEW_CASH_DESTINATION, type Analysis, type PortfolioSettings, type Position, type SavedDecision, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
-import { doneLabel, fullDate, money, pct, shortDate } from "./format";
+import { decisionLabel, doneLabel, fullDate, money, pct, shortDate } from "./format";
 
 type Props = {
   snapshot: Snapshot | null; unresolved: UnresolvedHolding[]; settings: PortfolioSettings; result: Analysis | null;
   decisions: SavedDecision[]; currentId: string | null; running: string | null;
-  onNew: () => void; onHoldings: () => void; onOpen: (decision: SavedDecision) => void; onStock: (position: Position) => void;
+  onNew: () => void; onHoldings: () => void; onOpen: (decision: SavedDecision) => void; onAllDecisions: () => void; onStock: (position: Position) => void;
   onDelete: (decision: SavedDecision) => void; onClearAll: () => void;
 };
 
 /** Left rail: which portfolio and which decisions am I working with? */
-export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, onNew, onHoldings, onOpen, onStock, onDelete, onClearAll }: Props) {
+export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, onNew, onHoldings, onOpen, onAllDecisions, onStock, onDelete, onClearAll }: Props) {
   const review = result?.portfolio;
   // A supported stock row offers Stock Analysis; funds and cash are listed only.
   const holding = (row: Position, figure: string) => {
@@ -46,15 +46,18 @@ export default function Rail({ snapshot, unresolved, settings, result, decisions
 
     <div className="decisions">
       <span className="lbl dhead"><span>Decisions</span>
-        {decisions.length > 0 && <button type="button" className="link cap" onClick={onClearAll}>Clear all</button>}</span>
+        <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button type="button" className="link cap" onClick={onAllDecisions} data-testid="all-decisions-link">All decisions</button>
+          {decisions.length > 0 && <button type="button" className="link cap" onClick={onClearAll}>Clear all</button>}
+        </span></span>
       {running && <div className="ditem" aria-current="true"><span>{running}</span><span className="cap">Now · analyzing</span></div>}
       {decisions.length === 0 && !running && <span className="cap" style={{ padding: "0 12px" }}>Saved decisions appear here.</span>}
       {decisions.map(decision => <div className="drow" key={decision.id}>
-        <button type="button" className="ditem" aria-current={decision.id === currentId} onClick={() => onOpen(decision)}>
-          <span className="title"><span>{decision.question}</span>{!decision.confirmed_action && <span className="dot" aria-label="Not confirmed" />}</span>
+        <button type="button" className="ditem" data-testid="decision-item" aria-label={`${decisionLabel(decision)}: ${decision.question}`} aria-current={decision.id === currentId} onClick={() => onOpen(decision)} title={decision.question}>
+          <span className="title"><span>{decisionLabel(decision)}</span>{!decision.confirmed_action && <span className="dot" aria-label="Not confirmed" />}</span>
           <span className="cap">{shortDate(decision.saved_at)} · {decision.confirmed_action ? `you: ${doneLabel(decision.confirmed_action.action)}` : "not confirmed"}</span>
         </button>
-        <button type="button" className="ddel" aria-label={`Delete decision: ${decision.question}`} title="Delete" onClick={() => onDelete(decision)}>
+        <button type="button" className="ddel" aria-label={`Delete decision: ${decisionLabel(decision)}`} title="Delete" onClick={() => onDelete(decision)}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
         </button>
       </div>)}
