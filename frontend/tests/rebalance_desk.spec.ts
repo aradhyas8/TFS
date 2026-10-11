@@ -24,10 +24,11 @@ const NO_RULES = { ...SAVED, settings: null };
 
 type Sent = { question: string; stock?: unknown; portfolio_review?: unknown; comparison?: { alternatives: { id: string }[] } };
 
+import { seedPortfolio } from "./test_helpers";
+
 async function open(page: Page, saved: object = SAVED) {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.request.delete("/api/test/portfolio");
-  expect((await page.request.put("/api/portfolio", { data: saved })).ok()).toBeTruthy();
+  await seedPortfolio(page, saved);
   const sent: Sent[] = [];
   page.on("request", request => { if (request.url().endsWith("/api/analyze")) sent.push(request.postDataJSON()); });
   await page.goto("/");
@@ -42,7 +43,9 @@ async function send(page: Page, question: string) {
 }
 /** The saved portfolio as stored, minus the save time. */
 async function stored(page: Page) {
-  const { saved_at: _, ...rest } = await (await page.request.get("/api/portfolio")).json();
+  const data = await (await page.request.get("/api/portfolio")).json();
+  const portfolio = data?.portfolio ?? data;
+  const { saved_at: _, ...rest } = portfolio;
   return rest;
 }
 const memo = (page: Page) => page.getByRole("region", { name: "Rebalance" });

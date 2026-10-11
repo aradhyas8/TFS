@@ -1,6 +1,9 @@
 import csv
 import io
+import json
+import sqlite3
 from datetime import UTC, datetime
+
 from decimal import Decimal
 from typing import Any
 
@@ -21,6 +24,12 @@ from .financial_data import (
     eodhd_symbol,
 )
 from .issuer_research import IssuerResearchProvider
+from .persistence import (
+    DatabaseLockError,
+    InvalidProposalStateError,
+    ProposalNotFoundError,
+    StaleBaseRevisionError,
+)
 from .pipeline import InvalidReview, analyze
 from .portfolio import (
     HOLDINGS_COLUMNS,
@@ -30,6 +39,11 @@ from .portfolio import (
     listing_currency,
     load_holdings,
     split_ticker,
+)
+from .portfolio_actions import (
+    cancel_portfolio_action,
+    confirm_portfolio_action,
+    prepare_portfolio_action,
 )
 from .providers import DataProvider, ModelProvider, OpenAIModel, SuppliedDataProvider
 from .research import ResearchProvider
@@ -41,19 +55,31 @@ from .schemas import (
     CandidateRequest,
     CandidateResult,
     CandidateUnresolved,
+    CancelProposalResult,
     ConfirmActionRequest,
+    ConfirmationResult,
     CSVRequest,
     FinancialEvidence,
     IdentifyHolding,
+    IdentifyHoldingRequest,
+    ImportPortfolioRequest,
     Mark,
+    PortfolioProposal,
+    PortfolioProposalDetail,
     Position,
+    PreparationResult,
+    ProposalStatus,
     RefreshPrices,
+    RevisionedPortfolio,
     SavedDecision,
     SaveDecisionRequest,
     SavedPortfolio,
     Snapshot,
+    UpdatePortfolioRequest,
 )
 from .sec_research import SecResearchProvider
+
+
 
 
 def create_app(
@@ -71,6 +97,8 @@ def create_app(
     source = data or SuppliedDataProvider()
     decisions = store or DecisionStore()
     portfolios = portfolio_store or PortfolioStore()
+    app.state.portfolio_store = portfolios
+    app.state.decision_store = decisions
 
     @app.exception_handler(RequestValidationError)
     async def invalid_input(_request: Request, error: RequestValidationError) -> JSONResponse:
@@ -82,6 +110,36 @@ def create_app(
                 "fields": [".".join(str(part) for part in item["loc"]) for item in error.errors()],
             },
         )
+
+    @app.exception_handler(DatabaseLockError)
+    async def handle_db_lock(_request: Request, _exc: DatabaseLockError) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Database is temporarily locked. Please retry."},
+        )
+
+    @app.exception_handler(ProposalNotFoundError)
+
+    async def handle_proposal_not_found(_request: Request, exc: ProposalNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(StaleBaseRevisionError)
+    async def handle_stale_base(_request: Request, exc: StaleBaseRevisionError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(InvalidProposalStateError)
+    async def handle_invalid_proposal_state(_request: Request, exc: InvalidProposalStateError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc)},
+        )
+
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -118,17 +176,13 @@ def create_app(
             headers={"Content-Disposition": 'attachment; filename="holdings-template.csv"'},
         )
 
-    @app.get("/api/portfolio", response_model=SavedPortfolio | None)
-    async def current_portfolio() -> SavedPortfolio | None:
-        # A portfolio saved before the resolver improved is upgraded in place; holdings, costs and rules are untouched.
-        current = portfolios.get()
-        if current is None:
-            return None
-        upgraded = await enrich(current, market_data())
-        return portfolios.save(upgraded) if upgraded != current else current
+    @app.get("/api/portfolio", response_model=RevisionedPortfolio | None)
+    def current_portfolio() -> RevisionedPortfolio | None:
+        return portfolios.get_revisioned()
 
-    @app.post("/api/portfolio/import", response_model=SavedPortfolio)
-    async def import_portfolio(request: CSVRequest) -> SavedPortfolio:
+
+    @app.post("/api/portfolio/import", response_model=PreparationResult)
+    async def import_portfolio(request: ImportPortfolioRequest) -> PreparationResult:
         try:
             imported = load_holdings(request, reference_identities())
         except (ValueError, csv.Error) as exc:
@@ -141,21 +195,38 @@ def create_app(
         imported = await enrich(imported, market_data())
         # New holdings replace the old ones; the user's rules and benchmark stay.
         current = portfolios.get()
-        return portfolios.save(
-            imported.model_copy(
-                update={
-                    "settings": current.settings if current else None,
-                    "benchmark": current.benchmark if current else None,
-                }
-            )
+        candidate = imported.model_copy(
+            update={
+                "settings": current.settings if current else None,
+                "benchmark": current.benchmark if current else None,
+            }
         )
+        try:
+            return prepare_portfolio_action(
+                database=portfolios.db,
+                candidate=candidate,
+                base_revision=request.base_revision,
+                origin="import",
+                evidence=reference_identities(),
+            )
+        except StaleBaseRevisionError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
-    @app.put("/api/portfolio", response_model=SavedPortfolio)
-    def update_portfolio(request: SavedPortfolio) -> SavedPortfolio:
-        return portfolios.save(request)
+    @app.put("/api/portfolio", response_model=PreparationResult)
+    def update_portfolio(request: UpdatePortfolioRequest) -> PreparationResult:
+        try:
+            return prepare_portfolio_action(
+                database=portfolios.db,
+                candidate=request.portfolio,
+                base_revision=request.base_revision,
+                origin="manual",
+                evidence=reference_identities(),
+            )
+        except StaleBaseRevisionError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
-    @app.post("/api/portfolio/identify", response_model=SavedPortfolio)
-    async def identify_holding(request: IdentifyHolding) -> SavedPortfolio:
+    @app.post("/api/portfolio/identify", response_model=PreparationResult)
+    async def identify_holding(request: IdentifyHoldingRequest) -> PreparationResult:
         current = portfolios.get()
         if current is None:
             raise HTTPException(404, "No saved portfolio.")
@@ -168,7 +239,46 @@ def create_app(
                 else str(exc)
             )
             raise HTTPException(422, message) from None
-        return portfolios.save(await enrich(answered, market_data()))
+        enriched = await enrich(answered, market_data())
+        try:
+            return prepare_portfolio_action(
+                database=portfolios.db,
+                candidate=enriched,
+                base_revision=request.base_revision,
+                origin="identify",
+                evidence=reference_identities(),
+            )
+        except StaleBaseRevisionError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/portfolio/proposals", response_model=list[PortfolioProposal])
+    def list_proposals(status: ProposalStatus | None = None) -> list[PortfolioProposal]:
+        return portfolios.db.list_proposals(status=status)
+
+    @app.get("/api/portfolio/proposals/{proposal_id}", response_model=PortfolioProposalDetail)
+    def get_proposal_detail(proposal_id: str) -> PortfolioProposalDetail:
+        detail = portfolios.db.get_proposal_detail(proposal_id)
+        if detail is None:
+            raise HTTPException(404, f"Proposal '{proposal_id}' not found.")
+        return detail
+
+    async def _assert_empty_request(request: Request) -> None:
+        body = await request.body()
+        if body.strip():
+            raise HTTPException(422, "Request body must be empty; replacement payloads are rejected.")
+
+    @app.post("/api/portfolio/proposals/{proposal_id}/confirm", response_model=ConfirmationResult)
+    async def confirm_proposal(proposal_id: str, request: Request) -> ConfirmationResult:
+        await _assert_empty_request(request)
+        return confirm_portfolio_action(portfolios.db, proposal_id)
+
+    @app.post("/api/portfolio/proposals/{proposal_id}/cancel", response_model=CancelProposalResult)
+    async def cancel_proposal(proposal_id: str, request: Request) -> CancelProposalResult:
+        await _assert_empty_request(request)
+        return cancel_portfolio_action(portfolios.db, proposal_id)
+
+
+
 
     @app.post("/api/market/refresh")
     async def refresh_prices(request: RefreshPrices) -> dict[str, Any]:

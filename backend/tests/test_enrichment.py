@@ -87,9 +87,21 @@ def app(tmp_path, market: Market, reviews: int = 1) -> TestClient:
 
 
 def imported(api: TestClient, csv: str = HOLDINGS) -> dict:
-    response = api.post("/api/portfolio/import", json={"csv": csv, "as_of": TODAY.isoformat(), "reporting_currency": "CAD"})
+    cur = api.get("/api/portfolio").json()
+    base_rev = cur["revision"] if cur else None
+    response = api.post(
+        "/api/portfolio/import",
+        json={"csv": csv, "as_of": TODAY.isoformat(), "reporting_currency": "CAD", "base_revision": base_rev},
+    )
     assert response.status_code == 200, response.text
-    return response.json()
+    prop_id = response.json()["proposal"]["id"]
+    detail = api.get(f"/api/portfolio/proposals/{prop_id}").json()
+    after = detail["after_portfolio"]
+    store = getattr(api.app.state, "portfolio_store", None)
+    if store is not None:
+        store.save(SavedPortfolio.model_validate(after))
+    return after
+
 
 
 def reviewed(api: TestClient, snapshot: dict) -> dict:
@@ -196,7 +208,12 @@ def test_ambiguous_listing_asks_with_only_the_matching_listings(tmp_path):
     unresolved = {row["ticker"]: row for row in saved["unresolved"]}
     assert unresolved["CM"]["candidates"] == ["XNYS", "XTSE"]
     assert unresolved["ZZZZ"]["candidates"] == []
-    answered = api.post("/api/portfolio/identify", json={"account_id": "tfsa", "ticker": "CM", "listing": "XTSE"}).json()
+    cur = api.get("/api/portfolio").json()
+    base_rev = cur["revision"] if cur else None
+    res = api.post("/api/portfolio/identify", json={"base_revision": base_rev, "account_id": "tfsa", "ticker": "CM", "listing": "XTSE"})
+    assert res.status_code == 200, res.text
+    prop_id = res.json()["proposal"]["id"]
+    answered = api.get(f"/api/portfolio/proposals/{prop_id}").json()["after_portfolio"]
     cm = next(row for row in answered["snapshot"]["positions"] if row["ticker"] == "CM")
     assert (cm["listing"], cm["currency"], cm["kind"], cm["company_name"]) == ("XTSE", "CAD", "stock", "Canadian Imperial Bank Of Commerce")
 
@@ -209,7 +226,7 @@ def test_sec_outage_leaves_tsx_identity_supplied_not_verified(tmp_path):
     assert reviewed(api, saved["snapshot"])["positions"][0]["identity_status"] == "supplied"
 
 
-def test_a_portfolio_saved_before_the_resolver_improved_is_upgraded_on_load(tmp_path):
+def test_a_portfolio_saved_before_the_resolver_improved_is_not_enriched_on_read(tmp_path):
     # As saved by an older resolver: listings from the user's answers, no issuer identities.
     listings = {"AVGO": "XNYS", "F": "XNYS", "GOOG": "XNAS", "HDB": "XNYS", "IBN": "XNYS", "INFY": "XNYS", "NBIS": "XNYS", "SHOP": "XTSE"}
     positions = [{"id": f"tfsa-{t.lower()}", "account_id": "tfsa", "kind": "stock", "currency": "USD", "ticker": t, "listing": listing,
@@ -221,19 +238,18 @@ def test_a_portfolio_saved_before_the_resolver_improved_is_upgraded_on_load(tmp_
     store = PortfolioStore(tmp_path / "portfolio")
     store.save(old)
 
-    # EODHD quota used up: SEC alone upgrades the US holdings; CM waits without losing anything.
+    # In Spec 2 / Ticket 02, GET performs pure read without calling enrichment or providers
     market = Market(used=20)
-    loaded = app(tmp_path, market).get("/api/portfolio").json()
+    res = app(tmp_path, market).get("/api/portfolio").json()
+    assert res is not None
+    assert res["revision"] == 1
+    loaded = res["portfolio"]
     by_ticker = {row["ticker"]: row for row in loaded["snapshot"]["positions"]}
     assert market.eodhd == []
-    assert by_ticker["AVGO"]["listing"] == "XNAS" and by_ticker["AVGO"]["company_id"] == "CIK0001730168"
-    assert by_ticker["SHOP"]["listing"] == "XNAS" and by_ticker["SHOP"]["currency"] == "USD"
-    assert all(by_ticker[t]["company_id"] for t in listings) and by_ticker["CM"]["company_id"] is None
+    # Old positions are returned exactly as committed without automatic background mutation
+    assert by_ticker["AVGO"]["listing"] == "XNYS"
+    assert by_ticker["SHOP"]["listing"] == "XTSE"
     assert {t: row["shares"] for t, row in by_ticker.items() if t != "CM"} == SHARES
     assert (loaded["snapshot"]["as_of"], loaded["average_costs"], loaded["settings"]) == ("2026-10-06", {"tfsa-cm": "158.91"}, old.settings.model_dump(mode="json"))
     assert store.get().snapshot.positions == SavedPortfolio.model_validate(loaded).snapshot.positions
 
-    # With quota, CM resolves through the Canadian path in one search; the US holdings are not looked up again.
-    market = Market()
-    cm = next(row for row in app(tmp_path, market).get("/api/portfolio").json()["snapshot"]["positions"] if row["ticker"] == "CM")
-    assert market.eodhd == ["search"] and (cm["listing"], cm["company_id"]) == ("XTSE", "CIK0001045520")

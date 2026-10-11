@@ -429,3 +429,69 @@ export type PreparationResult =
   | { status: "unchanged"; proposal?: null }
   | { status: "prepared"; proposal: PortfolioProposal };
 
+export type PortfolioProposalDetail = PortfolioProposal & {
+  before_portfolio?: SavedPortfolio | null;
+  after_portfolio?: SavedPortfolio | null;
+};
+
+export type UpdatePortfolioRequest = {
+  base_revision: number | null;
+  portfolio: SavedPortfolio;
+};
+
+export type ImportPortfolioRequest = {
+  csv: string;
+  as_of?: string | null;
+  reporting_currency?: string | null;
+  base_revision: number | null;
+};
+
+export type IdentifyHoldingRequest = {
+  account_id: string;
+  ticker: string;
+  listing?: string | null;
+  kind?: "stock" | "etf" | null;
+  base_revision: number | null;
+};
+
+export type ConfirmationResult = {
+  portfolio: RevisionedPortfolio;
+  receipt: ProposalReceipt;
+};
+
+export type CancelProposalResult = {
+  status: ProposalStatus;
+};
+
+export async function postEmpty<T>(path: string, timeoutMs?: number): Promise<T> {
+  const timeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(timeout),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(extractError(data));
+  }
+  return data as T;
+}
+
+export async function prepareUpdate(request: UpdatePortfolioRequest): Promise<PreparationResult> {
+  return put<PreparationResult>("/api/portfolio", request);
+}
+
+export async function confirmProposal(proposalId: string): Promise<ConfirmationResult> {
+  return postEmpty<ConfirmationResult>(`/api/portfolio/proposals/${proposalId}/confirm`);
+}
+
+export async function cancelProposal(proposalId: string): Promise<CancelProposalResult> {
+  return postEmpty<CancelProposalResult>(`/api/portfolio/proposals/${proposalId}/cancel`);
+}
+
+export async function getProposalDetail(proposalId: string): Promise<PortfolioProposalDetail> {
+  return get<PortfolioProposalDetail>(`/api/portfolio/proposals/${proposalId}`);
+}
+
+
+

@@ -66,10 +66,25 @@ def app(tmp_path, sources: Sources, eodhd: bool = False) -> TestClient:
 
 
 def imported(api: TestClient, rows: str) -> dict:
-    response = api.post("/api/portfolio/import", json={"csv": "account,ticker,shares,currency\n" + rows, "as_of": TODAY.isoformat(),
-                                                       "reporting_currency": "CAD"})
+    cur = api.get("/api/portfolio").json()
+    base_rev = cur["revision"] if cur else None
+    response = api.post(
+        "/api/portfolio/import",
+        json={
+            "csv": "account,ticker,shares,currency\n" + rows,
+            "as_of": TODAY.isoformat(),
+            "reporting_currency": "CAD",
+            "base_revision": base_rev,
+        },
+    )
     assert response.status_code == 200, response.text
-    return response.json()
+    prop_id = response.json()["proposal"]["id"]
+    detail = api.get(f"/api/portfolio/proposals/{prop_id}").json()
+    after = detail["after_portfolio"]
+    store = getattr(api.app.state, "portfolio_store", None)
+    if store is not None:
+        store.save(SavedPortfolio.model_validate(after))
+    return after
 
 
 def positions(saved: dict) -> dict[str, dict]:
@@ -91,7 +106,11 @@ def test_bare_cad_cm_asks_only_for_the_exchange_without_eodhd_and_uses_eodhd_whe
     [waiting] = imported(api, "TFSA,CM,20,CAD\n")["unresolved"]
     # OpenFIGI's venue codes do not say which Canadian exchange lists CM, so none is guessed.
     assert (waiting["listing"], waiting["currency"], waiting["kind"], waiting["candidates"]) == (None, "CAD", "stock", [])
-    answered = api.post("/api/portfolio/identify", json={"account_id": "tfsa", "ticker": "CM", "listing": "XTSE"}).json()
+    cur = api.get("/api/portfolio").json()
+    base_rev = cur["revision"] if cur else None
+    res = api.post("/api/portfolio/identify", json={"base_revision": base_rev, "account_id": "tfsa", "ticker": "CM", "listing": "XTSE"})
+    assert res.status_code == 200, res.text
+    answered = api.get(f"/api/portfolio/proposals/{res.json()['proposal']['id']}").json()["after_portfolio"]
     assert positions(answered)["CM"]["company_id"] == "CIK0001045520"
     assert sources.openfigi == ["CM"]  # the answer re-used the cached identity
 
@@ -129,7 +148,12 @@ def test_us_etfs_nasdaq_resolves_and_arca_asks_for_the_exchange(tmp_path):
     [spy] = saved["unresolved"]
     assert (spy["ticker"], spy["listing"], spy["currency"], spy["kind"], spy["candidates"]) == ("SPY", None, "USD", "etf", [])
     assert sources.openfigi == ["QQQ", "SPY"] and sources.market.eodhd == []
-    answered = positions(api.post("/api/portfolio/identify", json={"account_id": "tfsa", "ticker": "SPY", "listing": "XNYS"}).json())["SPY"]
+    cur = api.get("/api/portfolio").json()
+    base_rev = cur["revision"] if cur else None
+    res = api.post("/api/portfolio/identify", json={"base_revision": base_rev, "account_id": "tfsa", "ticker": "SPY", "listing": "XNYS"})
+    assert res.status_code == 200, res.text
+    prop_id = res.json()["proposal"]["id"]
+    answered = positions(api.get(f"/api/portfolio/proposals/{prop_id}").json()["after_portfolio"])["SPY"]
     assert (answered["kind"], answered["listing"], answered["company_name"], answered["company_id"]) == ("etf", "XNYS", "SPDR S&P 500 ETF TRUST", None)
 
 
@@ -163,18 +187,20 @@ def test_unknown_ticker_stays_unresolved_and_is_not_asked_again_today(tmp_path):
     assert sources.openfigi == ["ZZZZ"]
 
 
-def test_repeated_loads_use_the_cached_identity(tmp_path):
+def test_repeated_loads_do_not_re_enrich_committed_portfolio(tmp_path):
     sources = Sources()
-    imported(app(tmp_path, sources), "TFSA,SPY,2,USD\n")  # stays waiting for its exchange, so every load looks it up
+    imported(app(tmp_path, sources), "TFSA,SPY,2,USD\n")  # imported enriched once
     for _ in range(3):
-        assert app(tmp_path, sources).get("/api/portfolio").json()["unresolved"][0]["kind"] == "etf"
+        res = app(tmp_path, sources).get("/api/portfolio").json()
+        assert res["portfolio"]["unresolved"][0]["kind"] == "etf"
+    # In Ticket 02, reading the portfolio never triggers external lookups
     assert sources.openfigi == ["SPY"]
     cached = QuoteCache(tmp_path / "market").read("identities")["SPY"]["rows"]
     assert {row["exchCode"] for row in cached} == {"US"}  # only composites and Nasdaq tiers are kept
     assert set(cached[0]) == {"ticker", "name", "exchCode", "securityType", "securityType2", "figi", "compositeFIGI", "shareClassFIGI"}
 
 
-def test_saved_portfolio_is_enriched_without_reimport_and_keeps_the_users_currency(tmp_path):
+def test_saved_portfolio_reads_committed_fields_without_writes(tmp_path):
     store = PortfolioStore(tmp_path / "portfolio")
     store.save(SavedPortfolio.model_validate({
         "snapshot": {"as_of": "2026-10-06", "reporting_currency": "CAD", "accounts": [{"id": "tfsa", "name": "TFSA"}],
@@ -182,10 +208,14 @@ def test_saved_portfolio_is_enriched_without_reimport_and_keeps_the_users_curren
                                     "listing": "XTSE", "shares": "20"}]},
         "unresolved": [{"account_id": "tfsa", "ticker": "XIU", "shares": "5", "currency": "USD"}]}))
     sources = Sources()
-    loaded = app(tmp_path, sources).get("/api/portfolio").json()
+    res = app(tmp_path, sources).get("/api/portfolio").json()
+    assert res is not None
+    assert res["revision"] == 1
+    loaded = res["portfolio"]
     cm = positions(loaded)["CM"]
-    assert (cm["listing"], cm["currency"], cm["company_id"]) == ("XTSE", "CAD", "CIK0001045520")
-    # XIU is a CAD listing on OpenFIGI, but the user said USD: no US match, and the currency is not switched.
+    assert (cm["listing"], cm["currency"]) == ("XTSE", "CAD")
     [xiu] = loaded["unresolved"]
     assert (xiu["currency"], xiu["listing"], xiu["candidates"]) == ("USD", None, [])
-    assert sorted(sources.openfigi) == ["CM", "XIU"]
+    # Reading never calls external providers
+    assert sources.openfigi == []
+

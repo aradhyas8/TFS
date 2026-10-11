@@ -41,10 +41,11 @@ const SAVED = {
   unresolved: [],
 };
 
+import { seedPortfolio } from "./test_helpers";
+
 async function open(page: Page, saved: object = SAVED) {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.request.delete("/api/test/portfolio");
-  expect((await page.request.put("/api/portfolio", { data: saved })).ok()).toBeTruthy();
+  await seedPortfolio(page, saved);
   const sentAnalyze: any[] = [];
   page.on("request", request => {
     if (request.url().endsWith("/api/analyze")) sentAnalyze.push(request.postDataJSON());

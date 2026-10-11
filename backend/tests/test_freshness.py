@@ -369,8 +369,9 @@ def test_a_current_review_leaves_the_saved_portfolio_shares_and_date_unchanged(m
     from analyst.schemas import SavedPortfolio, Snapshot
     store = PortfolioStore(tmp_path)
     store.save(SavedPortfolio(snapshot=Snapshot.model_validate(snapshot())))
-    before = store.path.read_bytes()
+    before = store.get_revisioned()
     review, sent = analyze_on(monkeypatch, "2026-10-03", dated_evidence("2026-10-03", "2026-10-03"), store=store)
-    assert store.path.read_bytes() == before
+    assert store.get_revisioned() == before
     assert [row["supplied"]["shares"] for row in review["positions"]] == [row.get("shares") for row in sent["positions"]]
     assert review["holdings_as_of"] == sent["as_of"] == "2026-09-30"
+

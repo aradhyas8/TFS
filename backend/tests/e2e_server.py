@@ -398,6 +398,10 @@ app = create_app(
 def forget_portfolio() -> None:
     """Test server only: each browser journey starts without a saved portfolio or a leftover source fixture."""
     portfolio_store.path.unlink(missing_ok=True)
+    db_file = Path(portfolio_store.db.path)
+    if db_file.exists():
+        db_file.unlink(missing_ok=True)
+    portfolio_store.db.initialize()
     decision_store.clear()
     financial.reference = e2e_evidence()
     stock_research.records = e2e_research()
