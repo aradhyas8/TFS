@@ -34,6 +34,7 @@ type Props = {
   benchmark: BenchmarkSetting | null; setBenchmark: Dispatch<SetStateAction<BenchmarkSetting | null>>;
   result: Analysis | null; decision: SavedDecision | null; running: boolean; onError: (message: string) => void;
   prices: PriceRefresh | null; refreshing: boolean; onRefreshPrices: () => void;
+  isDirty?: boolean; reviewing?: boolean; onReviewChanges?: () => void; onDiscardDraft?: () => void;
 };
 
 // A rebalance shows its before and after where other answers show scenarios.
@@ -399,7 +400,7 @@ function BenchmarkInput({ benchmark, onChange, disabled, onError }: {
   </div>;
 }
 
-function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, benchmark, setBenchmark, result, decision, running, onError, prices, refreshing, onRefreshPrices }: Props) {
+function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, benchmark, setBenchmark, result, decision, running, onError, prices, refreshing, onRefreshPrices, isDirty, reviewing, onReviewChanges, onDiscardDraft }: Props) {
   if (!snapshot) return <p className="cap">Import a portfolio to see holdings.</p>;
   const review = result?.portfolio;
   const editable = !running;
@@ -420,6 +421,40 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
   return <>
     {decision && <p className="cap">Today&apos;s portfolio. Historical weights weren&apos;t saved with this decision.</p>}
     <PriceStatus prices={prices} refreshing={refreshing} disabled={running} onRefresh={onRefreshPrices} />
+    {isDirty && (
+      <div className="pgroup" style={{ background: "var(--raised)", border: "1px solid var(--rule-strong)", padding: "12px 14px", borderRadius: 8 }}>
+        <div className="pv" style={{ alignItems: "center" }}>
+          <div>
+            <span className="lbl amber">Unsaved draft edits</span>
+            <p className="cap" style={{ marginTop: 2 }}>Typing changes draft state only. Review before committing.</p>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {onDiscardDraft && (
+              <button
+                type="button"
+                className="btn secondary small"
+                data-testid="discard-draft"
+                disabled={!editable || reviewing}
+                onClick={onDiscardDraft}
+              >
+                Discard
+              </button>
+            )}
+            {onReviewChanges && (
+              <button
+                type="button"
+                className="btn primary small"
+                data-testid="review-changes"
+                disabled={!editable || reviewing || baselineOver}
+                onClick={onReviewChanges}
+              >
+                {reviewing ? "Reviewing…" : "Review changes"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
     {unresolved.length > 0 && <div className="pgroup needs-id" aria-label="Holdings to identify" role="group">
       <span className="lbl amber">Needs you · {unresolved.length} holding{unresolved.length === 1 ? "" : "s"} to identify</span>
       <span className="cap">These couldn&apos;t be matched to a listing or type, so they aren&apos;t in the analysis yet. Nothing is assumed.</span>
@@ -470,6 +505,32 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
       </div>
       {baselineOver && <span className="cap amber" role="alert">Target mix cannot exceed 100% (currently {Number((baselineSum * 100).toFixed(2))}%)</span>}
       <BenchmarkInput benchmark={benchmark} onChange={setBenchmark} disabled={!editable} onError={onError} />
+      {isDirty && (
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+          {onDiscardDraft && (
+            <button
+              type="button"
+              className="btn secondary small"
+              data-testid="discard-draft-rules"
+              disabled={!editable || reviewing}
+              onClick={onDiscardDraft}
+            >
+              Discard
+            </button>
+          )}
+          {onReviewChanges && (
+            <button
+              type="button"
+              className="btn primary small"
+              data-testid="review-changes-rules"
+              disabled={!editable || reviewing || baselineOver}
+              onClick={onReviewChanges}
+            >
+              {reviewing ? "Reviewing…" : "Review changes"}
+            </button>
+          )}
+        </div>
+      )}
     </fieldset>
     <ImportCsv snapshot={snapshot} onImported={onImported} onError={onError} disabled={!editable} label="Replace with a new CSV" />
   </>;

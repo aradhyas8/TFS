@@ -240,3 +240,29 @@ body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scro
 .desk .holdings-mini .hold:hover > span:first-child, .desk .holdings-mini .hold:focus-visible > span:first-child { text-decoration: underline; text-underline-offset: 3px; }
 .desk .register-row:hover td { background: var(--raised); }
 
+/* Portfolio Preview Modal */
+.desk .preview-overlay {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.7); z-index: 50;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.desk .preview-dialog {
+  background: var(--raised); border: 1px solid var(--rule-strong); border-radius: 10px;
+  width: 100%; max-width: 580px; max-height: 85vh; display: flex; flex-direction: column;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6); overflow: hidden;
+}
+.desk .preview-head {
+  padding: 16px 20px; border-bottom: 1px solid var(--rule); display: flex; justify-content: space-between; align-items: center;
+}
+.desk .preview-body {
+  padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px;
+}
+.desk .preview-actions {
+  padding: 16px 20px; border-top: 1px solid var(--rule); display: flex; justify-content: flex-end; gap: 12px;
+}
+.desk .diff-list {
+  list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0;
+}
+.desk .diff-item {
+  background: var(--raised-2); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 12px; font-size: 13px; line-height: 18px;
+}
+
