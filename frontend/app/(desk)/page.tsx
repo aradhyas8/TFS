@@ -7,10 +7,10 @@ import {
   EMPTY_THEME,
   get,
   isSupportedStock,
-  listProposals,
   portfolioReviewComparison,
   post,
   prepareUpdate,
+  listProposals,
   confirmProposal,
   cancelProposal,
   themeComparison,
@@ -212,6 +212,7 @@ export default function DeskPage() {
   // Proposal review and confirmation state
   const [proposals, setProposals] = useState<PortfolioProposal[]>([]);
   const [activeProposal, setActiveProposal] = useState<PortfolioProposal | null>(null);
+  const [pendingProposals, setPendingProposals] = useState<PortfolioProposal[]>([]);
   const [reviewing, setReviewing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -220,7 +221,10 @@ export default function DeskPage() {
 
   function refreshProposals() {
     listProposals()
-      .then(setProposals)
+      .then(res => {
+        setProposals(res);
+        setPendingProposals(res.filter(p => p.status === "pending"));
+      })
       .catch(() => {});
   }
 
@@ -277,6 +281,11 @@ export default function DeskPage() {
       })
       .catch(() => setNotice("Your saved portfolio couldn't be loaded."))
       .finally(() => setRestoring(false));
+    listProposals("pending")
+      .then(setPendingProposals)
+      .catch(() => {
+        /* non-fatal */
+      });
     get<SavedDecision[]>("/api/decisions")
       .then(setDecisions)
       .catch(() => setNotice("Saved decisions couldn't be loaded."));
@@ -426,15 +435,39 @@ export default function DeskPage() {
     }
   }
 
+  function handleProposal(proposal: PortfolioProposal) {
+    setActiveProposal(proposal);
+    setIsProposalStale(false);
+    setPreviewError(null);
+    setPendingProposals(prev => [proposal, ...prev.filter(p => p.id !== proposal.id)]);
+  }
+
+  async function cancelPendingProposal(proposalId: string) {
+    try {
+      await cancelProposal(proposalId);
+    } catch {
+      // Ignored if network issue or already cancelled
+    } finally {
+      setPendingProposals(prev => prev.filter(p => p.id !== proposalId));
+      if (activeProposal?.id === proposalId) {
+        setActiveProposal(null);
+        setIsProposalStale(false);
+        setPreviewError(null);
+      }
+    }
+  }
+
   async function confirmActiveProposal() {
     if (!activeProposal) return;
     setConfirming(true);
     setPreviewError(null);
     try {
       const res = await confirmProposal(activeProposal.id);
+      const confirmedId = activeProposal.id;
       adoptCommitted(res, activeProposal);
       setActiveProposal(null);
       setIsProposalStale(false);
+      setPendingProposals(prev => prev.filter(p => p.id !== confirmedId));
       refreshProposals();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Confirmation failed.";
@@ -458,6 +491,7 @@ export default function DeskPage() {
   async function cancelActiveProposal() {
     if (!activeProposal) return;
     setCancelling(true);
+    const cancellingId = activeProposal.id;
     try {
       await cancelProposal(activeProposal.id);
     } catch {
@@ -467,6 +501,7 @@ export default function DeskPage() {
       setCancelling(false);
       setIsProposalStale(false);
       setPreviewError(null);
+      setPendingProposals(prev => prev.filter(p => p.id !== cancellingId));
       refreshProposals();
     }
   }
@@ -480,8 +515,6 @@ export default function DeskPage() {
     setDraftUnresolved(committedUnresolved);
     setNotice("");
   }
-
-  const pendingProposals = proposals.filter(p => p.status === "pending");
 
   const result = answer?.analysis ?? null;
   const evidence = evidenceFor(reopened ? null : result, reopened);
@@ -1231,7 +1264,13 @@ export default function DeskPage() {
           Import your holdings once. They&apos;re saved on this computer and loaded every time.
           Prices, values and weights come from the analysis, not from your cost.
         </p>
-        <ImportCsv snapshot={null} onImported={adopt} onError={setNotice} label="Choose a holdings CSV" />
+        <ImportCsv
+          snapshot={null}
+          baseRevision={committedRevision}
+          onProposal={handleProposal}
+          onError={setNotice}
+          label="Choose a holdings CSV"
+        />
       </div>
     );
   else
@@ -1457,6 +1496,66 @@ export default function DeskPage() {
         </header>
         <div className="scroll">
           <div className="col">
+            {pendingProposals.length > 0 && !activeProposal && (
+              <aside
+                className="pending-proposal-banner"
+                data-testid="pending-proposal-banner"
+                role="status"
+                aria-label="Pending portfolio proposal"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "12px 16px",
+                  marginBottom: 16,
+                  background: "rgba(224, 163, 92, 0.12)",
+                  border: "1px solid var(--amber)",
+                  borderRadius: 6,
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span style={{ fontSize: 13, fontWeight: 500, color: "var(--amber)" }}>
+                    Pending review: {
+                      pendingProposals[0].origin === "import"
+                        ? "Holdings import"
+                        : pendingProposals[0].origin === "manual"
+                          ? "Manual edit"
+                          : pendingProposals[0].origin === "identify"
+                            ? "Identity correction"
+                            : "Action proposal"
+                    }
+                  </span>
+                  <span className="cap" style={{ color: "var(--text-2)" }}>
+                    {pendingProposals[0].base_revision != null
+                      ? `Prepared from revision ${pendingProposals[0].base_revision}`
+                      : "Initial portfolio creation"}
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <button
+                    type="button"
+                    className="btn secondary small"
+                    data-testid="cancel-pending-proposal"
+                    onClick={() => void cancelPendingProposal(pendingProposals[0].id)}
+                  >
+                    Discard
+                  </button>
+                  <button
+                    type="button"
+                    className="btn primary small"
+                    data-testid="reopen-pending-proposal"
+                    onClick={() => {
+                      setActiveProposal(pendingProposals[0]);
+                      setIsProposalStale(false);
+                      setPreviewError(null);
+                    }}
+                  >
+                    Reopen preview
+                  </button>
+                </div>
+              </aside>
+            )}
             {notice && (
               <p className="amber" role="alert" style={{ marginBottom: 16 }}>
                 {notice}
@@ -1471,7 +1570,7 @@ export default function DeskPage() {
                 before asking. They aren&apos;t in the analysis until then.
               </p>
             )}
-            {pendingProposals.length > 0 && (
+            {pendingProposals.length > 0 && !activeProposal && (
               <div
                 className="pgroup pending-proposals-banner"
                 data-testid="pending-proposals-banner"
@@ -1602,6 +1701,8 @@ export default function DeskPage() {
         averageCosts={draftAverageCosts}
         unresolved={draftUnresolved}
         onImported={adopt}
+        baseRevision={committedRevision}
+        onProposal={handleProposal}
         settings={draftSettings}
         setSettings={setDraftSettings}
         benchmark={draftBenchmark}
@@ -1617,7 +1718,6 @@ export default function DeskPage() {
         reviewing={reviewing}
         onReviewChanges={reviewChanges}
         onDiscardDraft={discardDraft}
-        baseRevision={committedRevision}
         onPreviewProposal={openProposal}
         pendingProposals={pendingProposals}
         onReopenProposal={openProposal}

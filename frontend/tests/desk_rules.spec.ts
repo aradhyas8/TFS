@@ -260,6 +260,7 @@ test("ordinary analysis uses committed state while draft differs", async ({ page
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   // Verify draft input is STILL "15" and unsaved
+  await details.getByRole("tab", { name: "Holdings" }).click();
   await expect(capInput).toHaveValue("15");
   await expect(details.getByText("Unsaved draft edits")).toBeVisible();
 });
