@@ -29,8 +29,10 @@ def no_live_services(monkeypatch, tmp_path):
     monkeypatch.setenv("MARKET_DATA_DIR", str(tmp_path / "market"))
     monkeypatch.setenv("SEC_CACHE_DIR", str(tmp_path / "sec"))
     monkeypatch.setenv("SEC_USER_AGENT", "")
+    monkeypatch.setenv("PORTFOLIO_DIR", str(tmp_path / "portfolio"))
     monkeypatch.delenv("FINANCIAL_REFERENCE_FILE", raising=False)
 
     monkeypatch.delenv("RESEARCH_REFERENCE_FILE", raising=False)
 
     monkeypatch.delenv("DISCOVERY_REFERENCE_FILE", raising=False)
+
