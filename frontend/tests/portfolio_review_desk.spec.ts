@@ -1,4 +1,6 @@
 import { test, expect } from "@playwright/test";
+import fs from "node:fs";
+import path from "node:path";
 
 // A portfolio saved earlier: the app should open straight into it.
 const SAVED = {
@@ -197,4 +199,90 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
     return p?.benchmark;
   }).toBeNull();
 });
+
+test("frontend source has no backend credential configuration", () => {
+  for (const folder of ["app", "components", "lib"]) {
+    for (const name of fs.readdirSync(folder, { recursive: true }) as string[]) {
+      if (fs.statSync(path.join(folder, name)).isDirectory()) continue;
+      const source = fs.readFileSync(path.join(folder, name), "utf8");
+      expect(source).not.toContain("OPENAI_API_KEY");
+      expect(source).not.toContain("sk-test-backend-only-never-browser");
+    }
+  }
+});
+
+test("malformed CSV reports a clear import error", async ({ page }) => {
+  await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
+  await page.request.delete("/api/test/portfolio");
+  await page.goto("/");
+  await page.getByLabel("Load portfolio CSV").setInputFiles({ name: "bad.csv", mimeType: "text/csv", buffer: Buffer.from("ticker,shares\nACME,10") });
+  await expect(page.locator("main").getByRole("alert")).toContainText("Invalid portfolio CSV");
+});
+
+test("missing mark displays unknown total and qualifies the completed review", async ({ page }) => {
+  await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
+  await page.request.delete("/api/test/portfolio");
+  const missingMark = {
+    ...SAVED,
+    snapshot: {
+      ...SAVED.snapshot,
+      positions: SAVED.snapshot.positions.map(p => p.id === "tfsa-acme" ? { ...p, mark: null } : p),
+    },
+  };
+  expect((await page.request.put("/api/portfolio", { data: missingMark })).ok()).toBeTruthy();
+  await page.goto("/");
+  const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
+  await ask.fill("Review the incomplete portfolio");
+  await page.getByRole("button", { name: "Ask", exact: true }).click();
+  const memo = page.getByRole("region", { name: "Analyst memo" });
+  await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
+  await expect(memo.getByTestId("review-total")).toContainText("Total unknown");
+  await expect(memo.getByTestId("review-total")).toContainText("known");
+});
+
+test("invalid model output clears the previous result and cannot display as a completed recommendation", async ({ page }) => {
+  await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
+  await page.request.delete("/api/test/portfolio");
+  expect((await page.request.put("/api/portfolio", { data: SAVED })).ok()).toBeTruthy();
+  await page.goto("/");
+
+  // 1. Submit normal review
+  const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
+  await ask.fill("Review the portfolio");
+  await page.getByRole("button", { name: "Ask", exact: true }).click();
+  const memo = page.getByRole("region", { name: "Analyst memo" });
+  await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
+
+  // 2. Submit question returning invalid output
+  await ask.fill("Return invalid output");
+  await page.getByRole("button", { name: "Ask", exact: true }).click();
+
+  // 3. Displays failure and no completed memo
+  await expect(page.getByText("The analysis didn't return an answer.")).toBeVisible();
+  await expect(memo).toHaveCount(0);
+});
+
+test("existing analysis journey works without saving", async ({ page }) => {
+  await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
+  await page.request.delete("/api/test/portfolio");
+  expect((await page.request.put("/api/portfolio", { data: SAVED })).ok()).toBeTruthy();
+  await page.goto("/");
+
+  const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
+  await ask.fill("Simple portfolio review without saving");
+  await page.getByRole("button", { name: "Ask", exact: true }).click();
+  const memo = page.getByRole("region", { name: "Analyst memo" });
+  await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
+
+  // Details panel can be navigated without saving
+  const details = page.getByRole("complementary", { name: "Details" });
+  await details.getByRole("tab", { name: "Holdings" }).click();
+  await expect(details.getByRole("group", { name: "Holdings to identify" })).toHaveCount(0);
+
+  // A follow up question can be asked without saving
+  await ask.fill("How diversified am I?");
+  await page.getByRole("button", { name: "Ask", exact: true }).click();
+  await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
+});
+
 

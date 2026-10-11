@@ -4,11 +4,11 @@ import { accountName, fullDate, money, newCashLabel } from "./format";
 import { parseMoney } from "./route";
 
 const WORKFLOWS = [
-  { cmd: "/new-cash", text: "Decide where new money should go", live: true },
-  { cmd: "/stock", text: "Analyze one company you own, e.g. /stock AVGO", live: true },
-  { cmd: "/review", text: "Exposure, concentration and fund overlap", live: true },
-  { cmd: "/rebalance", text: "Should anything change? Reduce, keep or add, within your rules", live: true },
-  { cmd: "/theme", text: "Test an idea against a short list", live: true },
+  { cmd: "/new-cash", text: "Decide where new money should go" },
+  { cmd: "/stock", text: "Analyze one company you own, e.g. /stock AVGO" },
+  { cmd: "/review", text: "Exposure, concentration and fund overlap" },
+  { cmd: "/rebalance", text: "Should anything change? Reduce, keep or add, within your rules" },
+  { cmd: "/theme", text: "Test an idea against a short list" },
 ];
 
 type Props = {
@@ -219,8 +219,8 @@ export default function Composer({
         <span className="cap" style={{ padding: "8px 12px 6px" }}>Workflows</span>
         {matches.map((item, index) => <button type="button" role="option" aria-selected={index === active} className="opt" key={item.cmd}
           onMouseEnter={() => setActive(index)} onClick={() => choose(index)}>
-          <span className="cmd">{item.cmd}</span><span className={item.live ? "" : "m"}>{item.text}</span>
-          <span className="cap">{item.live ? (index === active ? "↵" : "") : "classic view"}</span>
+          <span className="cmd">{item.cmd}</span><span>{item.text}</span>
+          <span className="cap">{index === active ? "↵" : ""}</span>
         </button>)}
         {matches.length === 0 && <span className="cap" style={{ padding: "10px 12px" }}>No workflow matches.</span>}
       </div>}
