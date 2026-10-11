@@ -385,11 +385,23 @@ def create_app(
     @app.post("/api/decisions", response_model=SavedDecision)
     def save_decision(request: SaveDecisionRequest) -> SavedDecision:
         if request.result is not None:
-            record = extract_decision(request.result, confirmed_action=request.confirmed_action)
+            record = extract_decision(
+                request.result,
+                confirmed_action=request.confirmed_action,
+                workflow=request.workflow,
+                subject=request.subject,
+            )
         elif request.decision is not None:
             record = request.decision
+            updates: dict[str, Any] = {}
             if request.confirmed_action is not None:
-                record = record.model_copy(update={"confirmed_action": request.confirmed_action})
+                updates["confirmed_action"] = request.confirmed_action
+            if request.workflow is not None:
+                updates["workflow"] = request.workflow
+            if request.subject is not None:
+                updates["subject"] = request.subject
+            if updates:
+                record = record.model_copy(update=updates)
         else:
             raise HTTPException(422, "Missing decision content.")
         return decisions.save(record)

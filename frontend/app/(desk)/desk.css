@@ -238,3 +238,5 @@ body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scro
 .desk .cases { display: flex; flex-direction: column; gap: 6px; max-width: 420px; }
 .desk .holdings-mini .hold { width: 100%; text-align: left; border-radius: 4px; color: inherit; }
 .desk .holdings-mini .hold:hover > span:first-child, .desk .holdings-mini .hold:focus-visible > span:first-child { text-decoration: underline; text-underline-offset: 3px; }
+.desk .register-row:hover td { background: var(--raised); }
+

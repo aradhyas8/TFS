@@ -1,5 +1,4 @@
-// Display formatting only. Every value comes from the backend or the user's snapshot.
-import { actionLabel, type Analysis, type NewCashInput, type Position, type Snapshot, type StockResult } from "../../lib/contracts";
+import { actionLabel, type Analysis, type NewCashInput, type Position, type SavedDecision, type Snapshot, type StockResult } from "../../lib/contracts";
 
 const SYMBOL: Record<string, string> = { CAD: "C$", USD: "US$", EUR: "€", GBP: "£" };
 
@@ -94,3 +93,23 @@ export const durationLabel = (ms: number) => {
   const seconds = Math.max(0, Math.round(ms / 1000));
   return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
 };
+
+/** Format a saved decision's workflow and subject for display in the rail and register. */
+export function decisionLabel(decision: SavedDecision): string {
+  if (!decision.workflow) return "Unknown workflow";
+  const subject = decision.subject?.label || decision.subject?.ticker;
+  switch (decision.workflow) {
+    case "stock":
+      return subject ? `Stock analysis · ${subject}` : "Stock analysis";
+    case "new_cash":
+      return subject && subject !== "New cash" ? `New cash · ${subject}` : "New cash";
+    case "theme":
+      return subject && subject !== "Theme" && subject !== "Theme discovery" ? `Theme · ${subject}` : "Theme";
+    case "rebalance":
+      return subject && subject !== "Rebalance" ? `Rebalance · ${subject}` : "Rebalance";
+    case "review":
+      return subject && subject !== "Portfolio review" ? `Portfolio review · ${subject}` : "Portfolio review";
+    default:
+      return "Unknown workflow";
+  }
+}

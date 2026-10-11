@@ -206,6 +206,29 @@ export type UserConfirmedAction = {
   notes: string | null;
 };
 
+export type DecisionWorkflow = "review" | "rebalance" | "stock" | "new_cash" | "theme";
+
+export type NewCashSubject = {
+  amount?: string | null;
+  account_id?: string | null;
+  currency?: string | null;
+  cash_position_id?: string | null;
+};
+
+export type ThemeSubject = {
+  name?: string | null;
+  mechanism?: string | null;
+  shortlist?: string[];
+};
+
+export type DecisionSubject = {
+  label: string;
+  ticker?: string | null;
+  listing?: string | null;
+  new_cash?: NewCashSubject | null;
+  theme?: ThemeSubject | null;
+};
+
 export type SavedDecision = {
   id: string;
   saved_at: string;
@@ -215,6 +238,8 @@ export type SavedDecision = {
   reasoning: DecisionReasoning;
   conclusion: DecisionConclusion;
   confirmed_action: UserConfirmedAction | null;
+  workflow?: DecisionWorkflow | null;
+  subject?: DecisionSubject | null;
 };
 
 export const DEFAULT_TIMEOUT_MS = 30_000;

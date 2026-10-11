@@ -15,6 +15,8 @@ from .schemas import (
     DecisionAlternative,
     DecisionConclusion,
     DecisionReasoning,
+    DecisionSubject,
+    DecisionWorkflow,
     EvidenceReference,
     ResearchDocument,
     ResearchFact,
@@ -152,6 +154,8 @@ def extract_decision(
     result: AnalysisResult,
     decision_id: str | None = None,
     confirmed_action: UserConfirmedAction | None = None,
+    workflow: DecisionWorkflow | None = None,
+    subject: DecisionSubject | None = None,
 ) -> SavedDecision:
     now = datetime.now(timezone.utc)
     ev_refs = extract_evidence_references(result)
@@ -179,6 +183,8 @@ def extract_decision(
             amount=rec.amount,
         ),
         confirmed_action=confirmed_action,
+        workflow=workflow,
+        subject=subject,
     )
 
 
