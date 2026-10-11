@@ -493,5 +493,23 @@ export async function getProposalDetail(proposalId: string): Promise<PortfolioPr
   return get<PortfolioProposalDetail>(`/api/portfolio/proposals/${proposalId}`);
 }
 
+export async function listProposals(status?: ProposalStatus): Promise<PortfolioProposal[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return get<PortfolioProposal[]>(`/api/portfolio/proposals${query}`);
+}
+
+export async function prepareIdentifyHolding(
+  request: IdentifyHoldingRequest
+): Promise<PreparationResult> {
+  return post<PreparationResult>("/api/portfolio/identify", request);
+}
+
+export async function prepareImport(
+  request: ImportPortfolioRequest
+): Promise<PreparationResult> {
+  return post<PreparationResult>("/api/portfolio/import", request);
+}
+
+
 
 

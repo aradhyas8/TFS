@@ -7,6 +7,7 @@ import {
   EMPTY_THEME,
   get,
   isSupportedStock,
+  listProposals,
   portfolioReviewComparison,
   post,
   prepareUpdate,
@@ -209,12 +210,28 @@ export default function DeskPage() {
   const [draftUnresolved, setDraftUnresolved] = useState<UnresolvedHolding[]>([]);
 
   // Proposal review and confirmation state
+  const [proposals, setProposals] = useState<PortfolioProposal[]>([]);
   const [activeProposal, setActiveProposal] = useState<PortfolioProposal | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [isProposalStale, setIsProposalStale] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+
+  function refreshProposals() {
+    listProposals()
+      .then(setProposals)
+      .catch(() => {});
+  }
+
+  function openProposal(proposal: PortfolioProposal) {
+    setActiveProposal(proposal);
+    const stale =
+      proposal.status === "stale" ||
+      (committedRevision != null && proposal.base_revision != null && proposal.base_revision !== committedRevision);
+    setIsProposalStale(stale);
+    setPreviewError(null);
+  }
 
   const [restoring, setRestoring] = useState(true);
   const [workflow, setWorkflow] = useState<"new-cash" | "theme" | null>(null);
@@ -263,6 +280,7 @@ export default function DeskPage() {
     get<SavedDecision[]>("/api/decisions")
       .then(setDecisions)
       .catch(() => setNotice("Saved decisions couldn't be loaded."));
+    refreshProposals();
   }, []);
 
   useEffect(() => {
@@ -392,6 +410,7 @@ export default function DeskPage() {
       }
       setActiveProposal(res.proposal);
       setIsProposalStale(false);
+      refreshProposals();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to prepare portfolio review.";
       if (msg.includes("409") || msg.toLowerCase().includes("stale")) {
@@ -416,6 +435,7 @@ export default function DeskPage() {
       adoptCommitted(res, activeProposal);
       setActiveProposal(null);
       setIsProposalStale(false);
+      refreshProposals();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Confirmation failed.";
       if (
@@ -447,6 +467,7 @@ export default function DeskPage() {
       setCancelling(false);
       setIsProposalStale(false);
       setPreviewError(null);
+      refreshProposals();
     }
   }
 
@@ -459,6 +480,8 @@ export default function DeskPage() {
     setDraftUnresolved(committedUnresolved);
     setNotice("");
   }
+
+  const pendingProposals = proposals.filter(p => p.status === "pending");
 
   const result = answer?.analysis ?? null;
   const evidence = evidenceFor(reopened ? null : result, reopened);
@@ -1448,6 +1471,81 @@ export default function DeskPage() {
                 before asking. They aren&apos;t in the analysis until then.
               </p>
             )}
+            {pendingProposals.length > 0 && (
+              <div
+                className="pgroup pending-proposals-banner"
+                data-testid="pending-proposals-banner"
+                role="region"
+                aria-label="Pending portfolio proposals"
+                style={{
+                  background: "var(--raised)",
+                  border: "1px solid var(--rule-strong)",
+                  padding: "12px 14px",
+                  borderRadius: 8,
+                  marginBottom: 16,
+                }}
+              >
+                <div className="pv" style={{ alignItems: "center" }}>
+                  <div>
+                    <span className="lbl amber">
+                      Pending proposal{pendingProposals.length === 1 ? "" : "s"} ({pendingProposals.length})
+                    </span>
+                    <p className="cap" style={{ marginTop: 2 }}>
+                      Prepared actions waiting for confirmation.
+                    </p>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+                  {pendingProposals.map((p, idx) => {
+                    const isStale =
+                      p.status === "stale" ||
+                      (committedRevision != null && p.base_revision != null && p.base_revision !== committedRevision);
+                    return (
+                      <div
+                        key={p.id}
+                        className="pv"
+                        style={{
+                          alignItems: "center",
+                          padding: "6px 0",
+                          borderTop: idx > 0 ? "1px solid var(--rule)" : undefined,
+                        }}
+                        data-testid={`pending-proposal-item-${p.id}`}
+                      >
+                        <div>
+                          <span style={{ fontWeight: 500, fontSize: 13 }}>
+                            {p.origin === "manual"
+                              ? "Manual edit"
+                              : p.origin === "import"
+                                ? "Holdings import"
+                                : p.origin === "identify"
+                                  ? "Identity correction"
+                                  : "Action proposal"}
+                          </span>
+                          <span className="cap" style={{ marginLeft: 8 }}>
+                            {p.base_revision != null ? `Base rev ${p.base_revision}` : "Initial creation"} ·{" "}
+                            {p.differences.length} change{p.differences.length === 1 ? "" : "s"}
+                            {p.warnings.length > 0 ? ` · ${p.warnings.length} warning(s)` : ""}
+                          </span>
+                          {isStale && (
+                            <span className="cap amber" style={{ marginLeft: 8, fontWeight: 500 }}>
+                              (stale)
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          data-testid="reopen-proposal"
+                          onClick={() => openProposal(p)}
+                        >
+                          Reopen review
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             {center}
             <p className="sr-only" aria-live="polite">
               {result && !run ? "Answer ready." : ""}
@@ -1519,6 +1617,10 @@ export default function DeskPage() {
         reviewing={reviewing}
         onReviewChanges={reviewChanges}
         onDiscardDraft={discardDraft}
+        baseRevision={committedRevision}
+        onPreviewProposal={openProposal}
+        pendingProposals={pendingProposals}
+        onReopenProposal={openProposal}
       />
       {activeProposal && (
         <PortfolioPreview

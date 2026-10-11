@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { BENCHMARK_FUND, NEW_CASH_DESTINATION, post, type Analysis, type Baseline, type BenchmarkSetting, type CandidateResult, type GuardrailReview, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { BENCHMARK_FUND, NEW_CASH_DESTINATION, post, prepareIdentifyHolding, type Analysis, type Baseline, type BenchmarkSetting, type CandidateResult, type GuardrailReview, type PortfolioProposal, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import { BeforeAfter, rebalancePlan, type Tab } from "./Memo";
 import { caseCurrency, compact, fullDate, money, pct, positionName, shortDate } from "./format";
 
@@ -35,6 +35,10 @@ type Props = {
   result: Analysis | null; decision: SavedDecision | null; running: boolean; onError: (message: string) => void;
   prices: PriceRefresh | null; refreshing: boolean; onRefreshPrices: () => void;
   isDirty?: boolean; reviewing?: boolean; onReviewChanges?: () => void; onDiscardDraft?: () => void;
+  baseRevision?: number | null;
+  onPreviewProposal?: (proposal: PortfolioProposal) => void;
+  pendingProposals?: PortfolioProposal[];
+  onReopenProposal?: (proposal: PortfolioProposal) => void;
 };
 
 // A rebalance shows its before and after where other answers show scenarios.
@@ -267,32 +271,107 @@ function PriceStatus({ prices, refreshing, disabled, onRefresh }: { prices: Pric
 }
 
 /** Asks only for what is missing: the exchange, the security type, or both. */
-function Identify({ row, snapshot, disabled, onImported, onError }: { row: UnresolvedHolding; snapshot: Snapshot; disabled: boolean;
-  onImported: (saved: SavedPortfolio) => void; onError: (message: string) => void }) {
+function Identify({
+  row,
+  snapshot,
+  disabled,
+  baseRevision,
+  onPreviewProposal,
+  onError,
+}: {
+  row: UnresolvedHolding;
+  snapshot: Snapshot;
+  disabled: boolean;
+  baseRevision?: number | null;
+  onPreviewProposal?: (proposal: PortfolioProposal) => void;
+  onError: (message: string) => void;
+}) {
   const [listing, setListing] = useState("");
   const [kind, setKind] = useState("");
   const [busy, setBusy] = useState(false);
   // When the lookup found several listings, only the exchange is asked; the type comes from the lookup.
   const choices = row.candidates?.length ? EXCHANGES.filter(([code]) => row.candidates.includes(code)) : EXCHANGES;
-  const ready = (row.listing || listing) && (row.kind || kind || row.candidates?.length);
+  const hasNewListing = !row.listing && !!listing;
+  const hasNewKind = !row.kind && !row.candidates?.length && !!kind;
+  const ready = hasNewListing || hasNewKind;
+
   async function save() {
-    setBusy(true); onError("");
-    try { onImported(await post<SavedPortfolio>("/api/portfolio/identify", { account_id: row.account_id, ticker: row.ticker, listing: listing || null, kind: kind || null })); }
-    catch (failure) { onError(failure instanceof Error ? failure.message : "The holding couldn't be identified."); }
-    finally { setBusy(false); }
+    setBusy(true);
+    onError("");
+    try {
+      const res = await prepareIdentifyHolding({
+        account_id: row.account_id,
+        ticker: row.ticker,
+        listing: listing || row.listing || null,
+        kind: (kind as "stock" | "etf" | null) || row.kind || null,
+        base_revision: baseRevision ?? null,
+      });
+      if (res.status === "prepared" && res.proposal) {
+        onPreviewProposal?.(res.proposal);
+      } else {
+        onError("No changes were identified.");
+      }
+    } catch (failure) {
+      onError(failure instanceof Error ? failure.message : "The holding couldn't be identified.");
+    } finally {
+      setBusy(false);
+    }
   }
-  return <div className="identify">
-    <span className="n">{row.ticker} <span className="m">· {row.shares} sh · {snapshot.accounts.find(account => account.id === row.account_id)?.name}</span></span>
-    <div className="rules">
-      {!row.listing && <label className="field"><span className="cap">Exchange</span>
-        <select className="in" aria-label={`Exchange for ${row.ticker}`} value={listing} disabled={disabled || busy} onChange={event => setListing(event.target.value)}>
-          <option value="">Choose</option>{choices.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></label>}
-      {!row.kind && !row.candidates?.length && <label className="field"><span className="cap">Type</span>
-        <select className="in" aria-label={`Type for ${row.ticker}`} value={kind} disabled={disabled || busy} onChange={event => setKind(event.target.value)}>
-          <option value="">Choose</option><option value="stock">Stock</option><option value="etf">ETF</option></select></label>}
+
+  return (
+    <div className="identify">
+      <span className="n">
+        {row.ticker} <span className="m">· {row.shares} sh · {snapshot.accounts.find(account => account.id === row.account_id)?.name}</span>
+      </span>
+      <div className="rules">
+        {!row.listing && (
+          <label className="field">
+            <span className="cap">Exchange</span>
+            <select
+              className="in"
+              aria-label={`Exchange for ${row.ticker}`}
+              value={listing}
+              disabled={disabled || busy}
+              onChange={event => setListing(event.target.value)}
+            >
+              <option value="">Choose</option>
+              {choices.map(([code, name]) => (
+                <option key={code} value={code}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {!row.kind && !row.candidates?.length && (
+          <label className="field">
+            <span className="cap">Type</span>
+            <select
+              className="in"
+              aria-label={`Type for ${row.ticker}`}
+              value={kind}
+              disabled={disabled || busy}
+              onChange={event => setKind(event.target.value)}
+            >
+              <option value="">Choose</option>
+              <option value="stock">Stock</option>
+              <option value="etf">ETF</option>
+            </select>
+          </label>
+        )}
+      </div>
+      <span>
+        <button
+          type="button"
+          className="btn secondary small"
+          disabled={!ready || disabled || busy}
+          onClick={save}
+        >
+          {busy ? "Saving…" : `Save ${row.ticker}`}
+        </button>
+      </span>
     </div>
-    <span><button type="button" className="btn secondary small" disabled={!ready || disabled || busy} onClick={save}>{busy ? "Saving…" : `Save ${row.ticker}`}</button></span>
-  </div>;
+  );
 }
 
 /** Percent in the UI, fraction for the backend. Local text keeps partial input like "12." editable. */
@@ -400,7 +479,7 @@ function BenchmarkInput({ benchmark, onChange, disabled, onError }: {
   </div>;
 }
 
-function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, benchmark, setBenchmark, result, decision, running, onError, prices, refreshing, onRefreshPrices, isDirty, reviewing, onReviewChanges, onDiscardDraft }: Props) {
+function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, benchmark, setBenchmark, result, decision, running, onError, prices, refreshing, onRefreshPrices, isDirty, reviewing, onReviewChanges, onDiscardDraft, baseRevision, onPreviewProposal, pendingProposals, onReopenProposal }: Props) {
   if (!snapshot) return <p className="cap">Import a portfolio to see holdings.</p>;
   const review = result?.portfolio;
   const editable = !running;
@@ -421,6 +500,23 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
   return <>
     {decision && <p className="cap">Today&apos;s portfolio. Historical weights weren&apos;t saved with this decision.</p>}
     <PriceStatus prices={prices} refreshing={refreshing} disabled={running} onRefresh={onRefreshPrices} />
+    {pendingProposals && pendingProposals.length > 0 && (
+      <div className="pgroup" style={{ background: "var(--raised)", border: "1px solid var(--rule-strong)", padding: "12px 14px", borderRadius: 8 }}>
+        <div className="pv"><span className="lbl amber">Pending portfolio review{pendingProposals.length === 1 ? "" : "s"} ({pendingProposals.length})</span></div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+          {pendingProposals.map(p => (
+            <div key={p.id} className="pv" style={{ alignItems: "center" }}>
+              <span className="cap">
+                {p.origin === "identify" ? "Identity correction" : p.origin === "import" ? "Holdings import" : "Manual edit"} · {p.differences.length} change{p.differences.length === 1 ? "" : "s"}
+              </span>
+              <button type="button" className="btn secondary small" onClick={() => onReopenProposal?.(p)}>
+                Reopen review
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
     {isDirty && (
       <div className="pgroup" style={{ background: "var(--raised)", border: "1px solid var(--rule-strong)", padding: "12px 14px", borderRadius: 8 }}>
         <div className="pv" style={{ alignItems: "center" }}>
@@ -458,7 +554,7 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
     {unresolved.length > 0 && <div className="pgroup needs-id" aria-label="Holdings to identify" role="group">
       <span className="lbl amber">Needs you · {unresolved.length} holding{unresolved.length === 1 ? "" : "s"} to identify</span>
       <span className="cap">These couldn&apos;t be matched to a listing or type, so they aren&apos;t in the analysis yet. Nothing is assumed.</span>
-      {unresolved.map(row => <Identify key={`${row.account_id}:${row.ticker}`} row={row} snapshot={snapshot} disabled={!editable} onImported={onImported} onError={onError} />)}
+      {unresolved.map(row => <Identify key={`${row.account_id}:${row.ticker}`} row={row} snapshot={snapshot} disabled={!editable} baseRevision={baseRevision} onPreviewProposal={onPreviewProposal} onError={onError} />)}
     </div>}
     {snapshot.accounts.map(account => {
       const rows = snapshot.positions.filter(row => row.account_id === account.id && row.id !== BENCHMARK_FUND);
