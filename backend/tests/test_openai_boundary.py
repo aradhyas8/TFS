@@ -195,11 +195,20 @@ def test_new_cash_uses_production_sdk_tools_and_backend_only_amounts(monkeypatch
 
 
 
-def test_portfolio_review_uses_production_sdk_tools_and_preserves_bound_evidence(monkeypatch):
+@pytest.mark.parametrize("compact", [False, True])
+def test_portfolio_review_uses_production_sdk_tools_and_preserves_bound_evidence(monkeypatch, compact):
     from tests.test_portfolio_review import assessment, review_request, review_research_fixture
     bound = AnalysisRequest.model_validate(review_request()).model_dump(mode="json")
     turns = [("review_portfolio", {}), ("reunderwrite_holding", assessment()),
              ("calculate_comparison", stock_comparison_judgments(bound))]
+    if compact:
+        for case in turns[1][1]["judgments"]["cases"]:
+            for field, value in list(case.items()):
+                if isinstance(value, list) and len(value) == 5 and len(set(value)) == 1:
+                    case[field] = value[0]
+        turns[2][1]["alternatives"][0] = {"alternative_id": "company-p1", "use_company_cases": True}
+        turns[2][1]["alternatives"] = {row["alternative_id"]: True if row.get("use_company_cases") else {"cases": row["cases"]}
+                                       for row in turns[2][1]["alternatives"]}
     sent = []
 
     def fake_openai(request):
@@ -212,6 +221,15 @@ def test_portfolio_review_uses_production_sdk_tools_and_preserves_bound_evidence
         assert not {"scan_opportunities", "research_candidate", "get_sec_filings"} & names
         assert payload["parallel_tool_calls"] is False
         assert payload["store"] is False
+        holding_tool = next(tool for tool in payload["tools"] if tool["name"] == "reunderwrite_holding")
+        growth = holding_tool["parameters"]["$defs"]["CompanyCase"]["properties"]["growth"]
+        assert any(choice.get("type") == "array" for choice in growth["anyOf"])
+        assert any("anyOf" in choice for choice in growth["anyOf"])
+        comparison_tool = next(tool for tool in payload["tools"] if tool["name"] == "calculate_comparison")
+        alternatives = comparison_tool["parameters"]["properties"]["alternatives"]
+        assert alternatives["type"] == "object"
+        assert set(alternatives["required"]) == {"company-p1", "cash", "keep"}
+        assert alternatives["properties"]["company-p1"] == {"type": "boolean", "enum": [True]}
         if len(sent) <= len(turns):
             name, args = turns[len(sent) - 1]
             output = [{"type": "function_call", "id": f"fc_{len(sent)}", "call_id": f"call_{len(sent)}",
@@ -408,8 +426,10 @@ def test_incomplete_response_detailed_diagnostics(monkeypatch):
 
 def test_openrouter_is_an_opt_in_base_url_for_the_same_client(monkeypatch):
     from analyst.config import Settings
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai"); monkeypatch.setenv("OPENAI_MODEL", "gpt-x")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or"); monkeypatch.setenv("OPENROUTER_MODEL", "vendor/model:free")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-x")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or")
+    monkeypatch.setenv("OPENROUTER_MODEL", "vendor/model:free")
     monkeypatch.setenv("LLM_PROVIDER", "")  # unset means OpenAI; set (not deleted) so a local .env cannot override it
     default = Settings.from_environment()
     assert (default.api_key, default.model, default.base_url) == ("sk-openai", "gpt-x", "https://api.openai.com/v1")

@@ -12,8 +12,8 @@ from analyst import pipeline
 from analyst.api import create_app
 from analyst.config import Settings
 from analyst.decisions import DecisionStore
-from analyst.portfolio import PortfolioStore
 from analyst.financial_data import FakeFinancialProvider
+from analyst.portfolio import PortfolioStore
 from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import (
@@ -24,8 +24,8 @@ from analyst.schemas import (
     Identity,
     Quote,
     Snapshot,
-    SponsorHoldings,
     SourceQualification,
+    SponsorHoldings,
 )
 from tests.test_allocation import allocation_answer, allocation_evidence, comparison_judgments
 from tests.test_canadian_stock import canadian_research_fixture
@@ -59,7 +59,7 @@ class BrowserTestModel:
                 await asyncio.sleep(31)
             return ModelTurn(calls=[ToolCall("browser_tool", "review_portfolio", "{}")])
         request = json.loads(messages[1]["content"])
-        tool = json.loads(messages[-1]["output"])
+        tool = json.loads(next(item["output"] for item in reversed(messages) if item.get("type") == "function_call_output"))
         if request.get("theme"):
             from tests.test_theme import theme_turns
             scripted = theme_turns(request)
@@ -74,7 +74,6 @@ class BrowserTestModel:
             # Without an existing cash balance the fund is a larger share of the funded portfolio.
             held_cash_row = next((row["id"] for row in rows if row["kind"] == "cash" and row["id"] != NEW_CASH_DESTINATION), None)
             held_cash = held_cash_row is not None
-            cash_alt = held_cash_row or "cash"
             low, high = ("0.55", "0.65") if held_cash else ("0.6", "0.7")
             for name, args in [("scan_opportunities", {}), ("calculate_comparison", comparison_judgments((fund, "cash", "keep"))),
                                ("size_allocation", {"position_id": fund, "min_weight": low, "max_weight": high,

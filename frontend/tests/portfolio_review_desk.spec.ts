@@ -255,7 +255,9 @@ test("invalid model output clears the previous result and cannot display as a co
 
   // 2. Submit question returning invalid output
   await ask.fill("Return invalid output");
+  const rejected = page.waitForResponse(response => response.url().endsWith("/api/analyze") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
+  expect((await rejected).status()).toBe(502);
 
   // 3. Displays failure and no completed memo
   await expect(page.getByText("The analysis didn't return an answer.")).toBeVisible();

@@ -37,7 +37,6 @@ from .schemas import (
     BENCHMARK_FUND,
     AnalysisRequest,
     AnalysisResult,
-    BenchmarkSetting,
     CandidateListing,
     CandidateRequest,
     CandidateResult,
@@ -266,9 +265,10 @@ def create_app(
             except SOURCE_ERRORS:
                 pass
 
-        if getattr(provider, "cache", None):
+        cache = getattr(provider, "cache", None)
+        if cache:
             try:
-                cached = provider.cache.get()
+                cached = cache.get()
                 symbol = eodhd_symbol(pos)
                 if symbol and symbol in cached:
                     q = cached[symbol]
