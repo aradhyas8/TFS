@@ -481,6 +481,15 @@ export async function prepareUpdate(request: UpdatePortfolioRequest): Promise<Pr
   return put<PreparationResult>("/api/portfolio", request);
 }
 
+export async function prepareImport(request: ImportPortfolioRequest): Promise<PreparationResult> {
+  return post<PreparationResult>("/api/portfolio/import", request);
+}
+
+export async function listProposals(status?: ProposalStatus): Promise<PortfolioProposal[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return get<PortfolioProposal[]>(`/api/portfolio/proposals${query}`);
+}
+
 export async function confirmProposal(proposalId: string): Promise<ConfirmationResult> {
   return postEmpty<ConfirmationResult>(`/api/portfolio/proposals/${proposalId}/confirm`);
 }

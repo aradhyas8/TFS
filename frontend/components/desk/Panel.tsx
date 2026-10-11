@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { BENCHMARK_FUND, NEW_CASH_DESTINATION, post, type Analysis, type Baseline, type BenchmarkSetting, type CandidateResult, type GuardrailReview, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { BENCHMARK_FUND, NEW_CASH_DESTINATION, post, prepareImport, type Analysis, type Baseline, type BenchmarkSetting, type CandidateResult, type GuardrailReview, type PortfolioProposal, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import { BeforeAfter, rebalancePlan, type Tab } from "./Memo";
 import { caseCurrency, compact, fullDate, money, pct, positionName, shortDate } from "./format";
 
@@ -35,6 +35,7 @@ type Props = {
   result: Analysis | null; decision: SavedDecision | null; running: boolean; onError: (message: string) => void;
   prices: PriceRefresh | null; refreshing: boolean; onRefreshPrices: () => void;
   isDirty?: boolean; reviewing?: boolean; onReviewChanges?: () => void; onDiscardDraft?: () => void;
+  baseRevision?: number | null; onProposal?: (proposal: PortfolioProposal) => void;
 };
 
 // A rebalance shows its before and after where other answers show scenarios.
@@ -400,7 +401,7 @@ function BenchmarkInput({ benchmark, onChange, disabled, onError }: {
   </div>;
 }
 
-function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, benchmark, setBenchmark, result, decision, running, onError, prices, refreshing, onRefreshPrices, isDirty, reviewing, onReviewChanges, onDiscardDraft }: Props) {
+function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, benchmark, setBenchmark, result, decision, running, onError, prices, refreshing, onRefreshPrices, isDirty, reviewing, onReviewChanges, onDiscardDraft, baseRevision, onProposal }: Props) {
   if (!snapshot) return <p className="cap">Import a portfolio to see holdings.</p>;
   const review = result?.portfolio;
   const editable = !running;
@@ -532,21 +533,43 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
         </div>
       )}
     </fieldset>
-    <ImportCsv snapshot={snapshot} onImported={onImported} onError={onError} disabled={!editable} label="Replace with a new CSV" />
+    <ImportCsv snapshot={snapshot} baseRevision={baseRevision} onProposal={onProposal} onImported={onImported} onError={onError} disabled={!editable} label="Replace with a new CSV" />
   </>;
 }
 
-/** Imports and saves the current portfolio. The holdings date is the user's; it is shown wherever the portfolio is. */
-export function ImportCsv({ snapshot, onImported, onError, disabled, label }: {
-  snapshot: Snapshot | null; onImported: (saved: SavedPortfolio) => void; onError: (message: string) => void; disabled?: boolean; label: string;
-}) {
+export type ImportCsvProps = {
+  snapshot: Snapshot | null;
+  baseRevision?: number | null;
+  onProposal?: (proposal: PortfolioProposal) => void;
+  onImported?: (saved: SavedPortfolio) => void;
+  onError: (message: string) => void;
+  disabled?: boolean;
+  label: string;
+};
+
+/** Prepares a portfolio import proposal. The holdings date is the user's; it is shown wherever the portfolio is. */
+export function ImportCsv({ snapshot, baseRevision, onProposal, onImported, onError, disabled, label }: ImportCsvProps) {
   const [asOf, setAsOf] = useState(() => new Date().toLocaleDateString("en-CA"));
   const [currency, setCurrency] = useState(snapshot?.reporting_currency || "CAD");
   const [busy, setBusy] = useState(false);
   async function load(file: File) {
     if (file.size > 1_000_000) { onError("CSV must be no larger than 1 MB."); return; }
     onError(""); setBusy(true);
-    try { onImported(await post<SavedPortfolio>("/api/portfolio/import", { csv: await file.text(), as_of: asOf || undefined, reporting_currency: currency })); }
+    try {
+      const res = await prepareImport({
+        csv: await file.text(),
+        as_of: asOf || undefined,
+        reporting_currency: currency,
+        base_revision: baseRevision ?? null,
+      });
+      if (res.status === "unchanged" || !res.proposal) {
+        onError("No changes detected; imported holdings match the current portfolio.");
+        return;
+      }
+      if (onProposal) {
+        onProposal(res.proposal);
+      }
+    }
     catch (failure) { onError(failure instanceof Error ? failure.message : "CSV import failed."); }
     finally { setBusy(false); }
   }
