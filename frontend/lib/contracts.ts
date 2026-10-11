@@ -518,5 +518,9 @@ export async function getArtifactReference(artifactId: string): Promise<Artifact
   return get<ArtifactReference>(`/api/portfolio/artifacts/${artifactId}`);
 }
 
-
+export async function prepareIdentifyHolding(
+  request: IdentifyHoldingRequest
+): Promise<PreparationResult> {
+  return post<PreparationResult>("/api/portfolio/identify", request);
+}
 

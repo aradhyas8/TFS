@@ -256,6 +256,9 @@ test("ordinary analysis uses committed state while draft differs", async ({ page
   await expect.poll(() => analyzeRequests.length).toBeGreaterThan(0);
   expect(analyzeRequests[0]?.settings?.single_company_cap).toBe("0.5");
 
+  // Switch back to Holdings tab if tab switched on analysis completion
+  await details.getByRole("tab", { name: "Holdings" }).click();
+
   // Verify draft input is STILL "15" and unsaved
   await details.getByRole("tab", { name: "Holdings" }).click();
   await expect(capInput).toHaveValue("15");
