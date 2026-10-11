@@ -60,12 +60,13 @@ function createPortfolio(sponsorScenario: "full" | "partial" | "stale", policy: 
   };
 }
 
+import { seedPortfolio } from "./test_helpers";
+
 async function open(page: Page, portfolio: object) {
   await page.route("**/*", route =>
     ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort()
   );
-  await page.request.delete("/api/test/portfolio");
-  expect((await page.request.put("/api/portfolio", { data: portfolio })).ok()).toBeTruthy();
+  await seedPortfolio(page, portfolio);
   await page.goto("/");
   await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
 }

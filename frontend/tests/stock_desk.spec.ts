@@ -20,11 +20,12 @@ const SAVED = {
   unresolved: [],
 };
 
+import { seedPortfolio } from "./test_helpers";
+
 /** Opens the desk on a saved portfolio and records every analysis request the page sends. */
 async function open(page: Page, saved: object = SAVED) {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.request.delete("/api/test/portfolio");
-  expect((await page.request.put("/api/portfolio", { data: saved })).ok()).toBeTruthy();
+  await seedPortfolio(page, saved);
   const sent: { question: string; stock?: { position_id: string } }[] = [];
   page.on("request", request => { if (request.url().endsWith("/api/analyze")) sent.push(request.postDataJSON()); });
   await page.goto("/");
@@ -50,7 +51,9 @@ async function expectStockAnalysis(page: Page, headline = "ACME is over your 15%
 
 /** The saved portfolio as stored, minus the save time. */
 async function stored(page: Page) {
-  const { saved_at: _, ...rest } = await (await page.request.get("/api/portfolio")).json();
+  const data = await (await page.request.get("/api/portfolio")).json();
+  const portfolio = data?.portfolio ?? data;
+  const { saved_at: _, ...rest } = portfolio;
   return rest;
 }
 
