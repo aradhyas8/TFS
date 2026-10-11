@@ -5,7 +5,7 @@ import sqlite3
 from datetime import UTC, datetime
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -51,6 +51,7 @@ from .schemas import (
     BENCHMARK_FUND,
     AnalysisRequest,
     AnalysisResult,
+    ArtifactReference,
     CandidateListing,
     CandidateRequest,
     CandidateResult,
@@ -58,6 +59,7 @@ from .schemas import (
     CancelProposalResult,
     ConfirmActionRequest,
     ConfirmationResult,
+    CreateArtifactRequest,
     CSVRequest,
     FinancialEvidence,
     IdentifyHolding,
@@ -277,6 +279,40 @@ def create_app(
         await _assert_empty_request(request)
         return cancel_portfolio_action(portfolios.db, proposal_id)
 
+    @app.post("/api/portfolio/artifacts", response_model=ArtifactReference)
+    def create_portfolio_artifact(request: CreateArtifactRequest) -> ArtifactReference:
+        return portfolios.store_hypothetical_artifact(
+            request.portfolio,
+            label=request.label,
+            source_artifact_id=request.source_artifact_id,
+            originating_run_id=request.originating_run_id,
+        )
+
+    @app.get("/api/portfolio/artifacts/{artifact_id}", response_model=ArtifactReference)
+    def get_portfolio_artifact(artifact_id: str) -> ArtifactReference:
+        ref = portfolios.get_artifact_reference(artifact_id)
+        if not ref:
+            raise HTTPException(404, f"Artifact '{artifact_id}' not found.")
+        return ref
+
+    @app.get("/api/portfolio/artifacts/{artifact_id}/payload")
+    def get_portfolio_artifact_payload(
+        artifact_id: str,
+        projection: Literal["human", "model"] = "human",
+    ) -> dict[str, Any]:
+        payload = portfolios.get_artifact(artifact_id, projection=projection)
+        if payload is None:
+            raise HTTPException(404, f"Artifact '{artifact_id}' not found.")
+        return payload
+
+    @app.post("/api/artifacts", response_model=ArtifactReference)
+    def create_artifact_alias(request: CreateArtifactRequest) -> ArtifactReference:
+        return create_portfolio_artifact(request)
+
+    @app.get("/api/artifacts/{artifact_id}", response_model=ArtifactReference)
+    def get_artifact_alias(artifact_id: str) -> ArtifactReference:
+        return get_portfolio_artifact(artifact_id)
+
 
 
 
@@ -429,6 +465,10 @@ def create_app(
 
     @app.post("/api/analyze", response_model=AnalysisResult)
     async def analysis(request: AnalysisRequest) -> AnalysisResult:
+        if request.artifact_id and request.artifact_reference is None:
+            ref = portfolios.get_artifact_reference(request.artifact_id)
+            if ref:
+                request = request.model_copy(update={"artifact_reference": ref})
         config = settings or Settings.from_environment()
         provider = model
         if provider is None and not (request.theme and not request.theme.confirmed):

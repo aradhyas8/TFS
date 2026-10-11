@@ -35,6 +35,7 @@ type Props = {
   result: Analysis | null; decision: SavedDecision | null; running: boolean; onError: (message: string) => void;
   prices: PriceRefresh | null; refreshing: boolean; onRefreshPrices: () => void;
   isDirty?: boolean; reviewing?: boolean; onReviewChanges?: () => void; onDiscardDraft?: () => void;
+  onAnalyzeDraft?: () => void;
   baseRevision?: number | null;
   onProposal?: (proposal: PortfolioProposal) => void;
   onPreviewProposal?: (proposal: PortfolioProposal) => void;
@@ -480,7 +481,7 @@ function BenchmarkInput({ benchmark, onChange, disabled, onError }: {
   </div>;
 }
 
-function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, benchmark, setBenchmark, result, decision, running, onError, prices, refreshing, onRefreshPrices, isDirty, reviewing, onReviewChanges, onDiscardDraft, baseRevision, onProposal, onPreviewProposal, pendingProposals, onReopenProposal }: Props) {
+function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, benchmark, setBenchmark, result, decision, running, onError, prices, refreshing, onRefreshPrices, isDirty, reviewing, onReviewChanges, onDiscardDraft, onAnalyzeDraft, baseRevision, onProposal, onPreviewProposal, pendingProposals, onReopenProposal }: Props) {
   if (!snapshot) return <p className="cap">Import a portfolio to see holdings.</p>;
   const review = result?.portfolio;
   const editable = !running;
@@ -525,7 +526,7 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
             <span className="lbl amber">Unsaved draft edits</span>
             <p className="cap" style={{ marginTop: 2 }}>Typing changes draft state only. Review before committing.</p>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             {onDiscardDraft && (
               <button
                 type="button"
@@ -535,6 +536,17 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
                 onClick={onDiscardDraft}
               >
                 Discard
+              </button>
+            )}
+            {onAnalyzeDraft && (
+              <button
+                type="button"
+                className="btn secondary small"
+                data-testid="analyze-draft"
+                disabled={!editable || reviewing || running}
+                onClick={onAnalyzeDraft}
+              >
+                Analyze draft
               </button>
             )}
             {onReviewChanges && (

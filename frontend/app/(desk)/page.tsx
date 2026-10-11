@@ -13,8 +13,10 @@ import {
   listProposals,
   confirmProposal,
   cancelProposal,
+  createArtifact,
   themeComparison,
   type Analysis,
+  type ArtifactReference,
   type BenchmarkSetting,
   type CandidateResult,
   type ConfirmationResult,
@@ -64,6 +66,9 @@ type Sent = {
   stock?: string | null;
   candidate?: Position | null;
   rebalance?: boolean;
+  isHypothetical?: boolean;
+  artifactReference?: ArtifactReference | null;
+  snapshot?: Snapshot | null;
 };
 const EMPTY_CASH: NewCashInput = {
   amount: null,
@@ -633,6 +638,129 @@ export default function DeskPage() {
     }
   }
 
+  /** Explicit hypothetical analysis captures immutable draft state */
+  async function analyzeHypotheticalDraft() {
+    if (!draftSnapshot) return;
+    const capturedSnapshot = structuredClone(draftSnapshot);
+    const capturedSettings = structuredClone(draftSettings);
+    const capturedBenchmark = structuredClone(draftBenchmark);
+    const capturedAverageCosts = structuredClone(draftAverageCosts);
+    const capturedUnresolved = structuredClone(draftUnresolved);
+
+    const id = ++runId.current;
+    const startedAt = Date.now();
+    const currentQ = question.trim() || "Review exposure, concentration and fund overlap";
+    const sent: Sent = {
+      question: currentQ,
+      newCash: null,
+      stock: null,
+      isHypothetical: true,
+      snapshot: capturedSnapshot,
+    };
+    setRun({ ...sent, id, startedAt });
+    setNow(startedAt);
+    setPast(pastDurations(sent));
+    setFailure(null);
+    setClarify(null);
+    setSaved(null);
+    setReopened(null);
+    setRegisterOpen(false);
+    setCollapsed(true);
+    setNotice("");
+
+    try {
+      const candidatePortfolio: SavedPortfolio = {
+        snapshot: capturedSnapshot,
+        settings: storedSettings(capturedSettings),
+        benchmark: capturedBenchmark,
+        unresolved: capturedUnresolved,
+        average_costs: capturedAverageCosts,
+        saved_at: null,
+      };
+
+      const artifactRef = await createArtifact({
+        portfolio: candidatePortfolio,
+        label: "Hypothetical Draft Portfolio",
+        source_artifact_id: committedRevision ? `art-rev-${committedRevision}` : null,
+      });
+
+      sent.artifactReference = artifactRef;
+
+      const dated =
+        capturedSnapshot.positions.some(row => row.mark) || capturedSnapshot.fx.length > 0;
+      const base = dated
+        ? capturedSnapshot
+        : { ...capturedSnapshot, as_of: new Date().toLocaleDateString("en-CA") };
+
+      let benchmarkRow: Position | null = null;
+      if (capturedBenchmark) {
+        const accountId = capturedSnapshot.accounts[0]?.id || "default";
+        benchmarkRow = {
+          id: BENCHMARK_FUND,
+          account_id: accountId,
+          kind: "etf",
+          etf_role: "diversified",
+          currency: capturedBenchmark.currency,
+          ticker: capturedBenchmark.ticker,
+          listing: capturedBenchmark.listing,
+          company_name: capturedBenchmark.name || undefined,
+          shares: "0",
+        };
+      }
+
+      const portfolio = {
+        ...base,
+        positions: [
+          ...base.positions,
+          ...(benchmarkRow ? [benchmarkRow] : []),
+        ],
+      };
+
+      const analysis = await post<Analysis>("/api/analyze", {
+        question: sent.question,
+        portfolio,
+        settings: storedSettings(capturedSettings) ?? undefined,
+        artifact_reference: artifactRef,
+      });
+
+      if (runId.current !== id) return;
+      if (analysis.status !== "completed") throw new Error("The analysis was not completed.");
+
+      const resultWithRef: Analysis = {
+        ...analysis,
+        artifact_reference: artifactRef,
+      };
+
+      setAnswer({ ...sent, analysis: resultWithRef });
+      setTab("evidence");
+      setFocus(null);
+      try {
+        localStorage.setItem(ANSWER_KEY, JSON.stringify({ ...sent, analysis: resultWithRef }));
+      } catch {
+        /* memory only */
+      }
+      const durations = [...pastDurations(sent), Date.now() - startedAt].slice(-3);
+      try {
+        localStorage.setItem(durationsKey(sent), JSON.stringify(durations));
+      } catch {
+        /* per-viewer convenience only */
+      }
+      setPast(durations);
+      if (document.hidden) document.title = `Answer ready · ${TITLE}`;
+    } catch (error) {
+      if (runId.current === id)
+        setFailure({
+          ...sent,
+          message:
+            error instanceof Error
+              ? error.message
+              : "The model service could not complete the review. Try again.",
+        });
+    } finally {
+      if (runId.current === id) setRun(null);
+    }
+  }
+
   async function handleCandidate(question: string, ticker: string, listing?: string) {
     setNotice("");
     try {
@@ -1182,67 +1310,68 @@ export default function DeskPage() {
         <Failure message={failure.message} onRetry={() => analyze(failure)} />
       </>
     );
-  else if (answer?.analysis.reunderwriting)
-    center = (
-      <RebalanceAnswer
-        key={answer.analysis.portfolio.reviewed_at}
-        result={answer.analysis}
-        snapshot={committedSnapshot}
-        cite={cite}
-        saved={saved}
-        onTab={openTab}
-        onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
-      />
-    );
-  else if (answer?.analysis.stock && !answer.analysis.allocation)
-    center = (
-      <StockAnswer
-        key={answer.analysis.portfolio.reviewed_at}
-        result={answer.analysis}
-        snapshot={committedSnapshot}
-        cite={cite}
-        saved={saved}
-        onTab={openTab}
-        onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
-      />
-    );
-  else if (answer?.analysis.theme)
-    center = (
-      <ThemeAnswer
-        key={answer.analysis.portfolio.reviewed_at}
-        result={answer.analysis}
-        snapshot={committedSnapshot}
-        cite={cite}
-        saved={saved}
-        onTab={openTab}
-        onAgree={agreeTheme}
-        onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
-      />
-    );
-  else if (answer && !answer.analysis.allocation)
-    center = (
-      <ReviewAnswer
-        key={answer.analysis.portfolio.reviewed_at}
-        result={answer.analysis}
-        snapshot={committedSnapshot}
-        cite={cite}
-        saved={saved}
-        onTab={openTab}
-        onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
-      />
-    );
-  else if (answer) {
-    const cash = answer.newCash ?? answer.analysis.allocation!.context;
-    center = (
-      <Answer
-        key={answer.analysis.portfolio.reviewed_at}
-        result={answer.analysis}
-        sent={{ question: answer.question, newCash: cash }}
-        snapshot={committedSnapshot}
-        cite={cite}
-        saved={saved}
-        onTab={openTab}
-        onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
+    const activeSnapshot = answer?.snapshot || committedSnapshot;
+    if (answer?.analysis.reunderwriting)
+      center = (
+        <RebalanceAnswer
+          key={answer.analysis.portfolio.reviewed_at}
+          result={answer.analysis}
+          snapshot={activeSnapshot}
+          cite={cite}
+          saved={saved}
+          onTab={openTab}
+          onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
+        />
+      );
+    else if (answer?.analysis.stock && !answer.analysis.allocation)
+      center = (
+        <StockAnswer
+          key={answer.analysis.portfolio.reviewed_at}
+          result={answer.analysis}
+          snapshot={activeSnapshot}
+          cite={cite}
+          saved={saved}
+          onTab={openTab}
+          onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
+        />
+      );
+    else if (answer?.analysis.theme)
+      center = (
+        <ThemeAnswer
+          key={answer.analysis.portfolio.reviewed_at}
+          result={answer.analysis}
+          snapshot={activeSnapshot}
+          cite={cite}
+          saved={saved}
+          onTab={openTab}
+          onAgree={agreeTheme}
+          onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
+        />
+      );
+    else if (answer && !answer.analysis.allocation)
+      center = (
+        <ReviewAnswer
+          key={answer.analysis.portfolio.reviewed_at}
+          result={answer.analysis}
+          snapshot={activeSnapshot}
+          cite={cite}
+          saved={saved}
+          onTab={openTab}
+          onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
+        />
+      );
+    else if (answer) {
+      const cash = answer.newCash ?? answer.analysis.allocation!.context;
+      center = (
+        <Answer
+          key={answer.analysis.portfolio.reviewed_at}
+          result={answer.analysis}
+          sent={{ question: answer.question, newCash: cash }}
+          snapshot={activeSnapshot}
+          cite={cite}
+          saved={saved}
+          onTab={openTab}
+          onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
         onRerun={risk => {
           const next = { ...cash, risk_context: risk };
           setNewCash(next);
@@ -1718,6 +1847,7 @@ export default function DeskPage() {
         reviewing={reviewing}
         onReviewChanges={reviewChanges}
         onDiscardDraft={discardDraft}
+        onAnalyzeDraft={() => void analyzeHypotheticalDraft()}
         onPreviewProposal={openProposal}
         pendingProposals={pendingProposals}
         onReopenProposal={openProposal}
