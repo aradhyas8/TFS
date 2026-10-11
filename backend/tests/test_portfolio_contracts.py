@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from analyst.schemas import (
     Account,
+    ArtifactEnvelope,
     ArtifactReference,
     DifferenceItem,
     PortfolioProposal,
@@ -176,3 +177,38 @@ def test_model_projection_excludes_average_costs():
     model_payload = build_artifact_payload(portfolio, projection="model")
     assert model_payload["average_costs"] == {}
     assert model_payload["unresolved"][0]["average_cost"] is None
+
+
+def test_extended_artifact_kinds_and_envelopes():
+    kinds = [
+        "portfolio_snapshot",
+        "analysis_result",
+        "company_research",
+        "financial_evidence",
+        "calculation_result",
+        "web_research",
+    ]
+    for kind in kinds:
+        ref = ArtifactReference(
+            id=f"art-{kind}",
+            kind=kind,  # type: ignore[arg-type]
+            label=f"Label for {kind}",
+            created_at=datetime.now(UTC),
+            revision=1 if kind == "portfolio_snapshot" else None,
+            basis="committed" if kind == "portfolio_snapshot" else "none",
+            source_artifact_id="art-parent" if kind != "portfolio_snapshot" else None,
+            originating_run_id="run-1",
+        )
+        assert ref.kind == kind
+        envelope = ArtifactEnvelope(reference=ref, payload={"status": "ok", "kind": kind})
+        assert envelope.reference.id == f"art-{kind}"
+        assert envelope.payload["kind"] == kind
+
+    # Invalid artifact kind
+    with pytest.raises(ValidationError):
+        ArtifactReference(
+            id="art-invalid",
+            kind="unknown_kind",  # type: ignore[arg-type]
+            label="Invalid",
+            created_at=datetime.now(UTC),
+        )

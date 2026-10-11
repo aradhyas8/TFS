@@ -138,6 +138,25 @@ def test_create_and_retrieve_hypothetical_artifact(tmp_path):
     model_data = model_payload_res.json()
     assert model_data["average_costs"] == {}
 
+    # Retrieve generic artifact envelope (human projection default)
+    env_res = api.get(f"/api/artifacts/{ref['id']}")
+    assert env_res.status_code == 200
+    env_data = env_res.json()
+    assert env_data["reference"]["id"] == ref["id"]
+    assert env_data["reference"]["kind"] == "portfolio_snapshot"
+    assert env_data["reference"]["basis"] == "hypothetical"
+    assert env_data["payload"]["average_costs"]["tfsa-shop-to"] == "120.00"
+
+    # Retrieve generic artifact envelope (explicit model projection)
+    env_model_res = api.get(f"/api/artifacts/{ref['id']}?projection=model")
+    assert env_model_res.status_code == 200
+    env_model_data = env_model_res.json()
+    assert env_model_data["reference"]["id"] == ref["id"]
+    assert env_model_data["payload"]["average_costs"] == {}
+
+    # Non-existent artifact returns 404
+    assert api.get("/api/artifacts/art-nonexistent").status_code == 404
+
     # Verify committed portfolio revision and content unchanged
     committed = api.get("/api/portfolio").json()
     assert committed["revision"] == 1

@@ -380,7 +380,13 @@ export type RevisionedPortfolio = {
 };
 
 export type ArtifactBasis = "committed" | "hypothetical" | "none";
-export type ArtifactKind = "portfolio_snapshot";
+export type ArtifactKind =
+  | "portfolio_snapshot"
+  | "analysis_result"
+  | "company_research"
+  | "financial_evidence"
+  | "calculation_result"
+  | "web_research";
 
 export type ArtifactReference = {
   id: string;
@@ -391,6 +397,11 @@ export type ArtifactReference = {
   basis: ArtifactBasis;
   source_artifact_id?: string | null;
   originating_run_id?: string | null;
+};
+
+export type ArtifactEnvelope<T = unknown> = {
+  reference: ArtifactReference;
+  payload: T;
 };
 
 export type ProposalStatus = "pending" | "applied" | "cancelled" | "stale";
@@ -516,6 +527,13 @@ export async function createArtifact(request: CreateArtifactRequest): Promise<Ar
 
 export async function getArtifactReference(artifactId: string): Promise<ArtifactReference> {
   return get<ArtifactReference>(`/api/portfolio/artifacts/${artifactId}`);
+}
+
+export async function getArtifact<T = unknown>(
+  artifactId: string,
+  projection: "human" | "model" = "human"
+): Promise<ArtifactEnvelope<T>> {
+  return get<ArtifactEnvelope<T>>(`/api/artifacts/${artifactId}?projection=${projection}`);
 }
 
 export async function prepareIdentifyHolding(

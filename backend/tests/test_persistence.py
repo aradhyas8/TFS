@@ -107,6 +107,103 @@ def test_immutable_artifact_storage_and_projections(tmp_path: Path):
     assert stored_ref.basis == "committed"
 
 
+def test_typed_artifact_storage_and_generic_retrieval(tmp_path: Path):
+    db = Database(tmp_path / "test.db")
+    db.initialize()
+
+    # 1. Store analysis_result artifact
+    analysis_ref = ArtifactReference(
+        id="art-analysis-1",
+        kind="analysis_result",
+        label="Analysis Outcome",
+        created_at=datetime.now(UTC),
+        revision=1,
+        basis="committed",
+        source_artifact_id="art-101",
+        originating_run_id="run-101",
+    )
+    analysis_payload = {
+        "status": "completed",
+        "question": "Review risk",
+        "notes": ["well diversified", "low debt"],
+    }
+    db.store_artifact(analysis_ref, analysis_payload)
+
+    # 2. Store company_research artifact
+    research_ref = ArtifactReference(
+        id="art-research-1",
+        kind="company_research",
+        label="SEC/SEDAR Company Research",
+        created_at=datetime.now(UTC),
+        basis="none",
+        originating_run_id="run-101",
+    )
+    research_payload = {
+        "company_id": "SHOP",
+        "sector": "technology",
+        "cyclical": False,
+        "facts": [{"metric": "revenue", "value": "5000000000"}],
+    }
+    db.store_artifact(research_ref, research_payload)
+
+    # 3. Store calculation_result artifact
+    calc_ref = ArtifactReference(
+        id="art-calc-1",
+        kind="calculation_result",
+        label="Exposure Calculation",
+        created_at=datetime.now(UTC),
+        basis="committed",
+        revision=1,
+        originating_run_id="run-101",
+    )
+    calc_payload = {
+        "capability": "portfolio_exposure",
+        "result": {"us_equity_pct": "0.60", "cash_pct": "0.10"},
+    }
+    db.store_artifact(calc_ref, calc_payload)
+
+    # 4. Store web_research artifact
+    web_ref = ArtifactReference(
+        id="art-web-1",
+        kind="web_research",
+        label="Web Search Research",
+        created_at=datetime.now(UTC),
+        basis="none",
+        originating_run_id="run-101",
+    )
+    web_payload = {
+        "query": "Shopify latest earnings",
+        "citations": [{"url": "https://example.com", "title": "Earnings Q3"}],
+        "sources": ["https://example.com"],
+    }
+    db.store_artifact(web_ref, web_payload)
+
+    # Verify retrieval and non-portfolio artifacts don't get portfolio serialization
+    retrieved_analysis = db.get_artifact("art-analysis-1")
+    assert retrieved_analysis == analysis_payload
+
+    # Envelope retrieval
+    env_research = db.get_artifact_envelope("art-research-1")
+    assert env_research is not None
+    assert env_research.reference.id == "art-research-1"
+    assert env_research.reference.kind == "company_research"
+    assert env_research.payload == research_payload
+
+    env_calc = db.get_artifact_envelope("art-calc-1")
+    assert env_calc is not None
+    assert env_calc.reference.kind == "calculation_result"
+    assert env_calc.payload == calc_payload
+
+    env_web = db.get_artifact_envelope("art-web-1")
+    assert env_web is not None
+    assert env_web.reference.kind == "web_research"
+    assert env_web.payload == web_payload
+
+    # Immutability: duplicate ID fails
+    with pytest.raises(sqlite3.IntegrityError):
+        db.store_artifact(analysis_ref, analysis_payload)
+
+
 def test_restart_preserves_revisions_pending_proposals_and_receipts(tmp_path: Path):
     db_path = tmp_path / "portfolio.db"
     db = Database(db_path)
