@@ -14,7 +14,7 @@ from analyst.config import Settings
 from analyst.orchestrator import Orchestrator
 from analyst.portfolio import PortfolioStore
 from analyst.providers import ModelTurn, ToolCall
-from analyst.schemas import SavedPortfolio
+from analyst.schemas import SavedPortfolio, ToolOutcome
 
 
 def sample_portfolio() -> SavedPortfolio:
@@ -312,3 +312,65 @@ def test_twenty_recent_messages_and_current_thread_cursor_are_preserved(tmp_path
     assert "short-06" in recent[0]["content"]
     assert "short-05" not in json.dumps(recent)
     assert "Latest question" in recent[-1]["content"]
+
+
+def test_large_result_cannot_evict_current_question(tmp_path: Path) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(sample_portfolio())
+    model = CapturingTransport([
+        ModelTurn(calls=[ToolCall("large", "get_artifact", '{"artifact_id":"large"}')],
+                  continuation=[{"type": "reasoning", "encrypted_content": "r" * 400}]),
+        ModelTurn(text="Answered the current question."),
+    ])
+    with client_for(store, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        ref = store.db.get_artifact_reference("art-rev-1").model_copy(update={"id": "large", "kind": "analysis_result"})
+        store.db.store_artifact(ref, {"fact": "x" * 30500})
+        store.db.add_message(thread, "assistant", "Result", artifact_ids=["large"])
+        question = "current-question " + "q" * 980
+        assert submit(client, thread, question)["status"] == "completed"
+    assert question in json.dumps(model.requests[-1]["messages"])
+    assert any(m.get("encrypted_content") == "r" * 400 for m in model.requests[-1]["messages"])
+
+
+@pytest.mark.parametrize("transition", ["cancel", "confirm"])
+def test_known_historical_proposal_remains_retrievable(tmp_path: Path, transition: str) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(sample_portfolio())
+    model = CapturingTransport([])
+    with client_for(store, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        edited = sample_portfolio().model_dump(mode="json")
+        edited["average_costs"]["pos-1"] = "856.78"
+        proposal = client.put("/api/portfolio", json={"base_revision": 1, "portfolio": edited}).json()["proposal"]
+        assert client.post(f"/api/portfolio/proposals/{proposal['id']}/{transition}").status_code == 200
+        store.db.add_message(thread, "assistant", "Earlier proposal", proposal_ids=[proposal["id"]])
+        cursor = store.db.add_message(thread, "user", "Cursor").id
+        for _ in range(20):
+            store.db.add_message(thread, "user", "Recent conversation")
+        model.turns = iter([
+            ModelTurn(calls=[ToolCall("older", "get_messages", json.dumps({"before_id": cursor, "limit": 20}))]),
+            ModelTurn(calls=[ToolCall("proposal", "get_proposal", json.dumps({"proposal_id": proposal["id"]}))]),
+            ModelTurn(text="Historical proposal explained."),
+        ])
+        assert submit(client, thread, "Read the earlier proposal")["status"] == "completed"
+    detail = json.loads(model.requests[-1]["messages"][-1]["output"])
+    assert detail["id"] == proposal["id"]
+    assert detail["status"] == ("cancelled" if transition == "cancel" else "applied")
+    assert detail["base_revision"] == 1
+    assert "856.78" not in json.dumps(model.requests)
+
+
+def test_oversized_historical_message_reference_still_excludes_private_fields(tmp_path: Path) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    model = CapturingTransport([ModelTurn(text="Reference preserved.")])
+    with client_for(store, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        store.db.add_message(thread, "assistant", "x" * 40000, tool_outcomes=[ToolOutcome(
+            id="old-tool", name="get_holdings", status="error",
+            error=json.dumps({"average_cost": "SECRET-COST", "private_continuation": "SECRET-STATE"}),
+        )])
+        assert submit(client, thread, "Explain the previous read")["status"] == "completed"
+    request = json.dumps(model.requests[0])
+    assert "old-tool" in request
+    assert "SECRET-COST" not in request and "SECRET-STATE" not in request

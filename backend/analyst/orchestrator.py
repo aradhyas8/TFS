@@ -187,27 +187,30 @@ class Orchestrator:
                     if isinstance(result.get(key), dict):
                         artifact_ids.append(result[key]["id"])
                 output = json.dumps(result, cls=DecimalEncoder)
-                if len(output) > CHARACTER_LIMIT - 1000:
-                    result = {"error": "Result exceeds retrieval budget. Request a smaller slice.",
-                              "artifact_ids": artifact_ids}
-                    if call.name == "get_artifact":
-                        result["artifact_id"] = json.loads(call.arguments)["artifact_id"]
-                    output = json.dumps(result)
                 exchange = list(turn.continuation)
                 if not continuation_calls:
                     exchange.append({
                         "type": "function_call", "call_id": call.call_id,
                         "name": call.name, "arguments": call.arguments,
                     })
-                exchange.append({"type": "function_call_output", "call_id": call.call_id,
-                                 "output": output})
+                output_item = {"type": "function_call_output", "call_id": call.call_id, "output": output}
+                required_size = len(initial_messages[-1]["content"]) + sum(len(json.dumps(item)) for item in exchange)
+                if required_size + len(json.dumps(output_item)) > CHARACTER_LIMIT:
+                    result = {"error": "Result exceeds retrieval budget. Request a smaller slice.",
+                              "artifact_ids": artifact_ids}
+                    if call.name == "get_artifact":
+                        result["artifact_id"] = parsed.model_dump()["artifact_id"]
+                    output_item["output"] = json.dumps(result)
+                exchange.append(output_item)
                 exchanges.append(exchange)
                 messages = context.with_exchanges(initial_messages, exchanges)
                 outcome = ToolOutcome(id=call.call_id, name=call.name,
                                       status="error" if "error" in result else "success",
                                       error=result.get("error"), artifact_ids=artifact_ids)
                 outcome_message = self.db.add_message(
-                    thread_id, "assistant", "", run_id=run_id,
+                    thread_id, "assistant", json.dumps({"retrieval": {
+                        "tool": call.name, "arguments": parsed.model_dump(),
+                    }}), run_id=run_id,
                     tool_outcomes=[outcome], artifact_ids=artifact_ids,
                 )
                 self.db.update_run(run_id, "running", additional_message_ids=[outcome_message.id],

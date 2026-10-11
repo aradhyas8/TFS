@@ -65,6 +65,7 @@ class RunContext:
         self.portfolio = bound.portfolio if bound else None
         self.proposals = {p.id: p for p in db.list_proposals("pending")
                           if p.base_revision == run.bound_revision and p.created_at <= run.created_at}
+        self.known_proposals = dict(self.proposals)
         self.artifact_ids: set[str] = set()
         if run.bound_revision:
             self.artifact_ids.add(f"art-rev-{run.bound_revision}")
@@ -82,15 +83,24 @@ class RunContext:
         for message in reversed(recent):
             content = self.message_content(message)
             if len(content) > CHARACTER_LIMIT:
-                content = json.dumps({"message_id": message.id, "artifact_ids": message.artifact_ids,
+                content = json.dumps(model_safe({"message_id": message.id, "artifact_ids": message.artifact_ids,
                                       "completed_tools": [t.model_dump(mode="json") for t in message.tool_outcomes],
-                                      "omitted": "Message exceeds context budget."})
+                                      "omitted": "Message exceeds context budget."}))
             if len(content) > budget:
                 break
             selected.append({"id": message.id, "role": message.role, "content": content})
             self.artifact_ids.update(message.artifact_ids)
             for outcome in message.tool_outcomes:
                 self.artifact_ids.update(outcome.artifact_ids)
+            for proposal_id in message.proposal_ids:
+                proposal = self.db.get_proposal(proposal_id)
+                if (proposal is not None and proposal.created_at <= self.run.created_at
+                        and (proposal.base_revision is None or
+                             (self.run.bound_revision is not None and proposal.base_revision <= self.run.bound_revision))):
+                    self.known_proposals.setdefault(proposal.id, proposal)
+                    self.artifact_ids.add(proposal.after_artifact.id)
+                    if proposal.before_artifact:
+                        self.artifact_ids.add(proposal.before_artifact.id)
             budget -= len(content)
         return list(reversed(selected))
 
@@ -106,7 +116,8 @@ class RunContext:
     ) -> list[dict[str, Any]]:
         """Budget complete exchanges as units; never cut a call away from its output."""
         selected: list[dict[str, Any]] = []
-        budget = CHARACTER_LIMIT
+        active_message = initial[-1]
+        budget = CHARACTER_LIMIT - len(active_message["content"])
         for exchange in reversed(exchanges):
             size = sum(len(json.dumps(item)) for item in exchange)
             if size > budget:
@@ -116,6 +127,7 @@ class RunContext:
                 output = json.loads(exchange[-1]["output"])
                 exchange = [{"role": "assistant", "content": json.dumps({
                     "completed_call_id": call["call_id"], "tool": call["name"],
+                    "arguments": json.loads(call["arguments"]),
                     "artifact_ids": output.get("artifact_ids", []),
                     "reference": output.get("reference"),
                     "omitted": "Completed exchange exceeds remaining context budget.",
@@ -126,13 +138,13 @@ class RunContext:
             selected = exchange + selected
             budget -= size
         history: list[dict[str, Any]] = []
-        for message in reversed(initial[2:]):
+        for message in reversed(initial[2:-1]):
             size = len(message["content"])
             if size > budget:
                 break
             history.insert(0, message)
             budget -= size
-        return initial[:2] + history + selected
+        return initial[:2] + history + [active_message] + selected
 
     def read_holdings(self, parsed: HoldingsArguments) -> dict[str, Any]:
         if self.portfolio is None:
@@ -164,7 +176,7 @@ class RunContext:
         return envelope.model_dump(mode="json")
 
     def read_proposal(self, parsed: ProposalArguments) -> dict[str, Any]:
-        proposal = self.proposals.get(parsed.proposal_id)
+        proposal = self.known_proposals.get(parsed.proposal_id)
         if proposal is None:
             raise ValueError("Proposal reference is not known to this run.")
         detail = proposal.model_dump(mode="json")
