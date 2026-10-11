@@ -38,6 +38,19 @@ class StaleBaseRevisionError(RuntimeError):
     """Raised when base revision does not match current committed revision."""
 
 
+class ProposalNotFoundError(RuntimeError):
+    """Raised when a proposal ID is not found."""
+
+
+class InvalidProposalStateError(RuntimeError):
+    """Raised when a proposal state transition is invalid or conflicting."""
+
+
+class DatabaseLockError(RuntimeError):
+    """Raised when SQLite operations fail due to a lock or busy condition."""
+
+
+
 
 
 def default_database_path() -> Path:
@@ -66,18 +79,29 @@ class Database:
     @contextmanager
     def connect(self) -> Generator[sqlite3.Connection, None, None]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON;")
-        conn.execute("PRAGMA journal_mode = WAL;")
         try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
+            conn = sqlite3.connect(self.path, timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("PRAGMA journal_mode = WAL;")
+            try:
+                yield conn
+                conn.commit()
+            except sqlite3.OperationalError as exc:
+                conn.rollback()
+                if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                    raise DatabaseLockError(f"Database is locked or busy: {exc}") from exc
+                raise
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                raise DatabaseLockError(f"Database is locked or busy: {exc}") from exc
             raise
-        finally:
-            conn.close()
+
 
     def get_schema_version(self) -> int:
         if not self.path.exists():
@@ -634,5 +658,155 @@ class Database:
                 )
             rows = cursor.fetchall()
             return [self._row_to_proposal(row) for row in rows]
+
+    def confirm_proposal(
+        self,
+        proposal_id: str,
+    ) -> tuple[RevisionedPortfolio, ProposalReceipt]:
+        """Atomically commit a proposal, creating a new revision, receipt, updating current pointer, and marking competing proposals stale."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT p.id, p.base_revision, p.status, p.after_artifact_id,
+                       r.previous_revision, r.new_revision, r.committed_at as receipt_committed_at
+                FROM proposals p
+                LEFT JOIN proposal_receipts r ON p.id = r.proposal_id
+                WHERE p.id = ?;
+                """,
+                (proposal_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise ProposalNotFoundError(f"Proposal '{proposal_id}' not found.")
+
+            status = row["status"]
+            if status == "applied":
+                if row["new_revision"] is None:
+                    raise RuntimeError(f"Applied proposal {proposal_id} is missing receipt.")
+                rev_cursor = conn.execute(
+                    "SELECT revision, committed_at, payload FROM portfolio_revisions WHERE revision = ?;",
+                    (row["new_revision"],),
+                )
+                rev_row = rev_cursor.fetchone()
+                if not rev_row:
+                    raise RuntimeError(f"Missing revision {row['new_revision']} for applied proposal {proposal_id}")
+                portfolio = SavedPortfolio.model_validate(json.loads(rev_row["payload"]))
+                receipt = ProposalReceipt(
+                    proposal_id=proposal_id,
+                    previous_revision=row["previous_revision"],
+                    new_revision=row["new_revision"],
+                    committed_at=datetime.fromisoformat(row["receipt_committed_at"]),
+                )
+                return RevisionedPortfolio(
+                    revision=rev_row["revision"],
+                    portfolio=portfolio,
+                    committed_at=datetime.fromisoformat(rev_row["committed_at"]),
+                ), receipt
+
+            if status == "cancelled":
+                raise InvalidProposalStateError(f"Proposal '{proposal_id}' has been cancelled and cannot be confirmed.")
+
+            if status == "stale":
+                raise InvalidProposalStateError(f"Proposal '{proposal_id}' is stale and cannot be confirmed.")
+
+            if status != "pending":
+                raise InvalidProposalStateError(f"Proposal '{proposal_id}' cannot be confirmed in status '{status}'.")
+
+            # Recheck current revision inside transaction
+            curr_cursor = conn.execute("SELECT current_revision FROM portfolio_current WHERE id = 1;")
+            curr_row = curr_cursor.fetchone()
+            current_rev = curr_row["current_revision"] if curr_row else None
+
+            if current_rev != row["base_revision"]:
+                raise StaleBaseRevisionError(
+                    f"Proposal base revision {row['base_revision']} is stale; current revision is {current_rev}."
+                )
+
+            # Retrieve exact stored artifact payload
+            art_cursor = conn.execute("SELECT payload_json FROM artifacts WHERE id = ?;", (row["after_artifact_id"],))
+            art_row = art_cursor.fetchone()
+            if not art_row:
+                raise RuntimeError(f"Missing after artifact {row['after_artifact_id']} for proposal {proposal_id}")
+            stored_payload_json = art_row["payload_json"]
+            candidate_portfolio = SavedPortfolio.model_validate(json.loads(stored_payload_json))
+
+            # Determine next revision number
+            max_cursor = conn.execute("SELECT MAX(revision) FROM portfolio_revisions;")
+            max_row = max_cursor.fetchone()
+            next_rev = 1 if (not max_row or max_row[0] is None) else (max_row[0] + 1)
+
+            now = datetime.now(UTC)
+            now_iso = now.isoformat()
+
+            conn.execute(
+                "INSERT INTO portfolio_revisions (revision, committed_at, payload) VALUES (?, ?, ?);",
+                (next_rev, now_iso, stored_payload_json),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO portfolio_current (id, current_revision, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET current_revision = excluded.current_revision, updated_at = excluded.updated_at;
+                """,
+                (next_rev, now_iso),
+            )
+
+            conn.execute(
+                "UPDATE proposals SET status = 'applied' WHERE id = ?;",
+                (proposal_id,),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO proposal_receipts (proposal_id, previous_revision, new_revision, committed_at)
+                VALUES (?, ?, ?, ?);
+                """,
+                (proposal_id, row["base_revision"], next_rev, now_iso),
+            )
+
+            # Mark competing pending proposals stale
+            conn.execute(
+                "UPDATE proposals SET status = 'stale' WHERE status = 'pending' AND id != ?;",
+                (proposal_id,),
+            )
+
+            revisioned = RevisionedPortfolio(
+                revision=next_rev,
+                portfolio=candidate_portfolio,
+                committed_at=now,
+            )
+            receipt = ProposalReceipt(
+                proposal_id=proposal_id,
+                previous_revision=row["base_revision"],
+                new_revision=next_rev,
+                committed_at=now,
+            )
+            return revisioned, receipt
+
+
+    def cancel_proposal(self, proposal_id: str) -> ProposalStatus:
+        """Atomically cancel a proposal. Harmless if already cancelled; conflict if applied."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "SELECT id, status FROM proposals WHERE id = ?;",
+                (proposal_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise ProposalNotFoundError(f"Proposal '{proposal_id}' not found.")
+
+            status = row["status"]
+            if status == "applied":
+                raise InvalidProposalStateError(f"Proposal '{proposal_id}' has already been applied and cannot be cancelled.")
+            if status == "cancelled":
+                return "cancelled"
+
+            conn.execute(
+                "UPDATE proposals SET status = 'cancelled' WHERE id = ?;",
+                (proposal_id,),
+            )
+            return "cancelled"
+
 
 

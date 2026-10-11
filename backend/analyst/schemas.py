@@ -1660,3 +1660,17 @@ class IdentifyHoldingRequest(IdentifyHolding):
     base_revision: int | None = Field(..., description="Base revision, or null for first creation.", gt=0)
 
 
+class ConfirmationResult(Contract):
+    """Result of confirming and applying a proposal."""
+
+    portfolio: RevisionedPortfolio
+    receipt: ProposalReceipt
+
+
+class CancelProposalResult(Contract):
+    """Result of cancelling a proposal."""
+
+    status: ProposalStatus
+
+
+

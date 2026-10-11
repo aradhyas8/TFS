@@ -1,6 +1,9 @@
 import csv
 import io
+import json
+import sqlite3
 from datetime import UTC, datetime
+
 from decimal import Decimal
 from typing import Any
 
@@ -21,7 +24,12 @@ from .financial_data import (
     eodhd_symbol,
 )
 from .issuer_research import IssuerResearchProvider
-from .persistence import StaleBaseRevisionError
+from .persistence import (
+    DatabaseLockError,
+    InvalidProposalStateError,
+    ProposalNotFoundError,
+    StaleBaseRevisionError,
+)
 from .pipeline import InvalidReview, analyze
 from .portfolio import (
     HOLDINGS_COLUMNS,
@@ -32,7 +40,11 @@ from .portfolio import (
     load_holdings,
     split_ticker,
 )
-from .portfolio_actions import prepare_portfolio_action
+from .portfolio_actions import (
+    cancel_portfolio_action,
+    confirm_portfolio_action,
+    prepare_portfolio_action,
+)
 from .providers import DataProvider, ModelProvider, OpenAIModel, SuppliedDataProvider
 from .research import ResearchProvider
 from .schemas import (
@@ -43,7 +55,9 @@ from .schemas import (
     CandidateRequest,
     CandidateResult,
     CandidateUnresolved,
+    CancelProposalResult,
     ConfirmActionRequest,
+    ConfirmationResult,
     CSVRequest,
     FinancialEvidence,
     IdentifyHolding,
@@ -64,6 +78,7 @@ from .schemas import (
     UpdatePortfolioRequest,
 )
 from .sec_research import SecResearchProvider
+
 
 
 
@@ -95,6 +110,36 @@ def create_app(
                 "fields": [".".join(str(part) for part in item["loc"]) for item in error.errors()],
             },
         )
+
+    @app.exception_handler(DatabaseLockError)
+    async def handle_db_lock(_request: Request, _exc: DatabaseLockError) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Database is temporarily locked. Please retry."},
+        )
+
+    @app.exception_handler(ProposalNotFoundError)
+
+    async def handle_proposal_not_found(_request: Request, exc: ProposalNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(StaleBaseRevisionError)
+    async def handle_stale_base(_request: Request, exc: StaleBaseRevisionError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(InvalidProposalStateError)
+    async def handle_invalid_proposal_state(_request: Request, exc: InvalidProposalStateError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc)},
+        )
+
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -216,6 +261,23 @@ def create_app(
         if detail is None:
             raise HTTPException(404, f"Proposal '{proposal_id}' not found.")
         return detail
+
+    async def _assert_empty_request(request: Request) -> None:
+        body = await request.body()
+        if body.strip():
+            raise HTTPException(422, "Request body must be empty; replacement payloads are rejected.")
+
+    @app.post("/api/portfolio/proposals/{proposal_id}/confirm", response_model=ConfirmationResult)
+    async def confirm_proposal(proposal_id: str, request: Request) -> ConfirmationResult:
+        await _assert_empty_request(request)
+        return confirm_portfolio_action(portfolios.db, proposal_id)
+
+    @app.post("/api/portfolio/proposals/{proposal_id}/cancel", response_model=CancelProposalResult)
+    async def cancel_proposal(proposal_id: str, request: Request) -> CancelProposalResult:
+        await _assert_empty_request(request)
+        return cancel_portfolio_action(portfolios.db, proposal_id)
+
+
 
 
     @app.post("/api/market/refresh")

@@ -6,12 +6,15 @@ from .calculations import review_portfolio
 from .guardrails import apply_guardrails
 from .persistence import Database, StaleBaseRevisionError
 from .schemas import (
+    CancelProposalResult,
+    ConfirmationResult,
     DifferenceItem,
     FinancialEvidence,
     PreparationResult,
     ProposalOrigin,
     SavedPortfolio,
 )
+
 
 
 def compute_differences(
@@ -438,3 +441,22 @@ def prepare_portfolio_action(
         run_id=run_id,
     )
     return PreparationResult(status="prepared", proposal=proposal)
+
+
+def confirm_portfolio_action(
+    database: Database,
+    proposal_id: str,
+) -> ConfirmationResult:
+    """Explicitly apply a prepared portfolio proposal and return the committed portfolio and receipt."""
+    rev_portfolio, receipt = database.confirm_proposal(proposal_id)
+    return ConfirmationResult(portfolio=rev_portfolio, receipt=receipt)
+
+
+def cancel_portfolio_action(
+    database: Database,
+    proposal_id: str,
+) -> CancelProposalResult:
+    """Explicitly cancel a prepared portfolio proposal and return the resulting status."""
+    status = database.cancel_proposal(proposal_id)
+    return CancelProposalResult(status=status)
+

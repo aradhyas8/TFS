@@ -291,3 +291,362 @@ def test_unknown_proposal_id_returns_404(tmp_path):
     api, _ = client(tmp_path)
     res = api.get("/api/portfolio/proposals/prop-nonexistent")
     assert res.status_code == 404
+
+
+def test_confirmation_commits_stored_payload_and_creates_receipt(tmp_path):
+    api, store = client(tmp_path)
+    csv_data = "account,ticker,shares,average_cost,type\nTFSA,XEQT.TO,100,30.00,etf\n"
+    res = api.post(
+        "/api/portfolio/import",
+        json={"csv": csv_data, "as_of": "2026-10-01", "reporting_currency": "CAD", "base_revision": None},
+    )
+    assert res.status_code == 200
+    prop_id = res.json()["proposal"]["id"]
+
+    # Confirm the proposal
+    confirm_res = api.post(f"/api/portfolio/proposals/{prop_id}/confirm")
+    assert confirm_res.status_code == 200, confirm_res.text
+    data = confirm_res.json()
+    assert "portfolio" in data
+    assert "receipt" in data
+
+    receipt = data["receipt"]
+    assert receipt["proposal_id"] == prop_id
+    assert receipt["previous_revision"] is None
+    assert receipt["new_revision"] == 1
+    assert "committed_at" in receipt
+
+    portfolio_data = data["portfolio"]
+    assert portfolio_data["revision"] == 1
+    assert portfolio_data["portfolio"]["snapshot"]["reporting_currency"] == "CAD"
+    assert portfolio_data["portfolio"]["average_costs"]["tfsa-xeqt-to"] == "30.00"
+
+    # GET /api/portfolio returns revision 1
+    current = api.get("/api/portfolio").json()
+    assert current is not None
+    assert current["revision"] == 1
+    assert current["portfolio"]["snapshot"]["positions"][0]["ticker"] == "XEQT"
+
+    # Proposal detail has status applied and receipt attached
+    prop_detail = api.get(f"/api/portfolio/proposals/{prop_id}").json()
+    assert prop_detail["status"] == "applied"
+    assert prop_detail["receipt"] is not None
+    assert prop_detail["receipt"]["new_revision"] == 1
+
+
+def test_duplicate_confirmation_returns_same_receipt(tmp_path):
+    api, store = client(tmp_path)
+    csv_data = "account,ticker,shares,type\nTFSA,XEQT.TO,100,etf\n"
+    res = api.post(
+        "/api/portfolio/import",
+        json={"csv": csv_data, "as_of": "2026-10-01", "reporting_currency": "CAD", "base_revision": None},
+    )
+    prop_id = res.json()["proposal"]["id"]
+
+    first_confirm = api.post(f"/api/portfolio/proposals/{prop_id}/confirm").json()
+    second_confirm = api.post(f"/api/portfolio/proposals/{prop_id}/confirm").json()
+
+    assert first_confirm["receipt"] == second_confirm["receipt"]
+    assert first_confirm["portfolio"]["revision"] == second_confirm["portfolio"]["revision"]
+
+
+def test_applied_confirmation_retries_after_later_revisions_exist(tmp_path):
+    api, store = client(tmp_path)
+    # Prepare and confirm revision 1
+    res1 = api.post(
+        "/api/portfolio/import",
+        json={"csv": "account,ticker,shares,type\nTFSA,XEQT.TO,100,etf\n", "as_of": "2026-10-01", "reporting_currency": "CAD", "base_revision": None},
+    )
+    prop1_id = res1.json()["proposal"]["id"]
+    confirm1 = api.post(f"/api/portfolio/proposals/{prop1_id}/confirm").json()
+    receipt1 = confirm1["receipt"]
+
+    # Prepare and confirm revision 2
+    res2 = api.post(
+        "/api/portfolio/import",
+        json={"csv": "account,ticker,shares,type\nTFSA,CASH,500,cash\n", "as_of": "2026-10-05", "reporting_currency": "CAD", "base_revision": 1},
+    )
+    prop2_id = res2.json()["proposal"]["id"]
+    confirm2 = api.post(f"/api/portfolio/proposals/{prop2_id}/confirm").json()
+    assert confirm2["portfolio"]["revision"] == 2
+
+    # Current revision is now 2
+    assert api.get("/api/portfolio").json()["revision"] == 2
+
+    # Retry confirmation of proposal 1: returns original receipt 1 and revision 1 portfolio
+    retry1 = api.post(f"/api/portfolio/proposals/{prop1_id}/confirm")
+    assert retry1.status_code == 200
+    retry1_data = retry1.json()
+    assert retry1_data["receipt"] == receipt1
+    assert retry1_data["portfolio"]["revision"] == 1
+    # Current portfolio in db remains revision 2
+    assert api.get("/api/portfolio").json()["revision"] == 2
+
+
+def test_competing_confirmations_cannot_overwrite_newer_state(tmp_path):
+    api, store = client(tmp_path)
+    initial = sample_portfolio()
+    store.save(initial)  # Revision 1
+
+    # Prepare proposal A against base 1
+    mod_a = initial.model_copy(deep=True)
+    mod_a.snapshot.positions.append(
+        Position(id="tfsa-aapl", account_id="tfsa", kind="stock", currency="USD", ticker="AAPL", listing="XNYS", shares=Decimal("10"))
+    )
+    res_a = api.put("/api/portfolio", json={"base_revision": 1, "portfolio": mod_a.model_dump(mode="json")})
+    prop_a_id = res_a.json()["proposal"]["id"]
+
+    # Prepare proposal B against base 1
+    mod_b = initial.model_copy(deep=True)
+    mod_b.snapshot.positions.append(
+        Position(id="tfsa-msft", account_id="tfsa", kind="stock", currency="USD", ticker="MSFT", listing="XNYS", shares=Decimal("20"))
+    )
+    res_b = api.put("/api/portfolio", json={"base_revision": 1, "portfolio": mod_b.model_dump(mode="json")})
+    prop_b_id = res_b.json()["proposal"]["id"]
+
+    # Confirm proposal A -> advances to revision 2
+    conf_a = api.post(f"/api/portfolio/proposals/{prop_a_id}/confirm")
+    assert conf_a.status_code == 200
+    assert conf_a.json()["portfolio"]["revision"] == 2
+
+    # Confirm proposal B -> must fail with 409 because base 1 is now stale
+    conf_b = api.post(f"/api/portfolio/proposals/{prop_b_id}/confirm")
+    assert conf_b.status_code == 409
+    assert "stale" in conf_b.json()["detail"].lower()
+
+    # Proposal B is now marked stale in the database
+    prop_b_detail = api.get(f"/api/portfolio/proposals/{prop_b_id}").json()
+    assert prop_b_detail["status"] == "stale"
+
+
+def test_cancellation_semantics_and_duplicate(tmp_path):
+    api, store = client(tmp_path)
+    csv_data = "account,ticker,shares,type\nTFSA,XEQT.TO,100,etf\n"
+    res = api.post(
+        "/api/portfolio/import",
+        json={"csv": csv_data, "as_of": "2026-10-01", "reporting_currency": "CAD", "base_revision": None},
+    )
+    prop_id = res.json()["proposal"]["id"]
+
+    # Cancel the proposal
+    cancel_res = api.post(f"/api/portfolio/proposals/{prop_id}/cancel")
+    assert cancel_res.status_code == 200
+    assert cancel_res.json()["status"] == "cancelled"
+
+    # Committed state unchanged
+    assert api.get("/api/portfolio").json() is None
+
+    # Repeated cancellation is harmless
+    cancel_res2 = api.post(f"/api/portfolio/proposals/{prop_id}/cancel")
+    assert cancel_res2.status_code == 200
+    assert cancel_res2.json()["status"] == "cancelled"
+
+    # Cancelled proposal cannot be confirmed -> 409
+    confirm_res = api.post(f"/api/portfolio/proposals/{prop_id}/confirm")
+    assert confirm_res.status_code == 409
+    assert "cancelled" in confirm_res.json()["detail"].lower()
+
+
+def test_cannot_cancel_applied_proposal(tmp_path):
+    api, store = client(tmp_path)
+    csv_data = "account,ticker,shares,type\nTFSA,XEQT.TO,100,etf\n"
+    res = api.post(
+        "/api/portfolio/import",
+        json={"csv": csv_data, "as_of": "2026-10-01", "reporting_currency": "CAD", "base_revision": None},
+    )
+    prop_id = res.json()["proposal"]["id"]
+    api.post(f"/api/portfolio/proposals/{prop_id}/confirm")
+
+    # Trying to cancel an applied proposal -> 409
+    cancel_res = api.post(f"/api/portfolio/proposals/{prop_id}/cancel")
+    assert cancel_res.status_code == 409
+
+
+def test_rejection_of_replacement_payloads(tmp_path):
+    api, store = client(tmp_path)
+    csv_data = "account,ticker,shares,type\nTFSA,XEQT.TO,100,etf\n"
+    res = api.post(
+        "/api/portfolio/import",
+        json={"csv": csv_data, "as_of": "2026-10-01", "reporting_currency": "CAD", "base_revision": None},
+    )
+    prop_id = res.json()["proposal"]["id"]
+
+    # Confirm with non-empty JSON body -> 422
+    confirm_bad = api.post(f"/api/portfolio/proposals/{prop_id}/confirm", json={"portfolio": {}})
+    assert confirm_bad.status_code == 422
+
+    # Confirm with raw string body -> 422
+    confirm_raw = api.post(f"/api/portfolio/proposals/{prop_id}/confirm", content="unexpected text")
+    assert confirm_raw.status_code == 422
+
+    # Cancel with non-empty payload -> 422
+    cancel_bad = api.post(f"/api/portfolio/proposals/{prop_id}/cancel", json={"force": True})
+    assert cancel_bad.status_code == 422
+
+
+def test_confirmation_independent_of_financial_provider_availability(tmp_path):
+    api, store = client(tmp_path)
+    csv_data = "account,ticker,shares,type\nTFSA,XEQT.TO,100,etf\n"
+    res = api.post(
+        "/api/portfolio/import",
+        json={"csv": csv_data, "as_of": "2026-10-01", "reporting_currency": "CAD", "base_revision": None},
+    )
+    prop_id = res.json()["proposal"]["id"]
+
+    # Now create an app with NO financial provider configured
+    app_no_provider = create_app(
+        data=FakeDataProvider(),
+        financial=None,
+        portfolio_store=store,
+    )
+    api_no_provider = TestClient(app_no_provider)
+
+    # Confirmation succeeds completely without financial provider
+    confirm_res = api_no_provider.post(f"/api/portfolio/proposals/{prop_id}/confirm")
+    assert confirm_res.status_code == 200
+    assert confirm_res.json()["portfolio"]["revision"] == 1
+
+
+def test_confirmation_fault_injection_rolls_back_everything(tmp_path):
+    from contextlib import contextmanager
+    from unittest.mock import patch
+
+    api, store = client(tmp_path)
+    csv_data = "account,ticker,shares,type\nTFSA,XEQT.TO,100,etf\n"
+    res = api.post(
+        "/api/portfolio/import",
+        json={"csv": csv_data, "as_of": "2026-10-01", "reporting_currency": "CAD", "base_revision": None},
+    )
+    prop_id = res.json()["proposal"]["id"]
+
+    orig_connect = store.db.connect
+
+    class ConnectionProxy:
+        def __init__(self, target):
+            self._target = target
+
+        def execute(self, sql, *args, **kwargs):
+            if "proposal_receipts" in sql:
+                raise RuntimeError("Simulated crash midway through transaction")
+            return self._target.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._target, name)
+
+    @contextmanager
+    def faulty_connect():
+        with orig_connect() as conn:
+            yield ConnectionProxy(conn)
+
+    with patch.object(store.db, "connect", faulty_connect):
+        with pytest.raises(RuntimeError, match="Simulated crash"):
+            store.db.confirm_proposal(prop_id)
+
+    # Verify rollback:
+    # 1. No portfolio revision exists
+    assert store.db.get_current_portfolio() is None
+    # 2. Proposal is STILL pending
+    prop = store.db.get_proposal(prop_id)
+    assert prop is not None
+    assert prop.status == "pending"
+    assert prop.receipt is None
+
+    # Now confirm without fault succeeds
+    rev, receipt = store.db.confirm_proposal(prop_id)
+    assert rev.revision == 1
+    assert receipt.new_revision == 1
+
+
+
+def test_confirmation_lifecycle_persists_across_restart(tmp_path):
+    api1, store1 = client(tmp_path)
+    csv_data = "account,ticker,shares,average_cost,type\nTFSA,XEQT.TO,100,30.00,etf\n"
+    res1 = api1.post(
+        "/api/portfolio/import",
+        json={"csv": csv_data, "as_of": "2026-10-01", "reporting_currency": "CAD", "base_revision": None},
+    )
+    prop_id = res1.json()["proposal"]["id"]
+
+    # Confirm in session 1
+    conf_res1 = api1.post(f"/api/portfolio/proposals/{prop_id}/confirm")
+    assert conf_res1.status_code == 200
+    receipt1 = conf_res1.json()["receipt"]
+
+    # Verify committed state in session 1
+    curr1 = api1.get("/api/portfolio").json()
+    assert curr1["revision"] == 1
+
+    # Restart app with fresh client and fresh PortfolioStore pointing to same path
+    api2, store2 = client(tmp_path)
+    curr2 = api2.get("/api/portfolio").json()
+    assert curr2 is not None
+    assert curr2["revision"] == 1
+    assert curr2["portfolio"]["snapshot"]["reporting_currency"] == "CAD"
+    assert curr2["portfolio"]["average_costs"]["tfsa-xeqt-to"] == "30.00"
+
+    # Detail persists status applied and receipt
+    prop2_detail = api2.get(f"/api/portfolio/proposals/{prop_id}").json()
+    assert prop2_detail["status"] == "applied"
+    assert prop2_detail["receipt"]["proposal_id"] == prop_id
+    assert prop2_detail["receipt"]["new_revision"] == 1
+
+    # Retry confirm on restarted app returns original receipt
+    retry_conf = api2.post(f"/api/portfolio/proposals/{prop_id}/confirm")
+    assert retry_conf.status_code == 200
+    assert retry_conf.json()["receipt"] == receipt1
+    assert retry_conf.json()["portfolio"]["revision"] == 1
+
+
+def test_database_locking_failure_returns_503(tmp_path):
+    api, store = client(tmp_path)
+    csv_data = "account,ticker,shares,type\nTFSA,XEQT.TO,100,etf\n"
+    res = api.post(
+        "/api/portfolio/import",
+        json={"csv": csv_data, "as_of": "2026-10-01", "reporting_currency": "CAD", "base_revision": None},
+    )
+    prop_id = res.json()["proposal"]["id"]
+
+    import sqlite3
+    from unittest.mock import patch
+
+    with patch("sqlite3.connect", side_effect=sqlite3.OperationalError("database is locked")):
+        confirm_res = api.post(f"/api/portfolio/proposals/{prop_id}/confirm")
+        assert confirm_res.status_code == 503
+        assert "locked" in confirm_res.json()["detail"].lower() or "busy" in confirm_res.json()["detail"].lower()
+
+
+
+
+def test_concurrent_confirmations_separate_connections(tmp_path):
+    import concurrent.futures
+    api, store = client(tmp_path)
+    initial = sample_portfolio()
+    store.save(initial)  # revision 1
+
+    # Prepare proposal 1
+    mod1 = initial.model_copy(deep=True)
+    mod1.snapshot.positions.append(Position(id="p1", account_id="tfsa", kind="stock", currency="CAD", ticker="SHOP", listing="XTSE", shares=Decimal("1")))
+    res1 = api.put("/api/portfolio", json={"base_revision": 1, "portfolio": mod1.model_dump(mode="json")})
+    prop1_id = res1.json()["proposal"]["id"]
+
+    # Prepare proposal 2
+    mod2 = initial.model_copy(deep=True)
+    mod2.snapshot.positions.append(Position(id="p2", account_id="tfsa", kind="stock", currency="CAD", ticker="BMO", listing="XTSE", shares=Decimal("1")))
+    res2 = api.put("/api/portfolio", json={"base_revision": 1, "portfolio": mod2.model_dump(mode="json")})
+    prop2_id = res2.json()["proposal"]["id"]
+
+    # Two separate API clients pointing to the same database
+    c1, _ = client(tmp_path, store=store)
+    c2, _ = client(tmp_path, store=store)
+
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(lambda: c1.post(f"/api/portfolio/proposals/{prop1_id}/confirm").status_code)
+        f2 = executor.submit(lambda: c2.post(f"/api/portfolio/proposals/{prop2_id}/confirm").status_code)
+        results = [f1.result(), f2.result()]
+
+    # Exactly one must be 200, and the other 409
+    assert sorted(results) == [200, 409]
+    # Current revision must be 2
+    assert api.get("/api/portfolio").json()["revision"] == 2
+
