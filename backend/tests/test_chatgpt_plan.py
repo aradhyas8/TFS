@@ -129,7 +129,8 @@ def completed_event(output_items):
             {"type": "response.completed", "response": response}]
 
 
-def test_portfolio_review_through_chatgpt_plan_streams_the_same_strict_request(monkeypatch):
+@pytest.mark.parametrize("effort, synthesis", [("max", "high"), ("xhigh", "high"), ("high", "high"), ("low", "low"), (None, None)])
+def test_portfolio_review_through_chatgpt_plan_streams_the_same_strict_request(monkeypatch, effort, synthesis):
     import httpx
     from fastapi.testclient import TestClient
     from openai import AsyncOpenAI
@@ -157,8 +158,10 @@ def test_portfolio_review_through_chatgpt_plan_streams_the_same_strict_request(m
         return httpx.Response(200, text=sse(*completed_event(items)), headers={"content-type": "text/event-stream"})
 
     monkeypatch.setattr("analyst.providers.AsyncOpenAI", lambda **kwargs: AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(plan_route))))
-    settings = Settings("oauth-access", "gpt-6-luna", provider="chatgpt_plan")
+    settings = Settings("oauth-access", "gpt-6-luna", provider="chatgpt_plan", reasoning_effort=effort)
     response = TestClient(create_app(settings=settings, data=FakeDataProvider())).post("/api/analyze", json={"question": "How concentrated am I?", "portfolio": snapshot()})
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["preferred_action"] == recommendation()["preferred_action"]
     assert len(sent) == 2
+    assert sent[0]["reasoning"]["effort"] == "medium"
+    assert sent[-1]["reasoning"]["effort"] == synthesis

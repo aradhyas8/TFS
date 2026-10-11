@@ -45,7 +45,7 @@ def assessment():
         "evidence_ids": ["review-p1-filing", "review-p1-issuer"]}}
 
 
-def run_review(request=None, judgment=None, answer=None, research=None):
+def run_review(request=None, judgment=None, answer=None, research=None, answers=None, comparison_judgment=None, settings=None):
     request = request or review_request()
     # Whole-portfolio scope, with a US company alternative and actual cash/no action.
     comparison = {"scope_position_ids": [row["id"] for row in request["portfolio"]["positions"]],
@@ -57,8 +57,8 @@ def run_review(request=None, judgment=None, answer=None, research=None):
     model = ScriptedModel([
         ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
         ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(judgment or assessment()))]),
-        ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
-        ModelTurn(answer=final)])
+        ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(comparison_judgment or stock_comparison_judgments(bound)))]),
+        *[ModelTurn(answer=row) for row in (answers or [final])]], settings=settings)
     response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
         {"acme": CompanyResearch.model_validate(research or review_research_fixture())}))).post("/api/analyze", json=request)
     return response, model
@@ -794,3 +794,85 @@ def test_a_model_withheld_direction_with_valid_citations_is_not_reported_as_unci
     assert response.status_code == 200, response.text
     reason = response.json()["reunderwriting"]["assessments"][0]["change_reason"]
     assert "did not cite" not in reason and "cites available evidence" in reason
+
+
+
+@pytest.mark.parametrize("prose", [
+    "No comparison case establishes a preferred allocation or a probability-weighted outcome.",
+    "Account contribution room will depend on personal circumstances.",
+])
+def test_live_failure_wording_still_fails_closed_at_api(prose):
+    response, _ = run_review(answer={**review_answer(), "reason": prose})
+    assert response.status_code == 502
+    assert "recommendation" not in response.json()
+
+
+def test_live_review_execution_wording_still_fails_closed_at_api():
+    model = ScriptedModel([
+        ModelTurn(calls=[ToolCall("p", "review_portfolio", "{}")]),
+        ModelTurn(answer={**recommendation(), "reason": "Interim evidence does not settle long-run returns on invested capital."}),
+    ])
+    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
+        "/api/analyze", json={"question": "Review concentration.", "portfolio": snapshot()})
+    assert response.status_code == 502
+
+
+def test_final_prose_gets_one_correction_without_waiving_validation():
+    invalid = {**review_answer(), "reason": "A probability-weighted purchase of half the portfolio is preferred."}
+    corrected, _ = run_review(answers=[invalid, review_answer()])
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["recommendation"]["reason"] == review_answer()["reason"]
+    assert run_review(answers=[invalid, invalid])[0].status_code == 502
+
+
+def test_plan_rebalance_uses_medium_synthesis_after_complete_checked_cases():
+    from analyst.config import Settings
+    response, model = run_review(settings=Settings("test", "gpt-6-luna", reasoning_effort="max", provider="chatgpt_plan"))
+    assert response.status_code == 200, response.text
+    assert model.reasoning_efforts == ["medium", "none", "none", "medium"]
+    assert response.json()["reunderwriting"]["stocks"][0]["cases"][1]["terminal_price"] == "100"
+
+
+def test_unset_rules_review_completes_without_invented_targets_or_amount():
+    response, _ = run_review()
+    assert response.status_code == 200, response.text
+    assert response.json()["portfolio"]["baseline"] is None
+    assert response.json()["recommendation"]["amount"] is None
+
+
+def test_compact_constant_paths_match_explicit_five_year_cases():
+    compact = assessment()
+    for case in compact["judgments"]["cases"]:
+        for field, value in list(case.items()):
+            if isinstance(value, list) and len(value) == 5 and len(set(value)) == 1:
+                case[field] = value[0]
+    explicit, _ = run_review()
+    response, _ = run_review(judgment=compact)
+    assert response.status_code == 200, response.text
+    assert response.json()["reunderwriting"]["stocks"] == explicit.json()["reunderwriting"]["stocks"]
+
+
+@pytest.mark.parametrize("value", ["1.1", "unknown", "NaN", "Infinity", True])
+def test_compact_paths_do_not_waive_domain_validation(value):
+    invalid = assessment()
+    invalid["judgments"]["cases"][0]["payout"] = value
+    assert run_review_turns([invalid, invalid]).status_code == 502
+
+
+def test_comparison_references_reuse_calculated_cases_and_explicit_cash_paths():
+    request = review_request()
+    request["portfolio"]["positions"] = [p for p in request["portfolio"]["positions"] if p["id"] in {"p1", "c1"}]
+    request["comparison"] = {"scope_position_ids": ["p1", "c1"], "alternatives": [
+        {"id": "company-p1", "kind": "stock", "position_id": "p1"},
+        {"id": "cash", "kind": "cash", "position_id": "c1"},
+        {"id": "keep", "kind": "no_action", "position_id": None}]}
+    full = stock_comparison_judgments(request)
+    compact = {"alternatives": {row["alternative_id"]: {"cases": row["cases"]} if row["alternative_id"] == "cash" else True
+                                for row in full["alternatives"]}}
+    explicit, _ = run_review(request=request, comparison_judgment=full)
+    response, _ = run_review(request=request, comparison_judgment=compact)
+    assert response.status_code == 200, response.text
+    for left, right in zip(response.json()["comparison"]["alternatives"], explicit.json()["comparison"]["alternatives"]):
+        assert [case["terminal_value"] for case in left["cases"]] == [case["terminal_value"] for case in right["cases"]]
+    del compact["alternatives"]["cash"]
+    assert run_review(request=request, comparison_judgment=compact)[0].status_code == 502
