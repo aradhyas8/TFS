@@ -23,7 +23,6 @@ from analyst.schemas import (
 )
 
 
-
 def sample_portfolio() -> SavedPortfolio:
     return SavedPortfolio(
         snapshot=Snapshot(

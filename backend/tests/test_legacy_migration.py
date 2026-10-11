@@ -1,9 +1,8 @@
-import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+
 import pytest
-from pydantic import ValidationError
 
 from analyst.persistence import Database, LegacyMigrationError
 from analyst.schemas import (
@@ -11,7 +10,6 @@ from analyst.schemas import (
     BenchmarkSetting,
     PortfolioSettings,
     Position,
-    RevisionedPortfolio,
     SavedPortfolio,
     Snapshot,
     UnresolvedHolding,
@@ -120,6 +118,7 @@ def test_invalid_legacy_json_stops_initialization_with_error(tmp_path: Path):
 
 def test_api_get_returns_committed_revision_without_enrichment_or_writes(tmp_path: Path):
     from fastapi.testclient import TestClient
+
     from analyst.api import create_app
     from analyst.portfolio import PortfolioStore
 

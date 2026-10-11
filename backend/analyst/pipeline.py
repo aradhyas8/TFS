@@ -1500,9 +1500,9 @@ def sizing_withheld(stock: StockResult, current: PortfolioReview, proposals: lis
         reasons.append("No single-company cap is set, so no position size can be checked against your rules.")
     if checks is None or checks.settings.active_budget is None:
         reasons.append("No active-picks budget is set.")
-    if row is not None and row.quote_used is not None and row.quote_used.status != "verified":
+    if row is not None and row.quote_used is not None and str(row.quote_used.status) != "verified":
         reasons.append(f"The price is {row.quote_used.status} ({row.quote_used.source}, {row.quote_used.as_of}): usable for a valuation view, not for an exact trade size.")
-    if row is not None and row.fx_used is not None and row.fx_used.status != "verified":
+    if row is not None and row.fx_used is not None and str(row.fx_used.status) != "verified":
         reasons.append(f"{row.fx_used.from_currency}/{row.fx_used.to_currency} is {row.fx_used.status} ({row.fx_used.as_of}).")
     if not any(item.source == "user" and item.status == "within_limits" and any(trade.position_id == stock.position_id for trade in item.changes.trades) for item in proposals):
         reasons.append("No hypothetical trade in this stock was checked against your rules.")

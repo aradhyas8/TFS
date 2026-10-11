@@ -13,9 +13,19 @@ const rail = (page: Page) => page.getByRole("navigation", { name: "Portfolio and
 const details = (page: Page) => page.getByRole("complementary", { name: "Details" });
 
 async function importCsv(page: Page, csv: string, asOf = "2026-09-30") {
-  await page.getByLabel("Holdings as of", { exact: true }).first().fill(asOf);
-  await page.getByLabel("Reporting currency", { exact: true }).first().fill("USD");
+  const asOfInput = page.getByLabel("Holdings as of", { exact: true }).first();
+  if (await asOfInput.isVisible()) {
+    await asOfInput.fill(asOf);
+  }
+  const currInput = page.getByLabel("Reporting currency", { exact: true }).first();
+  if (await currInput.isVisible()) {
+    await currInput.fill("USD");
+  }
   await page.getByLabel("Load portfolio CSV").first().setInputFiles({ name: "holdings.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByTestId("confirm-proposal").click();
+  await expect(dialog).toHaveCount(0);
 }
 
 async function start(page: Page) {
@@ -23,6 +33,18 @@ async function start(page: Page) {
   await page.request.delete("/api/test/portfolio");
   await page.goto("/new-cash");
   await expect(page.getByRole("heading", { name: "Start with what you own." })).toBeVisible();
+}
+
+async function reviewAndConfirmRules(page: Page) {
+  const panel = details(page);
+  const reviewBtn = panel.getByTestId("review-changes");
+  if (await reviewBtn.isVisible()) {
+    await reviewBtn.click();
+    const dialog = page.getByRole("dialog", { name: "Review portfolio changes" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByTestId("confirm-proposal").click();
+    await expect(dialog).toHaveCount(0);
+  }
 }
 
 async function setRules(page: Page, fundType = true) {
@@ -52,6 +74,7 @@ async function setUp(page: Page, riskContext: string | null) {
   await expect(rail(page)).toContainText("BROAD");
   await expect(rail(page)).toContainText("Values and weights appear after the first analysis.");
   await setRules(page);
+  await reviewAndConfirmRules(page);
   await newCash(page, riskContext);
 }
 
@@ -129,18 +152,20 @@ test("portfolio: simple import asks only what's unknown, then holdings and rules
   await needs.getByRole("combobox", { name: "Exchange for BROAD" }).selectOption("XNYS");
   await needs.getByRole("button", { name: "Save BROAD" }).click();
   const preview = page.getByRole("dialog", { name: "Review portfolio changes" });
-  if (await preview.isVisible()) {
-    await preview.getByTestId("confirm-proposal").click();
-  }
+  await expect(preview).toBeVisible();
+  await preview.getByTestId("confirm-proposal").click();
+  await expect(preview).toHaveCount(0);
   await expect(needs).toHaveCount(0);
   await expect(rail(page)).not.toContainText("needs exchange");
 
   await expect(details(page)).toContainText("Average cost US$92.10");
   await details(page).getByRole("combobox", { name: "Fund type for BROAD" }).selectOption("diversified");
   await setRules(page, false);
+  await reviewAndConfirmRules(page);
   await expect.poll(async () => {
-    const saved = await (await page.request.get("/api/portfolio")).json();
-    return [saved.snapshot.positions[0].etf_role, saved.settings?.single_company_cap, saved.settings?.active_budget, saved.settings?.baseline];
+    const res = await (await page.request.get("/api/portfolio")).json();
+    const saved = res?.portfolio;
+    return [saved?.snapshot?.positions[0]?.etf_role, saved?.settings?.single_company_cap, saved?.settings?.active_budget, saved?.settings?.baseline];
   }).toEqual(["diversified", "0.15", "0.3", null]);
 
   await page.reload();
@@ -174,7 +199,8 @@ test("portfolio: importing again replaces the saved holdings and date and keeps 
   await importCsv(page, "account,ticker,shares,type\nBrokerage,BROAD,80,etf\n");
   await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
   await setRules(page, false);
-  await expect.poll(async () => (await (await page.request.get("/api/portfolio")).json()).settings?.single_company_cap).toBe("0.15");
+  await reviewAndConfirmRules(page);
+  await expect.poll(async () => (await (await page.request.get("/api/portfolio")).json())?.portfolio?.settings?.single_company_cap).toBe("0.15");
 
   await importCsv(page, "account,ticker,shares,type\nTFSA,XEQT.TO,120,etf\nTFSA,CASH,500,\n", "2026-10-05");
   await expect(page.getByTestId("portfolio-date")).toHaveText("As of Oct 5, 2026");
@@ -186,7 +212,8 @@ test("portfolio: importing again replaces the saved holdings and date and keeps 
   await expect(rail(page)).toContainText("XEQT");
   await expect(rail(page)).toContainText("Cash USD");
   await expect(rail(page)).toContainText("Rules · cap 15% · active 30%");
-  const saved = await (await page.request.get("/api/portfolio")).json();
+  const res = await (await page.request.get("/api/portfolio")).json();
+  const saved = res.portfolio;
   expect(saved.snapshot.accounts).toEqual([{ id: "tfsa", name: "TFSA" }]);
   expect(saved.unresolved).toEqual([]);
   expect(saved.average_costs).toEqual({});

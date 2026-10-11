@@ -1,19 +1,16 @@
 from datetime import UTC, datetime
 from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError
 
 from analyst.schemas import (
     Account,
-    ArtifactBasis,
-    ArtifactKind,
     ArtifactReference,
     DifferenceItem,
     PortfolioProposal,
     PreparationResult,
-    ProposalOrigin,
     ProposalReceipt,
-    ProposalStatus,
     RevisionedPortfolio,
     SavedPortfolio,
     Snapshot,

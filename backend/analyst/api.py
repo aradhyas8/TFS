@@ -1,9 +1,6 @@
 import csv
 import io
-import json
-import sqlite3
 from datetime import UTC, datetime
-
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -52,17 +49,16 @@ from .schemas import (
     AnalysisRequest,
     AnalysisResult,
     ArtifactReference,
+    CancelProposalResult,
     CandidateListing,
     CandidateRequest,
     CandidateResult,
     CandidateUnresolved,
-    CancelProposalResult,
     ConfirmActionRequest,
     ConfirmationResult,
     CreateArtifactRequest,
     CSVRequest,
     FinancialEvidence,
-    IdentifyHolding,
     IdentifyHoldingRequest,
     ImportPortfolioRequest,
     Mark,
@@ -75,13 +71,10 @@ from .schemas import (
     RevisionedPortfolio,
     SavedDecision,
     SaveDecisionRequest,
-    SavedPortfolio,
     Snapshot,
     UpdatePortfolioRequest,
 )
 from .sec_research import SecResearchProvider
-
-
 
 
 def create_app(
