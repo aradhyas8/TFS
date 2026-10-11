@@ -128,6 +128,10 @@ test("portfolio: simple import asks only what's unknown, then holdings and rules
   await expect(needs.getByRole("combobox", { name: "Type for BROAD" })).toHaveCount(0);
   await needs.getByRole("combobox", { name: "Exchange for BROAD" }).selectOption("XNYS");
   await needs.getByRole("button", { name: "Save BROAD" }).click();
+  const preview = page.getByRole("dialog", { name: "Review portfolio changes" });
+  if (await preview.isVisible()) {
+    await preview.getByTestId("confirm-proposal").click();
+  }
   await expect(needs).toHaveCount(0);
   await expect(rail(page)).not.toContainText("needs exchange");
 

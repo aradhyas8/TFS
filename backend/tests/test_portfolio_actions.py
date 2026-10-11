@@ -14,6 +14,7 @@ from analyst.schemas import (
     Account,
     BenchmarkSetting,
     FinancialEvidence,
+    Identity,
     PortfolioSettings,
     Position,
     SavedPortfolio,
@@ -649,4 +650,159 @@ def test_concurrent_confirmations_separate_connections(tmp_path):
     assert sorted(results) == [200, 409]
     # Current revision must be 2
     assert api.get("/api/portfolio").json()["revision"] == 2
+
+
+def test_complete_identity_resolution_and_confirmation(tmp_path):
+    now = datetime.now(UTC)
+    evidence = FinancialEvidence()
+    evidence.identities["bmo_ca"] = Identity(
+        status="verified",
+        ticker="BMO",
+        listing="XTSE",
+        currency="CAD",
+        kind="stock",
+        company_id="bmo",
+        company_name="Bank of Montreal",
+        source="Test reference",
+        as_of=date(2026, 10, 1),
+        captured_at=now,
+    )
+    api, store = client(tmp_path, reference=evidence)
+    unresolved_holding = UnresolvedHolding(
+        account_id="tfsa",
+        ticker="BMO",
+        shares=Decimal("50"),
+        currency="CAD",
+        average_cost=Decimal("125.50"),
+    )
+    initial = SavedPortfolio(
+        snapshot=Snapshot(
+            as_of=date(2026, 10, 1),
+            reporting_currency="CAD",
+            accounts=[Account(id="tfsa", name="TFSA")],
+            positions=[],
+            fx=[],
+        ),
+        unresolved=[unresolved_holding],
+        average_costs={},
+    )
+    store.save(initial)  # revision 1
+    assert api.get("/api/portfolio").json()["revision"] == 1
+
+    # Prepare identity correction with complete exchange & kind
+    res = api.post(
+        "/api/portfolio/identify",
+        json={"base_revision": 1, "account_id": "tfsa", "ticker": "BMO", "listing": "XTSE", "kind": "stock"},
+    )
+    assert res.status_code == 200, res.text
+    prop = res.json()["proposal"]
+    assert prop["origin"] == "identify"
+    assert prop["status"] == "pending"
+
+    # Verify detail has enriched position and empty unresolved
+    detail = api.get(f"/api/portfolio/proposals/{prop['id']}").json()
+    after = detail["after_portfolio"]
+    assert len(after["unresolved"]) == 0
+    assert len(after["snapshot"]["positions"]) == 1
+    pos = after["snapshot"]["positions"][0]
+    assert pos["ticker"] == "BMO"
+    assert pos["listing"] == "XTSE"
+    assert pos["company_name"] == "Bank of Montreal"
+    assert pos["company_id"] == "bmo"
+    assert pos["kind"] == "stock"
+    # Average cost is preserved in human records
+    assert after["average_costs"][pos["id"]] == "125.50"
+
+    # Confirm proposal
+    confirm_res = api.post(f"/api/portfolio/proposals/{prop['id']}/confirm")
+    assert confirm_res.status_code == 200, confirm_res.text
+    receipt = confirm_res.json()["receipt"]
+    assert receipt["previous_revision"] == 1
+    assert receipt["new_revision"] == 2
+
+    # Verify committed portfolio
+    committed_data = api.get("/api/portfolio").json()
+    assert committed_data["revision"] == 2
+    committed = committed_data["portfolio"]
+    assert len(committed["unresolved"]) == 0
+    assert len(committed["snapshot"]["positions"]) == 1
+    committed_pos = committed["snapshot"]["positions"][0]
+    assert committed_pos["ticker"] == "BMO"
+    assert committed["average_costs"][committed_pos["id"]] == "125.50"
+
+
+def test_decision_journal_confirmation_leaves_portfolio_revision_unchanged(tmp_path):
+    api, store = client(tmp_path)
+    initial = sample_portfolio()
+    store.save(initial)  # revision 1
+    assert api.get("/api/portfolio").json()["revision"] == 1
+
+    # Save a decision in the decision journal
+    decision_payload = {
+        "id": "dec-01",
+        "saved_at": "2026-10-01T12:00:00Z",
+        "as_of": "2026-10-01",
+        "question": "What is my exposure?",
+        "evidence_references": [],
+        "reasoning": {
+            "reason": "Test reasoning",
+            "assumptions": [],
+            "uncertainty": [],
+            "what_could_change": [],
+            "downside": "Limited downside",
+            "alternatives": [],
+        },
+        "conclusion": {"preferred_action": "no_action", "amount": None},
+        "confirmed_action": None,
+    }
+    save_res = api.post("/api/decisions", json={"decision": decision_payload})
+    assert save_res.status_code == 200
+
+    # Confirm action on the decision
+    confirm_decision_res = api.post(
+        "/api/decisions/dec-01/confirm",
+        json={"action": "no_action", "notes": "Confirmed by user"},
+    )
+    assert confirm_decision_res.status_code == 200
+    assert confirm_decision_res.json()["confirmed_action"]["action"] == "no_action"
+
+    # Crucial check: portfolio revision must REMAIN 1 and unchanged!
+    portfolio_res = api.get("/api/portfolio").json()
+    assert portfolio_res["revision"] == 1
+    assert portfolio_res["portfolio"]["snapshot"]["positions"][0]["ticker"] == "XEQT"
+
+
+def test_pending_proposals_listing_and_stale_recovery(tmp_path):
+    api, store = client(tmp_path)
+    initial = sample_portfolio()
+    store.save(initial)  # revision 1
+
+    # Prepare proposal 1 against revision 1
+    mod1 = initial.model_copy(deep=True)
+    mod1.snapshot.positions.append(Position(id="p1", account_id="tfsa", kind="stock", currency="CAD", ticker="SHOP", listing="XTSE", shares=Decimal("10")))
+    res1 = api.put("/api/portfolio", json={"base_revision": 1, "portfolio": mod1.model_dump(mode="json")})
+    prop1_id = res1.json()["proposal"]["id"]
+
+    # List pending proposals
+    pending = api.get("/api/portfolio/proposals?status=pending").json()
+    assert any(p["id"] == prop1_id for p in pending)
+
+    # Now confirm an independent change, advancing current revision to 2
+    mod2 = initial.model_copy(deep=True)
+    mod2.snapshot.positions.append(Position(id="p2", account_id="tfsa", kind="stock", currency="CAD", ticker="RY", listing="XTSE", shares=Decimal("5")))
+    res2 = api.put("/api/portfolio", json={"base_revision": 1, "portfolio": mod2.model_dump(mode="json")})
+    prop2_id = res2.json()["proposal"]["id"]
+    conf2 = api.post(f"/api/portfolio/proposals/{prop2_id}/confirm")
+    assert conf2.status_code == 200
+    assert api.get("/api/portfolio").json()["revision"] == 2
+
+    # Proposal 1 was on base_revision 1, so it should now be stale
+    prop1_detail = api.get(f"/api/portfolio/proposals/{prop1_id}").json()
+    assert prop1_detail["status"] == "stale"
+
+    # Confirming a stale proposal returns 409
+    conf1 = api.post(f"/api/portfolio/proposals/{prop1_id}/confirm")
+    assert conf1.status_code == 409
+    assert "stale" in conf1.json()["detail"].lower()
+
 

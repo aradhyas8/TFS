@@ -502,5 +502,8 @@ export async function getProposalDetail(proposalId: string): Promise<PortfolioPr
   return get<PortfolioProposalDetail>(`/api/portfolio/proposals/${proposalId}`);
 }
 
-
-
+export async function prepareIdentifyHolding(
+  request: IdentifyHoldingRequest
+): Promise<PreparationResult> {
+  return post<PreparationResult>("/api/portfolio/identify", request);
+}
