@@ -11,6 +11,7 @@ from typing import Any, Generator, Literal
 
 from .schemas import (
     ArtifactReference,
+    RevisionedPortfolio,
     SavedPortfolio,
     build_artifact_payload,
 )
@@ -20,6 +21,11 @@ SCHEMA_VERSION = 1
 
 class SchemaMigrationError(RuntimeError):
     """Raised when database schema version is incompatible."""
+
+
+class LegacyMigrationError(RuntimeError):
+    """Raised when legacy JSON portfolio cannot be parsed or validated."""
+
 
 
 def default_database_path() -> Path:
@@ -246,3 +252,113 @@ class Database:
                 source_artifact_id=row["source_artifact_id"],
                 originating_run_id=row["originating_run_id"],
             )
+
+    def is_legacy_migration_complete(self) -> bool:
+        """Check if legacy migration has already run."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "SELECT value FROM metadata WHERE key = 'legacy_migration';"
+            )
+            return cursor.fetchone() is not None
+
+    def migrate_legacy_portfolio(self, legacy_json_path: Path | str | None) -> None:
+        """Import legacy current.json into revision 1 without enrichment, atomically."""
+        path = Path(legacy_json_path) if legacy_json_path else None
+        with self.connect() as conn:
+            # Check if migration has already been recorded
+            cursor = conn.execute(
+                "SELECT value FROM metadata WHERE key = 'legacy_migration';"
+            )
+            if cursor.fetchone() is not None:
+                return
+
+            now_iso = datetime.now(UTC).isoformat()
+            if path is None or not path.exists():
+                conn.execute(
+                    "INSERT INTO metadata (key, value, updated_at) VALUES ('legacy_migration', 'no_legacy_data', ?);",
+                    (now_iso,),
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO portfolio_current (id, current_revision, updated_at) VALUES (1, NULL, ?);",
+                    (now_iso,),
+                )
+                return
+
+            try:
+                content = path.read_text(encoding="utf-8")
+                portfolio = SavedPortfolio.model_validate_json(content)
+            except Exception as exc:
+                raise LegacyMigrationError(f"Failed to migrate legacy portfolio JSON: {exc}") from exc
+
+            payload_json = json.dumps(portfolio.model_dump(mode="python"), cls=DecimalEncoder)
+            committed_at = (portfolio.saved_at or datetime.now(UTC)).isoformat()
+
+            conn.execute(
+                "INSERT INTO portfolio_revisions (revision, committed_at, payload) VALUES (1, ?, ?);",
+                (committed_at, payload_json),
+            )
+            conn.execute(
+                """
+                INSERT INTO portfolio_current (id, current_revision, updated_at)
+                VALUES (1, 1, ?)
+                ON CONFLICT(id) DO UPDATE SET current_revision = 1, updated_at = excluded.updated_at;
+                """,
+                (now_iso,),
+            )
+            conn.execute(
+                "INSERT INTO metadata (key, value, updated_at) VALUES ('legacy_migration', 'completed', ?);",
+                (now_iso,),
+            )
+
+    def get_current_portfolio(self) -> RevisionedPortfolio | None:
+        """Get the current committed portfolio with its revision without enrichment or writes."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT r.revision, r.committed_at, r.payload
+                FROM portfolio_current c
+                JOIN portfolio_revisions r ON c.current_revision = r.revision
+                WHERE c.id = 1;
+                """
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            data = json.loads(row["payload"])
+            portfolio = SavedPortfolio.model_validate(data)
+            return RevisionedPortfolio(
+                revision=row["revision"],
+                portfolio=portfolio,
+                committed_at=datetime.fromisoformat(row["committed_at"]),
+            )
+
+    def save_revision(self, portfolio: SavedPortfolio) -> RevisionedPortfolio:
+        """Save a new committed revision and advance the current pointer atomically."""
+        now = datetime.now(UTC)
+        committed_at_iso = now.isoformat()
+        portfolio_with_saved_at = portfolio.model_copy(update={"saved_at": now})
+        payload_json = json.dumps(portfolio_with_saved_at.model_dump(mode="python"), cls=DecimalEncoder)
+
+        with self.connect() as conn:
+            cursor = conn.execute("SELECT MAX(revision) FROM portfolio_revisions;")
+            row = cursor.fetchone()
+            next_rev = 1 if (not row or row[0] is None) else (row[0] + 1)
+
+            conn.execute(
+                "INSERT INTO portfolio_revisions (revision, committed_at, payload) VALUES (?, ?, ?);",
+                (next_rev, committed_at_iso, payload_json),
+            )
+            conn.execute(
+                """
+                INSERT INTO portfolio_current (id, current_revision, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET current_revision = excluded.current_revision, updated_at = excluded.updated_at;
+                """,
+                (next_rev, committed_at_iso),
+            )
+            return RevisionedPortfolio(
+                revision=next_rev,
+                portfolio=portfolio_with_saved_at,
+                committed_at=now,
+            )
+

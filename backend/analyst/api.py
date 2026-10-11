@@ -48,6 +48,7 @@ from .schemas import (
     Mark,
     Position,
     RefreshPrices,
+    RevisionedPortfolio,
     SavedDecision,
     SaveDecisionRequest,
     SavedPortfolio,
@@ -118,14 +119,10 @@ def create_app(
             headers={"Content-Disposition": 'attachment; filename="holdings-template.csv"'},
         )
 
-    @app.get("/api/portfolio", response_model=SavedPortfolio | None)
-    async def current_portfolio() -> SavedPortfolio | None:
-        # A portfolio saved before the resolver improved is upgraded in place; holdings, costs and rules are untouched.
-        current = portfolios.get()
-        if current is None:
-            return None
-        upgraded = await enrich(current, market_data())
-        return portfolios.save(upgraded) if upgraded != current else current
+    @app.get("/api/portfolio", response_model=RevisionedPortfolio | None)
+    def current_portfolio() -> RevisionedPortfolio | None:
+        return portfolios.get_revisioned()
+
 
     @app.post("/api/portfolio/import", response_model=SavedPortfolio)
     async def import_portfolio(request: CSVRequest) -> SavedPortfolio:

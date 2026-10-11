@@ -205,23 +205,33 @@ async def enrich(saved: SavedPortfolio, provider: Any) -> SavedPortfolio:
     return saved.model_copy(update={"snapshot": snapshot, "average_costs": costs, "unresolved": unresolved})
 
 
-class PortfolioStore:
-    """One current portfolio in a local JSON file, like the decision store."""
+from .persistence import Database
+from .schemas import RevisionedPortfolio
 
-    def __init__(self, directory: Path | str | None = None) -> None:
+
+class PortfolioStore:
+    """Revisioned portfolio storage backed by SQLite with safe legacy JSON migration."""
+
+    def __init__(self, directory: Path | str | None = None, database_path: Path | str | None = None) -> None:
         self.directory = Path(directory or os.environ.get("PORTFOLIO_DIR") or Path(__file__).resolve().parents[1] / "data" / "portfolio")
         self.path = self.directory / "current.json"
+        db_file = Path(database_path) if database_path else self.directory / "portfolio.db"
+        self.db = Database(db_file)
+        self.db.initialize()
+        self.db.migrate_legacy_portfolio(self.path)
+
+    def get_revisioned(self) -> RevisionedPortfolio | None:
+        """Get the current committed portfolio with revision."""
+        return self.db.get_current_portfolio()
 
     def get(self) -> SavedPortfolio | None:
-        if not self.path.exists():
-            return None
-        return SavedPortfolio.model_validate_json(self.path.read_text(encoding="utf-8"))
+        """Get current domain portfolio (backward compatible with internal callers)."""
+        rev = self.get_revisioned()
+        return rev.portfolio if rev else None
 
     def save(self, record: SavedPortfolio) -> SavedPortfolio:
-        record = SavedPortfolio.model_validate({**record.model_dump(), "saved_at": datetime.now(UTC)})
-        self.directory.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(record.model_dump_json(indent=2), encoding="utf-8")
-        temporary.replace(self.path)
-        return record
+        """Save a new committed revision (bridges mutations until ticket 03/04 converts them)."""
+        revisioned = self.db.save_revision(record)
+        return revisioned.portfolio
+
 

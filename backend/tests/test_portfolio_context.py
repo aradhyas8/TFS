@@ -90,9 +90,10 @@ def test_rules_persist_with_the_portfolio_and_survive_replacing_holdings(tmp_pat
              "indirect_cap_policy": "include_known_indirect", "cash_is_deliberate_tilt": None}
     assert api.put("/api/portfolio", json=saved | {"settings": rules}).status_code == 200
     restored = client(tmp_path).get("/api/portfolio").json()
-    assert restored["settings"] == rules  # unknown stays unknown: no defaults filled in
+    assert restored["revision"] == 2
+    assert restored["portfolio"]["settings"] == rules  # unknown stays unknown: no defaults filled in
     imported(api, "account,ticker,shares\nMargin,CASH,500\n", as_of="2026-10-05")
-    assert client(tmp_path).get("/api/portfolio").json()["settings"] == rules
+    assert client(tmp_path).get("/api/portfolio").json()["portfolio"]["settings"] == rules
 
 
 def test_portfolio_persists_and_replaces(tmp_path):
@@ -100,9 +101,9 @@ def test_portfolio_persists_and_replaces(tmp_path):
     assert api.get("/api/portfolio").json() is None
     imported(api)
     restarted = client(tmp_path)  # a new app process reads the same file
-    assert len(restarted.get("/api/portfolio").json()["unresolved"]) == 2
+    assert len(restarted.get("/api/portfolio").json()["portfolio"]["unresolved"]) == 2
     imported(restarted, "account,ticker,shares,type\nCash account,CASH,500,\nMargin,MSFT,2,stock\n", as_of="2026-10-05")
-    saved = restarted.get("/api/portfolio").json()
+    saved = restarted.get("/api/portfolio").json()["portfolio"]
     assert saved["snapshot"]["as_of"] == "2026-10-05"
     assert {row["id"] for row in saved["snapshot"]["positions"]} == {"cash-account-cash-cad"}
     assert [row["ticker"] for row in saved["unresolved"]] == ["MSFT"]
@@ -110,7 +111,7 @@ def test_portfolio_persists_and_replaces(tmp_path):
     edited = saved | {"snapshot": saved["snapshot"] | {"positions": saved["snapshot"]["positions"] + [
         {"id": "margin-xeqt", "account_id": "margin", "kind": "etf", "currency": "CAD", "ticker": "XEQT", "listing": "XTSE", "shares": "3", "etf_role": "diversified"}]}}
     assert restarted.put("/api/portfolio", json=edited).status_code == 200
-    assert next(row for row in client(tmp_path).get("/api/portfolio").json()["snapshot"]["positions"] if row["id"] == "margin-xeqt")["etf_role"] == "diversified"
+    assert next(row for row in client(tmp_path).get("/api/portfolio").json()["portfolio"]["snapshot"]["positions"] if row["id"] == "margin-xeqt")["etf_role"] == "diversified"
 
 
 def test_rich_template_csv_still_imports(tmp_path):
@@ -165,17 +166,17 @@ def test_new_cash_analysis_does_not_alter_the_saved_portfolio(tmp_path):
     store = PortfolioStore(tmp_path)
     request = no_cash_request()
     saved = store.save(SavedPortfolio(snapshot=Snapshot.model_validate(request["portfolio"])))
-    before = store.path.read_bytes()
+    before = store.get_revisioned()
     model = ScriptedModel([ModelTurn(calls=[ToolCall(k, n, json.dumps(a))]) for k, n, a in [
         ("review", "review_portfolio", {}), ("scan", "scan_opportunities", {}),
         ("comparison", "calculate_comparison", comparison_judgments()),
         ("sizing", "size_allocation", {"position_id": "fund", "min_weight": "0.6", "max_weight": "0.7", "reason": "Diversification."})]]
         + [ModelTurn(answer=allocation_answer())])
     api = TestClient(create_app(model=model, data=FakeDataProvider(), financial=FakeFinancialProvider(allocation_evidence()), portfolio_store=store))
-    request["portfolio"] = api.get("/api/portfolio").json()["snapshot"]
+    request["portfolio"] = api.get("/api/portfolio").json()["portfolio"]["snapshot"]
     assert api.post("/api/analyze", json=request).status_code == 200
-    assert store.path.read_bytes() == before
-    assert all(row["id"] != NEW_CASH_DESTINATION for row in api.get("/api/portfolio").json()["snapshot"]["positions"])
+    assert store.get_revisioned() == before
+    assert all(row["id"] != NEW_CASH_DESTINATION for row in api.get("/api/portfolio").json()["portfolio"]["snapshot"]["positions"])
     assert saved.saved_at
 
 
@@ -197,20 +198,20 @@ def test_benchmark_field_persists_in_saved_portfolio_outside_settings(tmp_path):
 
     # Persists across process restart (save/load)
     restarted = client(tmp_path)
-    loaded = restarted.get("/api/portfolio").json()
+    loaded = restarted.get("/api/portfolio").json()["portfolio"]
     assert loaded["benchmark"] == benchmark
     assert loaded["settings"] is None
 
     # Re-importing CSV preserves benchmark
     imported(api, "account,ticker,shares\nMargin,CASH,500\n", as_of="2026-10-05")
-    reloaded = client(tmp_path).get("/api/portfolio").json()
+    reloaded = client(tmp_path).get("/api/portfolio").json()["portfolio"]
     assert reloaded["benchmark"] == benchmark
 
     # Clearing benchmark persists
     cleared = api.put("/api/portfolio", json=reloaded | {"benchmark": None})
     assert cleared.status_code == 200
     assert cleared.json()["benchmark"] is None
-    assert client(tmp_path).get("/api/portfolio").json()["benchmark"] is None
+    assert client(tmp_path).get("/api/portfolio").json()["portfolio"]["benchmark"] is None
 
 
 def test_market_refresh_includes_saved_benchmark(tmp_path):
@@ -240,7 +241,7 @@ def test_market_refresh_includes_saved_benchmark(tmp_path):
     store = PortfolioStore(tmp_path / "portfolio")
     api = TestClient(create_app(financial=provider, portfolio_store=store))
     imported(api)
-    saved = api.get("/api/portfolio").json()
+    saved = api.get("/api/portfolio").json()["portfolio"]
     api.put(
         "/api/portfolio",
         json=saved
@@ -258,4 +259,5 @@ def test_market_refresh_includes_saved_benchmark(tmp_path):
     assert BENCHMARK_FUND in refreshed["quotes"]
     assert refreshed["quotes"][BENCHMARK_FUND]["value"] == "500"
     assert refreshed["quotes"][BENCHMARK_FUND]["currency"] == "USD"
+
 
