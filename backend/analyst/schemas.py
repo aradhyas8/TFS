@@ -1008,6 +1008,7 @@ class DatedFinancialData(Contract):
     capability: Literal["get_financial_data"] = "get_financial_data"
     as_of: date
     result: FinancialEvidence
+    qualifications: list[str]
 
 
 class QuoteRefreshResult(Contract):

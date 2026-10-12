@@ -324,3 +324,38 @@ def test_incomplete_or_conflicting_candidate_identity_is_not_guessed(tmp_path, f
                                   {"ticker": "ACME", "listing": "XTSE", "account_id": None}, UnknownCandidate())
     assert run["status"] == "completed"
     assert artifacts[0]["payload"]["clarification_required"]["code"] == "unresolved_identity"
+
+
+def test_candidate_etf_role_stays_unknown_without_sponsor_classification(tmp_path):
+    facts = evidence()
+    facts.identities["stock"].kind = "etf"
+    run, artifacts, _ = tool_run(tmp_path, "resolve_candidate",
+                                  {"ticker": "ACME", "listing": "XTSE", "account_id": None}, FakeFinancialProvider(facts))
+    assert run["status"] == "completed"
+    result = artifacts[0]["payload"]["result"]
+    assert result["is_fund"] and result["position"]["etf_role"] is None
+
+
+def test_direct_historical_evidence_qualifies_unusable_dated_fx(tmp_path):
+    facts, saved = evidence(), portfolio()
+    saved.snapshot.reporting_currency = "USD"
+    facts = FinancialEvidence.model_validate({**facts.model_dump(mode="json"), "fx": [{
+        "from_currency": "CAD", "to_currency": "USD", "rate": "0.7",
+        "as_of": datetime.now(MARKET_TIME).date().isoformat(), "source": "Fixture", "status": "manual",
+    }]})
+    run, artifacts, _ = tool_run(tmp_path, "get_financial_data", {
+        "position_ids": ["stock"], "as_of": saved.snapshot.as_of.isoformat(),
+    }, FakeFinancialProvider(facts), saved)
+    assert run["status"] == "completed"
+    assert "could not be converted: no usable FX rate" in str(artifacts[0]["payload"]["qualifications"])
+
+
+@pytest.mark.parametrize("name,args", [("review_portfolio", {}), ("check_proposed_changes", {"trades": [
+    {"position_id": "stock", "shares_change": "1", "cash_position_id": "cash"},
+]})])
+def test_unresolved_saved_holdings_prevent_complete_portfolio_claims(tmp_path, name, args):
+    saved = portfolio().model_dump(mode="json")
+    saved["unresolved"] = [{"account_id": "tfsa", "ticker": "UNKNOWN", "shares": "10000"}]
+    run, artifacts, _ = tool_run(tmp_path, name, args, saved=SavedPortfolio.model_validate(saved))
+    assert run["status"] == "completed"
+    assert artifacts[0]["payload"]["clarification_required"]["code"] == "unresolved_identity"

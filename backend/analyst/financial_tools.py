@@ -134,6 +134,8 @@ class FinancialTools:
     async def review(self, context: RunContext, parsed: ReadArguments) -> dict[str, Any]:
         if context.portfolio is None:
             return self.clarification(context, "portfolio_required", "Save a portfolio before calculating its exposure.")
+        if context.portfolio.unresolved:
+            return self.clarification(context, "unresolved_identity", "Identify all saved unresolved holdings before calculating complete portfolio exposure and guardrails.")
         snapshot = self.snapshot(context)
         evidence = await refresh_financial_data(snapshot, self.provider)
         assert context.portfolio is not None
@@ -154,7 +156,8 @@ class FinancialTools:
                 return self.clarification(context, "unavailable", "Future dated financial inputs are unavailable.")
             snapshot.as_of = parsed.as_of
         result = await refresh_financial_data(snapshot, self.provider)
-        return self.store(context, DatedFinancialData(as_of=snapshot.as_of, result=result),
+        qualifications = review_portfolio(snapshot, result, holdings_as_of=context.portfolio.snapshot.as_of).qualifications
+        return self.store(context, DatedFinancialData(as_of=snapshot.as_of, result=result, qualifications=qualifications),
                           "financial_evidence", "Dated financial evidence",
                           "hypothetical" if any(id in self.candidates for id in parsed.position_ids) else "committed")
 
@@ -178,7 +181,8 @@ class FinancialTools:
         except SOURCE_ERRORS:
             return self.clarification(context, "unavailable", "Candidate lookup failed; the identity remains unknown.")
         matches = [row for row in matches if row.ticker == ticker and (listing is None or row.listing == listing)]
-        matches = list({(row.listing, row.currency, row.kind, row.company_id): row for row in matches}.values())
+        matches = list({(row.listing, row.currency, row.kind, row.company_id, row.company_name, row.status): row
+                        for row in matches}.values())
         if len(matches) != 1:
             result = CandidateResult(unresolved=CandidateUnresolved(
                 reason="multiple" if matches else "not_found",
@@ -193,8 +197,7 @@ class FinancialTools:
                 return self.clarification(context, "unresolved_identity", "Candidate identity, listing, type or currency is unresolved.")
             position = Position(id=f"candidate-{uuid4().hex}", account_id=account, kind=row.kind,
                                 ticker=ticker, listing=row.listing, currency=row.currency,
-                                company_id=row.company_id, company_name=row.company_name, shares=Decimal(0),
-                                etf_role="diversified" if row.kind == "etf" else None)
+                                company_id=row.company_id, company_name=row.company_name, shares=Decimal(0))
             self.candidates[position.id] = position
             result = CandidateResult(position=position, is_fund=row.kind == "etf")
         return self.store(context, CandidateResolution(result=result), "financial_evidence", "Candidate identity", "hypothetical")
@@ -216,6 +219,8 @@ class FinancialTools:
     async def preview(self, context: RunContext, parsed: ChangeArguments) -> dict[str, Any]:
         if context.portfolio is None:
             return self.clarification(context, "portfolio_required", "Save a portfolio before checking funded changes.")
+        if context.portfolio.unresolved:
+            return self.clarification(context, "unresolved_identity", "Identify all saved unresolved holdings before checking portfolio changes.")
         changes = ProposedChanges(new_cash=[], trades=parsed.trades)
         ids = list(dict.fromkeys([id for trade in changes.trades for id in (trade.position_id, trade.cash_position_id)]))
         if self.select(context, ids) is None:
