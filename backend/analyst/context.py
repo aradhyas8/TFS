@@ -82,6 +82,7 @@ class RunContext:
                           if p.base_revision == run.bound_revision and p.created_at <= run.created_at}
         self.known_proposals = dict(self.proposals)
         self.artifact_ids: set[str] = set()
+        self._hypothetical_runs: dict[str, bool] = {}
         if run.bound_revision:
             self.artifact_ids.add(f"art-rev-{run.bound_revision}")
         if run.hypothetical_artifact_id:
@@ -105,6 +106,7 @@ class RunContext:
             content = self.message_content(message)
             if len(content) > CHARACTER_LIMIT:
                 content = json.dumps(model_safe({"message_id": message.id, "artifact_ids": message.artifact_ids,
+                                      **({"basis": "hypothetical"} if self.from_hypothetical_run(message) else {}),
                                       "completed_tools": [t.model_dump(mode="json") for t in message.tool_outcomes],
                                       "omitted": "Message exceeds context budget."}))
             if len(content) > budget:
@@ -125,9 +127,20 @@ class RunContext:
             budget -= len(content)
         return list(reversed(selected))
 
+    def from_hypothetical_run(self, message: MessageRecord) -> bool:
+        """Whether an earlier message came from a run that analyzed a draft, not the saved holdings."""
+        if message.run_id is None:
+            return False
+        if message.run_id not in self._hypothetical_runs:
+            run = self.db.get_run(message.thread_id, message.run_id)
+            self._hypothetical_runs[message.run_id] = bool(run and run.hypothetical_artifact_id)
+        return self._hypothetical_runs[message.run_id]
+
     def message_content(self, message: MessageRecord) -> str:
         return json.dumps(model_safe({
             "message_id": message.id, "text": message.text, "citations": message.citations,
+            # History from a hypothetical run stays labeled, so it is never read as saved-portfolio fact.
+            **({"basis": "hypothetical"} if self.from_hypothetical_run(message) else {}),
             "artifact_ids": message.artifact_ids, "proposal_ids": message.proposal_ids,
             "completed_tools": [t.model_dump(mode="json") for t in message.tool_outcomes],
         }), ensure_ascii=False)

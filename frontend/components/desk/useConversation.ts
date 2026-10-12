@@ -35,7 +35,8 @@ export function useConversation() {
   const [sendError, setSendError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
-  const [stopError, setStopError] = useState<string | null>(null);
+  // Kept with the run it was about, so it never shows on a later run.
+  const [stopError, setStopError] = useState<{ runId: string; message: string } | null>(null);
   // The open thread as asynchronous work sees it: a late response for a thread the user has left is dropped.
   const viewing = useRef<string | null>(null);
   // One delivery at a time. A second delivery of a message that has no thread yet would create a second
@@ -183,7 +184,7 @@ export function useConversation() {
       await load(running.thread_id, true);
       void refreshThreads();
     } catch (error) {
-      if (viewing.current === running.thread_id) setStopError(message(error));
+      if (viewing.current === running.thread_id) setStopError({ runId: running.id, message: message(error) });
     } finally {
       setStopping(false);
     }
@@ -230,7 +231,7 @@ export function useConversation() {
     busy: !!running || (!!pending && !sendError),
     running: !!running,
     stopping,
-    stopError: running ? stopError : null,
+    stopError: stopError && stopError.runId === running?.id ? stopError.message : null,
     stop,
     open,
     close,

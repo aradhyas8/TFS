@@ -87,7 +87,12 @@ test("a stop that cannot reach the backend says so, and the run is still stoppab
   await expect(thread(page).getByRole("alert").filter({ hasText: "This answer could not be stopped" })).toContainText("The analyst service is offline.");
   expect((await detail(page)).runs.map(run => run.status)).toEqual(["running"]);
 
+  // The failure belongs to that run: once it ends on its own, the next run does not inherit the error.
   await page.unroute("**/api/threads/*/runs/*/cancel");
+  await expect(thread(page)).toContainText("Plain answer to: Slow question about bonds", { timeout: 15_000 });
+  await send(page, "Slow follow-up about bonds");
+  await expect(thread(page).getByRole("button", { name: "Stop answer" })).toBeVisible();
+  await expect(thread(page).getByRole("alert")).toHaveCount(0);
   await thread(page).getByRole("button", { name: "Stop answer" }).click();
   await expect(thread(page).getByRole("status").filter({ hasText: "This answer was stopped" })).toBeVisible();
   await expect(thread(page).getByRole("alert")).toHaveCount(0);

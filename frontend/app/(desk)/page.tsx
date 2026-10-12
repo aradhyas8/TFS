@@ -54,10 +54,10 @@ import {
   type Tab,
 } from "../../components/desk/Memo";
 import { isConversation, route, type Route } from "../../components/desk/route";
-import { Checkbox } from "@/components/arc/checkbox/checkbox";
 import Thread, { type ClarificationForm } from "../../components/desk/Thread";
 import threadStyles from "../../components/desk/Thread.module.css";
 import { Button } from "@/components/arc/button/button";
+import { Checkbox } from "@/components/arc/checkbox/checkbox";
 import { useConversation } from "../../components/desk/useConversation";
 import { clock, fullDate, newCashLabel, pct, shortDate } from "../../components/desk/format";
 
@@ -464,6 +464,13 @@ export default function DeskPage() {
     settings: draftSettings,
     benchmark: draftBenchmark,
   });
+  // The draft is analyzed only when it was explicitly selected for the next question and still differs.
+  const askingDraft = useDraft && isDirty && !!draftSnapshot;
+  // The choice appears below the fold on a full screen; bring it into view when a draft edit first creates it.
+  const draftNote = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (isDirty) draftNote.current?.scrollIntoView({ block: "center" });
+  }, [isDirty]);
 
   async function refreshPrices(force: boolean) {
     setRefreshing(true);
@@ -721,6 +728,14 @@ export default function DeskPage() {
     }
   }
 
+  /** Stores a captured copy of the draft as an immutable hypothetical portfolio. Nothing is committed. */
+  const storeDraft = (portfolio: SavedPortfolio) =>
+    createArtifact({
+      portfolio,
+      label: "Hypothetical Draft Portfolio",
+      source_artifact_id: committedRevision ? `art-rev-${committedRevision}` : null,
+    });
+
   /** Explicit hypothetical analysis captures immutable draft state */
   async function analyzeHypotheticalDraft() {
     if (!draftSnapshot) return;
@@ -762,11 +777,7 @@ export default function DeskPage() {
         saved_at: null,
       };
 
-      const artifactRef = await createArtifact({
-        portfolio: candidatePortfolio,
-        label: "Hypothetical Draft Portfolio",
-        source_artifact_id: committedRevision ? `art-rev-${committedRevision}` : null,
-      });
+      const artifactRef = await storeDraft(candidatePortfolio);
 
       sent.artifactReference = artifactRef;
 
@@ -1017,7 +1028,7 @@ export default function DeskPage() {
    *  hypothetical portfolio and only that stored copy is analyzed: later edits never reach the run, and
    *  without the selection no draft state is sent at all. */
   async function sendToConversation(text: string, workflowInput?: Record<string, unknown>) {
-    if (!(useDraft && isDirty && draftSnapshot)) return void conversation.send(text, workflowInput);
+    if (!askingDraft) return void conversation.send(text, workflowInput);
     const portfolio: SavedPortfolio = structuredClone({
       snapshot: draftSnapshot,
       settings: storedSettings(draftSettings),
@@ -1028,11 +1039,7 @@ export default function DeskPage() {
     });
     setCapturing(true);
     try {
-      const captured = await createArtifact({
-        portfolio,
-        label: "Hypothetical Draft Portfolio",
-        source_artifact_id: committedRevision ? `art-rev-${committedRevision}` : null,
-      });
+      const captured = await storeDraft(portfolio);
       setUseDraft(false);
       void conversation.send(text, workflowInput, captured.id);
     } catch {
@@ -1045,7 +1052,7 @@ export default function DeskPage() {
 
   function ask(text: string) {
     // With the draft selected, any question that is not a slash shortcut goes to the conversation as a hypothetical.
-    if (useDraft && isDirty ? !text.trim().startsWith("/") : isConversation(text, committedSnapshot)) {
+    if (askingDraft ? !text.trim().startsWith("/") : isConversation(text, committedSnapshot)) {
       chat(text);
       return;
     }
@@ -1501,7 +1508,7 @@ export default function DeskPage() {
   const activeSnapshot = answer?.snapshot || committedSnapshot;
   // Shown wherever a question can be asked, so the draft is only ever analyzed by explicit choice.
   const draftBasis = isDirty && (
-    <div data-testid="draft-note" style={{ marginTop: 24, display: "flex", flexDirection: "column", gap: 8 }}>
+    <div ref={draftNote} data-testid="draft-note" className={threadStyles.draft}>
       <p className="cap">
         Answers use your saved portfolio. Unsaved draft edits are not included until you review and confirm them.
       </p>

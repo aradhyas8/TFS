@@ -338,3 +338,28 @@ def test_existing_runs_survive_the_upgrade_that_records_hypothetical_selection(t
     assert kept is not None and (kept.bound_revision, kept.hypothetical_artifact_id) == (1, None)
     with sqlite3.connect(tmp_path / "portfolio.backup.db") as backup:
         assert backup.execute("PRAGMA user_version;").fetchone()[0] == 2
+
+
+def test_later_ordinary_run_sees_earlier_hypothetical_messages_labeled(tmp_path):
+    client, model, _ = desk(tmp_path, [call(HOLDINGS), ModelTurn(text="Hypothetically, 99 shares."),
+                                       call(HOLDINGS, "again"), ModelTurn(text="You hold 10 shares.")])
+    with client:
+        thread = client.post("/api/threads").json()["id"]
+        ask(client, thread, "What if I held this?", hypothetical_artifact_id=capture(client))
+        run = ask(client, thread, "What do I hold?", "req-2")
+        assert (run["status"], run["hypothetical_artifact_id"]) == ("completed", None)
+        history = [json.loads(m["content"]) for m in model.requests[2]["messages"][2:]]
+        assert [m.get("basis") for m in history] == ["hypothetical", "hypothetical", "hypothetical", None]
+        held = tool_output(model, 3)
+        assert (held["revision"], shares(held["positions"])) == (1, 10)
+
+
+def test_hypothetical_run_keeps_saved_quantities_out_of_web_search_queries(tmp_path):
+    client, model, _ = desk(tmp_path, [call(("web_search", {"query": "Acme 800 outlook"})), ModelTurn(text="No search.")])
+    with client:
+        thread = client.post("/api/threads").json()["id"]
+        run = ask(client, thread, "Any news?", hypothetical_artifact_id=capture(client))
+        assert run["status"] == "completed"
+        # 800 is the saved cash balance; the draft holds 5. Neither may leave in a query.
+        assert tool_output(model, 1)["payload"]["reason"] == "rejected_query"
+        assert len(model.requests) == 2
