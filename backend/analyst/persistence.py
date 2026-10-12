@@ -845,6 +845,8 @@ class Database:
     ) -> tuple[RevisionedPortfolio, ProposalReceipt]:
         """Atomically commit a proposal, creating a new revision, receipt, updating current pointer, and marking competing proposals stale."""
         with self.connect() as conn:
+            # Reserve the writer before reading status or allocating the next revision.
+            conn.execute("BEGIN IMMEDIATE;")
             cursor = conn.execute(
                 """
                 SELECT p.id, p.base_revision, p.status, p.after_artifact_id,
