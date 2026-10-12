@@ -7,9 +7,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from openai import pydantic_function_tool
 from pydantic import BaseModel, ConfigDict, Field
 
 from .persistence import Database, DecimalEncoder
+from .providers import sanitize_schema
 from .schemas import Identifier, MessageRecord, RunRecord, build_artifact_payload, model_safe
 
 MESSAGE_LIMIT = 20
@@ -50,7 +52,8 @@ class ReadCapability:
 def read_tools(capabilities: dict[str, ReadCapability] | None = None) -> list[dict[str, Any]]:
     return [
         {"type": "function", "name": name, "description": capability.description,
-         "strict": True, "parameters": capability.arguments.model_json_schema()}
+         "strict": True, "parameters": sanitize_schema(
+             pydantic_function_tool(capability.arguments)["function"]["parameters"])}
         for name, capability in (capabilities if capabilities is not None else READ_CAPABILITIES).items()
     ]
 

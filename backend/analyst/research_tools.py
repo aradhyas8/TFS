@@ -23,6 +23,7 @@ from .schemas import (
     ComparisonResult,
     Contract,
     DiscoveryScan,
+    FinancialEvidence,
     Identifier,
     Position,
     StockResult,
@@ -56,6 +57,8 @@ class CaseArguments(ResearchArguments):
 class CompanyCalculation(Contract):
     capability: Literal["calculate_company_cases"] = "calculate_company_cases"
     result: StockResult
+    target: Position
+    financial_evidence: FinancialEvidence
 
 
 class ComparisonArguments(ReadArguments):
@@ -67,6 +70,8 @@ class ComparisonArguments(ReadArguments):
 class AlternativeCalculation(Contract):
     capability: Literal["calculate_comparison"] = "calculate_comparison"
     result: ComparisonResult
+    source_artifact_ids: list[Identifier]
+    financial_evidence: FinancialEvidence
 
 
 class OpportunityEvidence(Contract):
@@ -83,6 +88,7 @@ class ResearchTools:
         self.records: dict[str, CompanyResearch] = {}
         self.read: dict[str, set[str]] = {}
         self.stocks: dict[str, StockResult] = {}
+        self.stock_artifacts: dict[str, str] = {}
         self.workflow_input = workflow_input or {}
         self.discovery = discovery or ReviewedDiscoveryProvider()
         self.scan_result: DiscoveryScan | None = None
@@ -122,6 +128,12 @@ class ResearchTools:
             return None
         return target
 
+    def screened(self, target: Position) -> bool:
+        return self.scan_result is not None and any(
+            (row.position.ticker, row.position.listing, row.position.currency, row.position.company_id)
+            == (target.ticker, target.listing, target.currency, target.company_id)
+            for row in self.scan_result.candidates)
+
     async def primary(self, context: RunContext, parsed: ResearchArguments,
                       name: ResearchName) -> dict[str, Any]:
         target = self.target(context, parsed.position_id)
@@ -133,7 +145,7 @@ class ResearchTools:
             return self.financial.clarification(context, "unavailable", f"Use {expected} for this issuer jurisdiction.")
         as_of = context.run.created_at.astimezone(MARKET_TIME).date()
         if target.id not in self.records:
-            screened = self.scan_result is not None and any(row.position.id == target.id for row in self.scan_result.candidates)
+            screened = self.screened(target)
             if screened and len(self.screen_researched) >= 2:
                 return self.financial.clarification(context, "unavailable", "The screen's two-candidate primary research budget is exhausted.")
             if self._research is None:
@@ -184,9 +196,11 @@ class ResearchTools:
         evidence = await refresh_financial_data(snapshot, self.financial.provider)
         computed = review_portfolio(snapshot, evidence, holdings_as_of=context.portfolio.snapshot.as_of)
         result = calculate_company_cases(target.id, self.records[target.id], parsed.judgments, computed)
-        self.stocks[target.id] = result
-        return self.financial.store(context, CompanyCalculation(result=result), "calculation_result", "Conditional company cases",
+        envelope = self.financial.store(context, CompanyCalculation(result=result, target=target, financial_evidence=evidence), "calculation_result", "Conditional company cases",
             "hypothetical" if target.id in self.financial.candidates else "committed")
+        self.stocks[target.id] = result
+        self.stock_artifacts[target.id] = envelope["reference"]["id"]
+        return envelope
 
     async def compare(self, context: RunContext, parsed: ComparisonArguments) -> dict[str, Any]:
         if context.portfolio is None:
@@ -230,11 +244,14 @@ class ResearchTools:
         except InvalidReview:
             return {"error": "Comparison judgments contain unsupported claims or execution direction; supply explained conditional assumptions."}
         snapshot = self.financial.snapshot(context)
-        snapshot.positions.extend(self.financial.candidates[id] for id in ids if id in self.financial.candidates)
+        snapshot.positions = positions
         evidence = await refresh_financial_data(snapshot, self.financial.provider)
         computed = review_portfolio(snapshot, evidence, holdings_as_of=context.portfolio.snapshot.as_of)
         result = calculate_comparison(selection, parsed.judgments, computed, list(self.stocks.values()))
-        return self.financial.store(context, AlternativeCalculation(result=result), "calculation_result", "Conditional alternatives", "hypothetical")
+        return self.financial.store(context, AlternativeCalculation(
+            result=result, source_artifact_ids=[self.stock_artifacts[id] for id in sorted(stock_ids)],
+            financial_evidence=evidence,
+        ), "calculation_result", "Conditional alternatives", "hypothetical")
 
     async def scan(self, context: RunContext, parsed: ReadArguments) -> dict[str, Any]:
         if context.portfolio is None:
@@ -254,4 +271,6 @@ class ResearchTools:
                 return self.financial.clarification(context, "unresolved_identity", "Screen identities conflict with request-local candidates.")
             self.financial.candidates.update(additions)
             self.scan_result = result
+            self.screen_researched.update(id for id in self.records
+                if (target := self.target(context, id)) is not None and self.screened(target))
         return self.financial.store(context, OpportunityEvidence(result=self.scan_result), "financial_evidence", "Bounded opportunity screen", "hypothetical")

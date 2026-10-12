@@ -21,7 +21,7 @@ from tests.test_financial_tools import NoWorkflowData, evidence, portfolio
 from tests.test_stock import company_judgments, research_fixture
 
 
-def run_tools(tmp_path, calls, *, saved=True, record=None, discovery=None, canadian=False):
+def run_tools(tmp_path, calls, *, saved=True, record=None, discovery=None, canadian=False, model=None):
     store = PortfolioStore(database_path=tmp_path / "portfolio.db")
     holding = portfolio()
     holding.snapshot.positions[0].listing = "XNAS"
@@ -44,7 +44,7 @@ def run_tools(tmp_path, calls, *, saved=True, record=None, discovery=None, canad
         holding.snapshot.positions[1].currency = "CAD"
     if saved:
         store.save(holding)
-    model = CapturingTransport([
+    model = model or CapturingTransport([
         *[ModelTurn(calls=[ToolCall(str(i), name, json.dumps(args))]) for i, (name, args) in enumerate(calls)],
         ModelTurn(text="Done."),
     ])
@@ -79,6 +79,25 @@ def test_direct_primary_research_retains_sources_and_run_basis(tmp_path):
     assert research["documents"][0]["url"].startswith("https://www.sec.gov/")
     assert research["documents"][0]["published_on"] == "2026-02-01"
     assert "12.34" not in json.dumps(model.requests)
+
+
+def test_research_and_scenario_tool_schemas_are_strict_at_transport_boundary(tmp_path):
+    _, _, model = run_tools(tmp_path, [("get_sec_filings", {"position_id": "stock"})])
+
+    def check(schema):
+        if isinstance(schema, dict):
+            if schema.get("type") == "object":
+                assert set(schema["required"]) == set(schema["properties"])
+                assert schema["additionalProperties"] is False
+            assert "default" not in schema
+            for value in schema.values():
+                check(value)
+        elif isinstance(schema, list):
+            for value in schema:
+                check(value)
+
+    for tool in model.requests[0]["tools"]:
+        check(tool["parameters"])
 
 
 def test_direct_company_cases_use_reported_facts_and_real_calculations(tmp_path):
@@ -248,22 +267,67 @@ def test_unowned_primary_research_uses_temporary_identity_without_portfolio_muta
             assert current is None
 
 
+class ThreeCandidateScreen:
+    async def scan(self, snapshot):
+        stock = snapshot.positions[0]
+        return DiscoveryScan(scanned_at=datetime.now(UTC), as_of=snapshot.as_of, source="Reviewed fixture",
+            candidates=[DiscoveryCandidate(
+                position=stock.model_copy(update={"id": id, "shares": Decimal(0)}),
+                as_of=snapshot.as_of, source="Reviewed fixture", signal="Conditional operating review.",
+            ) for id in ("one", "two", "three")])
+
+
 def test_screen_research_stops_after_two_candidates(tmp_path):
-    class Screen:
-        async def scan(self, snapshot):
-            stock = snapshot.positions[0]
-            return DiscoveryScan(scanned_at=datetime.now(UTC), as_of=snapshot.as_of, source="Reviewed fixture",
-                candidates=[DiscoveryCandidate(
-                    position=stock.model_copy(update={"id": id, "shares": Decimal(0)}),
-                    as_of=snapshot.as_of, source="Reviewed fixture", signal="Conditional operating review.",
-                ) for id in ("one", "two", "three")])
     run, artifacts, _ = run_tools(tmp_path, [
         ("scan_opportunities", {}),
         *[("get_sec_filings", {"position_id": id}) for id in ("one", "two", "three")],
-    ], discovery=Screen())
+    ], discovery=ThreeCandidateScreen())
     assert run["status"] == "completed"
     assert len([a for a in artifacts if a["reference"]["kind"] == "company_research"]) == 2
     assert "budget" in artifacts[-1]["payload"]["clarification_required"]["message"]
+
+
+def test_resolving_a_screened_security_again_cannot_bypass_research_budget(tmp_path):
+    class Alias(CapturingTransport):
+        async def respond(self, messages, **kwargs):
+            self.requests.append({"messages": messages, **kwargs})
+            step = len(self.requests)
+            if step == 1:
+                name, args = "scan_opportunities", {}
+            elif step in {2, 3}:
+                name, args = "get_sec_filings", {"position_id": "one" if step == 2 else "two"}
+            elif step == 4:
+                name, args = "resolve_candidate", {"ticker": "ACME", "listing": "XNAS", "account_id": None}
+            elif step == 5:
+                position = json.loads(messages[-1]["output"])["payload"]["result"]["position"]
+                name, args = "get_sec_filings", {"position_id": position["id"]}
+            else:
+                return ModelTurn(text="Done.")
+            return ModelTurn(calls=[ToolCall(str(step), name, json.dumps(args))])
+    run, artifacts, _ = run_tools(tmp_path, [], discovery=ThreeCandidateScreen(), model=Alias([]))
+    assert run["status"] == "completed"
+    assert "budget" in artifacts[-1]["payload"]["clarification_required"]["message"]
+
+
+def test_stock_comparison_links_the_exact_company_case_artifact(tmp_path):
+    args = comparison_args()
+    args["alternatives"].insert(0, {"id": "company", "kind": "stock", "position_id": "stock"})
+    stock_driver = driver("stock", reinvest=False)
+    stock_driver.update(annual_returns=None, income_multipliers=None)
+    args["judgments"]["alternatives"].insert(0, {"alternative_id": "company", "cases": [
+        {"name": name, "drivers": [stock_driver], "assumptions": ["Conditional company cases apply."],
+         "downside": "Operating losses impair capital.", "uncertainty": ["Valuation may differ."]}
+        for name in ("downside", "base", "upside")]})
+    run, artifacts, _ = run_tools(tmp_path, [
+        ("get_sec_filings", {"position_id": "stock"}),
+        ("get_issuer_material", {"position_id": "stock"}),
+        ("calculate_company_cases", {"position_id": "stock", "judgments": company_judgments()}),
+        ("calculate_comparison", args),
+    ])
+    assert run["status"] == "completed"
+    assert artifacts[-1]["payload"]["source_artifact_ids"] == [artifacts[-2]["reference"]["id"]]
+    company = artifacts[-1]["payload"]["result"]["alternatives"][0]
+    assert company["cases"][1]["known_terminal_value"] == "4000"
 
 
 @pytest.mark.parametrize("fault", ["too_many", "old", "duplicate", "conflicting"])
