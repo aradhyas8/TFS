@@ -120,7 +120,7 @@ def create_app(
                 # API key/model not configured at creation time; will error if orchestrator is called
                 transport = None
         if transport is not None:
-            orch = Orchestrator(db=portfolios.db, transport=transport, settings=app_settings, financial=financial)
+            orch = Orchestrator(db=portfolios.db, transport=transport, settings=app_settings, financial=financial, research=research, discovery=discovery)
 
     app.state.portfolio_store = portfolios
     app.state.decision_store = decisions
@@ -132,7 +132,7 @@ def create_app(
             return orch
         from .providers import OpenAIResponseTransport
         transport = OpenAIResponseTransport(app_settings, allow_routed=True)
-        orch = Orchestrator(db=portfolios.db, transport=transport, settings=app_settings, financial=financial)
+        orch = Orchestrator(db=portfolios.db, transport=transport, settings=app_settings, financial=financial, research=research, discovery=discovery)
         app.state.orchestrator = orch
         return orch
 
