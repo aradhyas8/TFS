@@ -249,7 +249,7 @@ test("ordinary analysis uses committed state while draft differs", async ({ page
 
   // Run ordinary analysis from composer
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("Review my portfolio");
+  await ask.fill("/review Review my portfolio");
   await page.keyboard.press("Enter");
 
   // Wait for analyze request and verify it used the COMMITTED single company cap (0.5), not the draft (0.15)

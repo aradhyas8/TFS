@@ -1876,6 +1876,8 @@ class ThreadSummary(Contract):
     created_at: AwareDatetime
     updated_at: AwareDatetime
     last_message_preview: str | None = None
+    # The thread's first question; a thread is never titled from a cached answer or a decision.
+    title: str | None = None
 
 
 class RunRecord(Contract):

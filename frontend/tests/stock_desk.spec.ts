@@ -122,7 +122,7 @@ test("/stock with a ticker runs Stock Analysis", async ({ page }) => {
 
 test("clicking a holding in the rail offers its Stock Analysis", async ({ page }) => {
   const sent = await open(page);
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   await expect(rail.getByRole("button", { name: "Analyze BROAD" })).toHaveCount(0); // funds aren't single companies
   await rail.getByRole("button", { name: "Analyze ACME" }).click();
   await expect(ask(page)).toHaveValue("/stock ACME");
@@ -133,15 +133,15 @@ test("clicking a holding in the rail offers its Stock Analysis", async ({ page }
   expect(sent.map(body => body.stock?.position_id)).toEqual(["tfsa-acme"]);
 });
 
-test("review questions and /review still run a Portfolio Review", async ({ page }) => {
+test("/review, typed or chosen from the menu, still runs a Portfolio Review", async ({ page }) => {
   const sent = await open(page);
-  await send(page, "Review my portfolio");
+  await send(page, "/review Review my portfolio");
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo.getByRole("heading", { level: 2 })).toHaveText("Your portfolio breaks 2 of your rules.");
   await expect(page.locator(".ctx")).toContainText("Portfolio review");
   await ask(page).fill("/review");
   await ask(page).press("Enter");
-  await expect(ask(page)).toHaveValue("Review my portfolio");
+  await expect(ask(page)).toHaveValue("/review ");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   await expect(memo.getByRole("heading", { level: 2 })).toHaveText("Your portfolio breaks 2 of your rules.");
   expect(sent.map(body => [body.question, body.stock ?? null])).toEqual([["Review my portfolio", null], ["Review my portfolio", null]]);
@@ -194,7 +194,7 @@ test("an unowned stock candidate runs Stock Analysis with price source, no-cash 
   await expect(memo).toContainText("No cash to compare on. Use /new-cash with an amount to compare against the fund and cash.");
 
   // Rail excludes unowned candidate row
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   await expect(rail.locator(".holdings-mini")).not.toContainText("NVDA");
 
   // Holdings tab in details panel excludes unowned candidate row

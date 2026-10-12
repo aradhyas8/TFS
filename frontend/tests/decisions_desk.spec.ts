@@ -60,7 +60,7 @@ async function open(page: Page) {
   return sent;
 }
 
-const rail = (page: Page) => page.getByRole("navigation", { name: "Portfolio and decisions" });
+const rail = (page: Page) => page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
 const ask = (page: Page) => page.getByRole("textbox", { name: /type \/ for workflows/ });
 
 test.describe("Decisions workflow, re-run, and register", () => {
@@ -70,7 +70,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     const sent = await open(page);
 
     // 1. Run and save a Review decision
-    await ask(page).fill("Review my portfolio");
+    await ask(page).fill("/review Review my portfolio");
     await page.getByRole("button", { name: "Ask", exact: true }).click();
     await expect(page.getByRole("region", { name: "Analyst memo" })).toBeVisible();
     await page.getByRole("button", { name: "Save decision" }).click();
@@ -244,7 +244,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await expect(rail(page).getByTestId("decision-item").filter({ hasText: /New cash · US\$2,500 → RRSP/ })).toBeVisible();
 
     // 2. Create and save a Theme decision
-    await page.getByRole("button", { name: "New analysis" }).click();
+    await page.getByRole("button", { name: "New conversation" }).click();
     await ask(page).fill("/theme");
     await ask(page).press("Enter");
     await page.getByLabel("Theme name").fill("Robotics");

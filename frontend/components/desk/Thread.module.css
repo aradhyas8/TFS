@@ -1,0 +1,18 @@
+/* Thread view, composed from Arc components on Arc's semantic tokens. */
+.thread { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-6); font-family: var(--font-body); font-size: var(--text-base); line-height: 1.6; color: var(--foreground); }
+.thread p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.user { display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-1); }
+.bubble { max-width: min(85%, 34rem); padding: var(--space-3) var(--space-4); background: var(--surface-muted); border-radius: var(--radius-control); }
+.unsent { color: var(--text-secondary); border: 1px dashed var(--border-strong); background: transparent; }
+.status { font-size: var(--text-xs); color: var(--text-muted); }
+
+.assistant { display: flex; flex-direction: column; gap: var(--space-3); color: var(--text-secondary); }
+.step { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--text-muted); margin-bottom: calc(var(--space-3) * -1); }
+.working { font-size: var(--text-sm); color: var(--text-muted); }
+.notice { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); }
+.notice > :first-child { align-self: stretch; }
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.refs { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.empty { margin: 0; font-size: var(--text-sm); color: var(--text-muted); }

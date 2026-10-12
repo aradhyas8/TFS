@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { isThemeCandidate, type NewCashInput, type Position, type Snapshot, type ThemeInput } from "../../lib/contracts";
 import { accountName, fullDate, money, newCashLabel } from "./format";
-import { parseMoney } from "./route";
+import { isConversation, parseMoney } from "./route";
 
 const WORKFLOWS = [
   { cmd: "/new-cash", text: "Decide where new money should go" },
@@ -26,6 +26,8 @@ type Props = {
   onAddCandidate: (ticker: string) => Promise<boolean>;
   onRemoveCandidate: (id: string) => void;
   running: boolean;
+  /** A conversation is open, so the next free-form question continues it. */
+  inThread: boolean;
   collapsed: boolean;
   onExpand: () => void;
   onSubmit: () => void;
@@ -73,6 +75,7 @@ export default function Composer({
   onAddCandidate,
   onRemoveCandidate,
   running,
+  inThread,
   collapsed,
   onExpand,
   onSubmit,
@@ -87,15 +90,18 @@ export default function Composer({
   const accounts = snapshot?.accounts || [];
   const currencies = [...new Set([snapshot?.reporting_currency, "CAD", "USD", ...(snapshot?.positions.map(row => row.currency) || [])].filter((c): c is string => !!c))];
   const label = newCashLabel(newCash, snapshot);
+  // An ordinary question goes to the conversation and needs no portfolio; shortcuts and forms keep their checks.
   const blocked = slashOpen
     ? "Choose a workflow"
-    : missingInput(
-        snapshot,
-        workflow === "new-cash" ? newCash : null,
-        workflow === "theme" ? theme : null,
-        question,
-        unresolved
-      );
+    : !workflow && question.trim() && isConversation(question, snapshot)
+      ? null
+      : missingInput(
+          snapshot,
+          workflow === "new-cash" ? newCash : null,
+          workflow === "theme" ? theme : null,
+          question,
+          unresolved
+        );
 
   const updateCash = (patch: Partial<NewCashInput>) =>
     onNewCash({ ...newCash, ...patch, confirmed: "confirmed" in patch ? !!patch.confirmed : false });
@@ -173,7 +179,7 @@ export default function Composer({
     const item = matches[index];
     if (!item) return;
     const rest = question.slice(item.cmd.length).trimStart();
-    if (item.cmd === "/review") { onWorkflow(null); onQuestion(rest || "Review my portfolio"); return; }
+    if (item.cmd === "/review") { onWorkflow(null); onQuestion(`/review ${rest}`); return; }
     if (item.cmd === "/stock") { onWorkflow(null); onQuestion(`/stock ${rest}`); return; }
     if (item.cmd === "/rebalance") { onWorkflow(null); onQuestion(`/rebalance ${rest}`); return; }
     if (item.cmd === "/theme") {
@@ -314,10 +320,10 @@ export default function Composer({
         <div className="box-line">
           {workflow === "new-cash" && <span className="prefix">New cash</span>}
           {workflow === "theme" && <span className="prefix">Theme</span>}
-          <label htmlFor="ask" className="sr-only">{workflow ? "Question" : "Ask about your portfolio or a holding, or type / for workflows"}</label>
-          <input id="ask" autoComplete="off" value={question} disabled={running} onKeyDown={keys}
+          <label htmlFor="ask" className="sr-only">{workflow ? "Question" : "Ask anything, or type / for workflows"}</label>
+          <input id="ask" autoComplete="off" maxLength={1000} value={question} disabled={running} onKeyDown={keys}
             aria-controls={slashOpen ? "slash-menu" : undefined} aria-expanded={slashOpen}
-            placeholder={running ? "You can ask a follow-up once this answer arrives." : workflow === "new-cash" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?") : workflow === "theme" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "Explore a theme against your shortlist.") : collapsed ? "Ask a follow-up. Each question is a fresh analysis of your saved portfolio." : "Ask about your portfolio or a holding, or type / for a workflow"}
+            placeholder={running ? "Wait for this answer to finish" : workflow === "new-cash" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?") : workflow === "theme" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "Explore a theme against your shortlist.") : inThread ? "Ask a follow-up, or type / for a workflow" : "Ask anything, or type / for a workflow"}
             onChange={event => { onQuestion(event.target.value); setActive(0); }} />
           {(workflow || question.trim()) && blocked && !running && !slashOpen && <span className="cap amber hint">{blocked}</span>}
           {workflow ? <button type="submit" className="btn primary" disabled={!!blocked || running}>Analyze</button>

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { route, parseMoney, parseTheme } from "../components/desk/route";
+import { isConversation, route, parseMoney, parseTheme } from "../components/desk/route";
 import type { Snapshot, Position } from "../lib/contracts";
 
 const ACME: Position = {
@@ -216,11 +216,9 @@ test.describe("route precedence step 4: held stock, candidate, clarify", () => {
       question: "SHOP.TO",
       ticker: "SHOP.TO",
     });
-    expect(route("Will NVDA beat earnings?", SNAPSHOT)).toEqual({
-      kind: "candidate",
-      question: "Will NVDA beat earnings?",
-      ticker: "NVDA",
-    });
+    // A bare capitalised word inside a sentence is not a ticker lookup; only an explicit $ marks one.
+    expect(route("Will NVDA beat earnings?", SNAPSHOT)).toEqual({ kind: "review", question: "Will NVDA beat earnings?" });
+    expect(route("What is an ETF?", SNAPSHOT)).toEqual({ kind: "review", question: "What is an ETF?" });
     expect(route("Why is $TSLA dropping?", SNAPSHOT)).toEqual({
       kind: "candidate",
       question: "Why is $TSLA dropping?",
@@ -235,14 +233,10 @@ test.describe("route precedence step 4: held stock, candidate, clarify", () => {
     });
   });
 
-  test("unknown company names with no ticker shape clarify with a single short question", () => {
-    const res = route("What do you think about Shopify?", SNAPSHOT);
-    expect(res.kind).toBe("clarify");
-    if (res.kind === "clarify") {
-      expect(res.message).toContain("Shopify");
-      expect(res.message).toContain("Stock Analysis works on companies you own");
-      expect(res.review).toBe(true);
-    }
+  test("unknown company names with no ticker shape are left to the conversation, not guessed at", () => {
+    expect(route("What do you think about Shopify?", SNAPSHOT)).toEqual({ kind: "review", question: "What do you think about Shopify?" });
+    // The explicit shortcut still looks the name up as a stock.
+    expect(route("/stock Shopify", SNAPSHOT)).toMatchObject({ kind: "candidate", ticker: "Shopify" });
   });
 });
 
@@ -309,5 +303,26 @@ test.describe("route precedence step 6: review fallback", () => {
       kind: "review",
       question: "How is the market?",
     });
+  });
+});
+
+test.describe("conversation is the default for free-form input", () => {
+  test("ordinary questions go to the conversation, with or without a portfolio", () => {
+    expect(isConversation("What is an ETF?", null)).toBe(true);
+    expect(isConversation("What do you think about ACME?", null)).toBe(true);
+    expect(isConversation("How concentrated am I across accounts?", SNAPSHOT)).toBe(true);
+    expect(isConversation("Review my portfolio", SNAPSHOT)).toBe(true);
+    expect(isConversation("What is an ETF?", SNAPSHOT)).toBe(true);
+    expect(isConversation("How is inflation measured?", SNAPSHOT)).toBe(true);
+    expect(isConversation("What do you think about Shopify?", SNAPSHOT)).toBe(true);
+  });
+
+  test("slash commands and specific workflow phrasing stay explicit shortcuts", () => {
+    expect(isConversation("/review", SNAPSHOT)).toBe(false);
+    expect(isConversation("/review How concentrated am I?", SNAPSHOT)).toBe(false);
+    expect(isConversation("/stock ACME", null)).toBe(false);
+    expect(isConversation("What do you think about ACME?", SNAPSHOT)).toBe(false);
+    expect(isConversation("Should I rebalance my portfolio?", SNAPSHOT)).toBe(false);
+    expect(isConversation("I have C$2,000 to invest", SNAPSHOT)).toBe(false);
   });
 });

@@ -52,7 +52,23 @@ def local_connect(sock: socket.socket, address: Any) -> None:
 socket.socket.connect = local_connect  # type: ignore[method-assign]
 
 
+class ConversationTestTransport:
+    """Scripted conversation turns for the desk thread journeys, keyed by the latest question."""
+
+    async def respond(self, messages: list[dict[str, Any]], **_kwargs: Any) -> ModelTurn:
+        question = json.loads(next(m["content"] for m in reversed(messages) if m.get("role") == "user"))["text"]
+        if "Fail" in question:
+            raise RuntimeError("the fake model is unavailable")
+        if "Slow" in question:
+            await asyncio.sleep(3)
+        if "holdings" in question and not any(m.get("type") == "function_call_output" for m in messages):
+            return ModelTurn(calls=[ToolCall("thread_holdings", "get_holdings", json.dumps({"offset": 0, "limit": 100}))])
+        return ModelTurn(text=f"Plain answer to: {question}\n\nNo portfolio research was needed.")
+
+
 class BrowserTestModel:
+    transport = ConversationTestTransport()
+
     async def respond(self, messages: list[dict[str, Any]], *, require_tool: bool, forced_tool: str | None = None, reasoning_effort: str | None = None) -> ModelTurn:
         if require_tool:
             if json.loads(messages[1]["content"])["question"] == "Slow model review":

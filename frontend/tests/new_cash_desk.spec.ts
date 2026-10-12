@@ -9,7 +9,7 @@ const SIMPLE_CSV = `account,ticker,shares,average_cost,type
 Brokerage,BROAD,80,92.10,etf
 `;
 
-const rail = (page: Page) => page.getByRole("navigation", { name: "Portfolio and decisions" });
+const rail = (page: Page) => page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
 const details = (page: Page) => page.getByRole("complementary", { name: "Details" });
 
 async function importCsv(page: Page, csv: string, asOf = "2026-09-30") {

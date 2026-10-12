@@ -22,13 +22,13 @@ const SAVED = {
   unresolved: [],
 };
 
-test("portfolio review: the app opens on the saved portfolio and an ordinary question runs a review", async ({ page }) => {
+test("portfolio review: the app opens on the saved portfolio and /review runs a review", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
   await seedPortfolio(page, SAVED);
   const stored = await (await page.request.get("/api/portfolio")).json();
 
   await page.goto("/");
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
   await expect(rail).toContainText("ACME");
   await expect(rail).toContainText("BROAD");
@@ -36,9 +36,9 @@ test("portfolio review: the app opens on the saved portfolio and an ordinary que
   await expect(page.getByRole("heading", { name: "Start with what you own." })).toHaveCount(0);
   await expect(page.locator(".ctx")).toContainText("Portfolio as of Sep 30, 2026");
 
-  // No slash command: a plain question is a portfolio review.
+  // The explicit shortcut: a plain question would start a conversation instead.
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("Review my portfolio");
+  await ask.fill("/review Review my portfolio");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
 
   const memo = page.getByRole("region", { name: "Analyst memo" });
@@ -90,7 +90,7 @@ test("portfolio review: /review is a shortcut, and unidentified holdings block t
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
   await ask.fill("/rev");
   await ask.press("Enter");
-  await expect(ask).toHaveValue("Review my portfolio");
+  await expect(ask).toHaveValue("/review ");
   await expect(page.getByText("Identify 1 holding first")).toBeVisible();
   await expect(page.getByRole("button", { name: "Ask", exact: true })).toBeDisabled();
 });
@@ -100,7 +100,7 @@ test("portfolio review: without rules the analyst's own answer is shown and noth
   await page.goto("/");
   await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("How concentrated am I across accounts?");
+  await ask.fill("/review How concentrated am I across accounts?");
   await ask.press("Enter");
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo).toContainText("Regarding 'How concentrated am I across accounts?'");
@@ -108,7 +108,7 @@ test("portfolio review: without rules the analyst's own answer is shown and noth
   await expect(memo).toContainText("No rules set");
   await expect(memo.getByTestId("review-total")).toContainText("C$3,700");
   // A follow-up is a new review of the same saved portfolio.
-  await expect(ask).toHaveAttribute("placeholder", "Ask a follow-up. Each question is a fresh analysis of your saved portfolio.");
+  await expect(ask).toHaveAttribute("placeholder", "Ask anything, or type / for a workflow");
 });
 
 test("benchmark fund: configure in holdings rules, verify comparison alternative, absent from rail and weights, persist and clear", async ({ page }) => {
@@ -169,7 +169,7 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   expect(stored.settings.benchmark).toBeUndefined();
 
   // Benchmark is absent from rail
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   await expect(rail).not.toContainText("SPY");
   await expect(rail).toContainText("ACME");
 
@@ -242,7 +242,7 @@ test("missing mark displays unknown total and qualifies the completed review", a
   await seedPortfolio(page, missingMark);
   await page.goto("/");
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("Review the incomplete portfolio");
+  await ask.fill("/review Review the incomplete portfolio");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
@@ -257,13 +257,13 @@ test("invalid model output clears the previous result and cannot display as a co
 
   // 1. Submit normal review
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("Review the portfolio");
+  await ask.fill("/review Review the portfolio");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
 
   // 2. Submit question returning invalid output
-  await ask.fill("Return invalid output");
+  await ask.fill("/review Return invalid output");
   const rejected = page.waitForResponse(response => response.url().endsWith("/api/analyze") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   expect((await rejected).status()).toBe(502);
@@ -279,7 +279,7 @@ test("existing analysis journey works without saving", async ({ page }) => {
   await page.goto("/");
 
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("Simple portfolio review without saving");
+  await ask.fill("/review Simple portfolio review without saving");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
@@ -290,7 +290,7 @@ test("existing analysis journey works without saving", async ({ page }) => {
   await expect(details.getByRole("group", { name: "Holdings to identify" })).toHaveCount(0);
 
   // A follow up question can be asked without saving
-  await ask.fill("How diversified am I?");
+  await ask.fill("/review How diversified am I?");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
 });

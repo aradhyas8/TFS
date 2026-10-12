@@ -1,30 +1,33 @@
-/* Direction D tokens and components. Every selector is scoped under .desk. Spec: docs/ui-direction-d.md */
-body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scroll-padding-bottom: 280px; }
+/* Direction D layout and components on Arc's design system. Every selector is scoped under .desk. Spec: docs/ui-direction-d.md */
+body:has(.desk) { margin: 0; background: var(--surface); scroll-padding-top: 72px; scroll-padding-bottom: 280px; }
 
 .desk {
-  --rail: #0F0E0D; --ground: #131211; --raised: #1A1917; --raised-2: #211F1C;
-  --rule: #2A2825; --rule-strong: #3A3631;
-  --text: #ECE8E1; --text-2: #C9C3B9; --muted: #9A948A; --faint: #6F6A62;
-  --brass: #CDAE73; --brass-hover: #E2C88F; --brass-dim: #4A3F2C;
-  --sage: #9DBFA3; --amber: #E0A35C;
-  --sans: var(--font-sans), system-ui, sans-serif; --serif: var(--font-serif), Georgia, serif;
+  /* The desk's own token names are aliases of Arc's semantic tokens (components/arc/foundation.css),
+     so the existing screens and Arc components share one palette, type and focus ring. */
+  --rail: var(--background); --ground: var(--surface); --raised: var(--surface-raised); --raised-2: var(--surface-muted);
+  --rule: var(--border); --rule-strong: var(--border-strong);
+  --text: var(--foreground); --text-2: var(--text-secondary); --muted: var(--text-muted); --faint: var(--text-muted);
+  --brass: var(--accent); --brass-hover: var(--accent-strong); --brass-dim: var(--accent-subtle);
+  --sage: var(--success); --amber: var(--warning);
+  --sans: var(--font-body); --serif: var(--font-display);
+  --focus-outline: var(--accent);
   min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr) 400px;
   background: var(--ground); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 20px;
   -webkit-font-smoothing: antialiased;
 }
 .desk *, .desk *::before, .desk *::after { box-sizing: border-box; }
-.desk a { color: var(--brass); text-decoration: none; }
-.desk a:hover { color: var(--brass-hover); }
-.desk button, .desk input, .desk select, .desk textarea { font: inherit; color: inherit; }
-.desk button { background: none; border: 0; padding: 0; cursor: pointer; }
-.desk button:disabled { cursor: not-allowed; }
-.desk :focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; border-radius: 2px; }
-.desk h1, .desk h2, .desk h3, .desk p, .desk ul, .desk ol, .desk blockquote, .desk fieldset { margin: 0; }
-.desk fieldset { border: 0; padding: 0; min-width: 0; }
-.desk ul, .desk ol { padding: 0; }
+/* Element resets carry no specificity, so Arc components keep their own styles inside the desk. */
+:where(.desk) a { color: var(--brass); text-decoration: underline; text-underline-offset: 3px; }
+:where(.desk) a:hover { color: var(--brass-hover); }
+:where(.desk) :is(button, input, select, textarea) { font: inherit; color: inherit; }
+:where(.desk) button { background: none; border: 0; padding: 0; cursor: pointer; }
+:where(.desk) button:disabled { cursor: not-allowed; }
+:where(.desk) :is(h1, h2, h3, p, ul, ol, blockquote, fieldset) { margin: 0; }
+:where(.desk) fieldset { border: 0; padding: 0; min-width: 0; }
+:where(.desk) :is(ul, ol) { padding: 0; }
 .desk .n { font-variant-numeric: tabular-nums; }
-.desk .serif { font-family: var(--serif); font-weight: 300; }
-.desk .lbl { font-size: 11px; line-height: 16px; letter-spacing: .1em; text-transform: uppercase; font-weight: 500; color: var(--muted); }
+.desk .serif { font-family: var(--serif); font-weight: 400; letter-spacing: var(--tracking-display); }
+.desk .lbl { font-size: 12px; line-height: 16px; font-weight: 500; color: var(--muted); }
 .desk .cap { font-size: 12px; line-height: 16px; color: var(--muted); }
 .desk .m { color: var(--muted); }
 .desk .sage { color: var(--sage); }
@@ -34,7 +37,9 @@ body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scro
 .desk .skip { position: absolute; left: 8px; top: -48px; z-index: 50; background: var(--text); color: var(--ground); padding: 8px 12px; border-radius: 6px; }
 .desk .skip:focus { top: 8px; }
 .desk sup { line-height: 1; vertical-align: super; font-size: 11px; }
-.desk sup button { color: var(--brass); padding: 0 1px; font-variant-numeric: tabular-nums; }
+/* Adjacent source markers stay separate numbers, not one underlined run. */
+.desk sup + sup { margin-left: 3px; }
+.desk sup button { color: var(--brass); padding: 0 1px; font-variant-numeric: tabular-nums; text-decoration: underline; text-underline-offset: 2px; }
 
 /* Buttons and inputs */
 .desk .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0 16px; min-height: 40px; border-radius: 6px; font-weight: 500; white-space: nowrap; }
@@ -42,11 +47,13 @@ body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scro
 .desk .btn.primary:disabled { background: var(--rule); color: var(--muted); }
 .desk .btn.secondary { border: 1px solid var(--rule-strong); }
 .desk .btn.small { min-height: 36px; padding: 0 14px; }
-.desk .link { color: var(--brass); min-height: 32px; }
+.desk .link { color: var(--brass); min-height: 32px; text-decoration: underline; text-underline-offset: 3px; }
 .desk .link:hover { color: var(--brass-hover); }
 .desk .in { width: 100%; background: var(--ground); border: 1px solid var(--rule-strong); border-radius: 6px; padding: 0 12px; min-height: 40px; color: var(--text); }
 .desk textarea.in { padding: 10px 12px; resize: vertical; min-height: 64px; }
 .desk .in::placeholder { color: var(--muted); }
+/* Text fields show keyboard focus with their border, as Arc fields do. */
+.desk .in:focus-visible, .desk .box:focus-within { border-color: var(--brass); }
 .desk select.in { appearance: auto; }
 .desk .check { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
 .desk .check input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--brass); flex-shrink: 0; }
@@ -55,7 +62,7 @@ body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scro
 /* Rail */
 .desk .rail { position: sticky; top: 0; height: 100vh; overflow-y: auto; background: var(--rail); border-right: 1px solid var(--rule); padding: 16px; display: flex; flex-direction: column; gap: 24px; min-width: 0; }
 .desk .rail-head { display: flex; justify-content: space-between; align-items: center; }
-.desk .wordmark { font-family: var(--serif); font-size: 20px; font-weight: 400; color: var(--text); }
+.desk .wordmark { font-family: var(--serif); font-size: 20px; font-weight: 500; letter-spacing: var(--tracking-display); color: var(--text); }
 .desk .icon-btn { width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); border-radius: 6px; }
 .desk .icon-btn:hover { color: var(--text); background: var(--raised); }
 .desk .pv { display: flex; justify-content: space-between; gap: 12px; }
@@ -66,7 +73,7 @@ body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scro
 .desk .decisions { display: flex; flex-direction: column; gap: 2px; min-height: 0; }
 .desk .decisions .lbl { padding: 0 12px 8px; }
 .desk .dhead { display: flex; justify-content: space-between; align-items: baseline; }
-.desk .dhead .link { text-transform: none; letter-spacing: 0; min-height: 0; }
+.desk .dhead .link { min-height: 0; font-weight: 400; }
 .desk .drow { position: relative; }
 .desk .drow .ditem { padding-right: 36px; }
 .desk .ddel { position: absolute; top: 6px; right: 6px; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
@@ -111,8 +118,8 @@ body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scro
 .desk .row.working > .lbl { color: var(--brass); padding-top: 8px; }
 .desk .body { font-size: 15px; line-height: 24px; color: var(--text-2); }
 .desk .bullets { padding-left: 16px; font-size: 15px; line-height: 24px; color: var(--text-2); display: flex; flex-direction: column; gap: 6px; }
-.desk .display { font-family: var(--serif); font-weight: 300; font-size: 32px; line-height: 40px; letter-spacing: -0.01em; }
-.desk .display .amt { color: var(--brass); font-variant-numeric: tabular-nums; }
+.desk .display { font-family: var(--serif); font-weight: 400; font-size: 32px; line-height: 40px; letter-spacing: var(--tracking-display); }
+.desk .display .amt { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
 .desk .meta { display: flex; gap: 16px; flex-wrap: wrap; }
 .desk .alts { display: flex; flex-direction: column; gap: 10px; }
 .desk .alt { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 16px; }
@@ -121,7 +128,7 @@ body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scro
 .desk .more .arrow { color: var(--brass); }
 .desk .expand { padding: 4px 0 16px; }
 .desk .bar { position: relative; height: 6px; background: var(--raised); border-radius: 3px; }
-.desk .bar .now { position: absolute; left: 0; top: 0; bottom: 0; background: var(--brass-dim); border-radius: 3px 0 0 3px; }
+.desk .bar .now { position: absolute; left: 0; top: 0; bottom: 0; background: var(--rule-strong); border-radius: 3px 0 0 3px; }
 .desk .bar .chg { position: absolute; top: 0; bottom: 0; background: var(--brass); }
 .desk .bar .chg.over { background: var(--amber); }
 .desk .bar .tick { position: absolute; top: -5px; bottom: -5px; width: 2px; background: var(--muted); }
@@ -135,14 +142,15 @@ body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scro
 
 /* Empty / first run */
 .desk .hero { display: flex; flex-direction: column; gap: 40px; padding-top: 64px; }
-.desk .hero h1 { font-family: var(--serif); font-weight: 300; font-size: 32px; line-height: 40px; }
+.desk .hero h1 { font-family: var(--serif); font-weight: 400; font-size: 32px; line-height: 40px; letter-spacing: var(--tracking-display); }
 .desk .starters { display: flex; flex-direction: column; border-top: 1px solid var(--rule); }
 .desk .starter { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--rule); text-align: left; width: 100%; color: var(--text); }
 .desk .starter:hover .m { color: var(--text-2); }
 .desk .identify { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; border-top: 1px solid var(--rule); }
 .desk .setup { display: grid; grid-template-columns: minmax(0, 180px) minmax(0, 140px); gap: 16px; }
 .desk .drop { display: flex; align-items: center; justify-content: center; min-height: 96px; border: 1px dashed var(--rule-strong); border-radius: 8px; color: var(--text-2); cursor: pointer; text-align: center; padding: 16px; }
-.desk .drop:focus-within { outline: 2px solid var(--brass); outline-offset: 2px; }
+/* The file input is visually hidden, so its label carries the keyboard focus ring in Arc's outline tokens. */
+.desk .drop:has(input:focus-visible) { outline: var(--focus-outline-width, 2px) solid var(--focus-outline); outline-offset: var(--focus-outline-offset, 2px); }
 .desk .drop input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 
 /* Composer */
@@ -159,11 +167,12 @@ body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scro
 .desk .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--raised-2); border: 1px solid var(--rule); border-radius: 6px; font-size: 13px; }
 .desk .chip button { background: transparent; border: 0; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 14px; line-height: 1; }
 .desk .chip button:hover { color: var(--text); }
-.desk .verdict { display: inline-block; padding: 2px 6px; border-radius: 6px; font-size: 12px; font-weight: 500; text-transform: uppercase; }
+.desk .verdict { display: inline-block; padding: 2px 6px; border-radius: 6px; font-size: 12px; font-weight: 500; }
 .desk .verdict.supports { background: color-mix(in srgb, var(--sage) 18%, transparent); color: var(--sage); }
 .desk .verdict.challenges { background: color-mix(in srgb, var(--amber) 18%, transparent); color: var(--amber); }
 .desk .verdict.unknown { background: var(--raised-2); color: var(--muted); }
-.desk .nc-grid { display: grid; grid-template-columns: 160px 96px minmax(0, 1fr); gap: 16px; }
+.desk .nc-grid { display: grid; grid-template-columns: 160px 96px minmax(0, 1fr); gap: 16px; align-items: end; }
+.desk .theme-form .nc-grid { grid-template-columns: repeat(2, minmax(0, 180px)); }
 .desk .slash { margin-bottom: 8px; background: var(--raised); border: 1px solid var(--rule-strong); border-radius: 8px; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
 .desk .opt { display: grid; grid-template-columns: 150px minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 10px 12px; border-radius: 6px; text-align: left; width: 100%; color: var(--text); }
 .desk .opt[aria-selected="true"] { background: var(--raised-2); }
@@ -209,6 +218,8 @@ body:has(.desk) { margin: 0; background: #131211; scroll-padding-top: 72px; scro
 }
 @media (max-width: 1023px) {
   .desk { grid-template-columns: minmax(0, 1fr); }
+  /* With the menu and Details buttons in the header, the workflow title gets the room, not the portfolio date. */
+  .desk .ctx .hide-sm { display: none; }
   .desk .rail { position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: 280px; z-index: 30; transform: translateX(-100%); transition: transform .2s ease; overflow-y: auto; }
   .desk.rail-open .rail { transform: none; }
   .desk.rail-open .scrim { display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, .4); z-index: 20; }

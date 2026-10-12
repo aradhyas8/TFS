@@ -162,7 +162,7 @@ test("theme discovery full flow: form, agreement card, edit clearing, agreed res
   // Candidate verdicts: ACME challenges with primary citation
   const acmeTest = page.getByTestId("test-tfsa-acme");
   await expect(acmeTest).toBeVisible();
-  await expect(acmeTest.locator(".verdict")).toHaveText("challenges");
+  await expect(acmeTest.locator(".verdict")).toHaveText("Challenges");
   await expect(acmeTest).toContainText("Reported revenue does not establish that automation demand improves margins.");
   // Citation button
   await expect(acmeTest.getByRole("button", { name: "Source 1" })).toBeAttached();
@@ -170,7 +170,7 @@ test("theme discovery full flow: form, agreement card, edit clearing, agreed res
   // SPY candidate without dated fund facts honestly renders verdict as unknown
   const spyTest = page.getByTestId("test-candidate-SPY-XNYS");
   await expect(spyTest).toBeVisible();
-  await expect(spyTest.locator(".verdict")).toHaveText("unknown");
+  await expect(spyTest.locator(".verdict")).toHaveText("Unknown");
   await expect(spyTest).toContainText("Fund facts and dated sponsor holdings are missing; verdict and overlap remain unknown.");
 
   // Exposure row contains unknown look-through note for SPY
