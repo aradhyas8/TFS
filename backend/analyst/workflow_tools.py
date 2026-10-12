@@ -109,6 +109,8 @@ class WorkflowTools:
 
     async def execute(self, context: RunContext, parsed: ReadArguments,
                       name: WorkflowName) -> dict[str, Any]:
+        if self.inputs.workflow is not None and self.inputs.workflow != name:
+            return {"error": "Requested workflow conflicts with the explicit workflow selection."}
         if context.portfolio is None:
             return self.clarify(name, ["portfolio"], code="portfolio_required")
         if context.portfolio.unresolved:

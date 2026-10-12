@@ -22,6 +22,7 @@ from tests.test_allocation import (
 )
 from tests.test_analysis import recommendation, snapshot
 from tests.test_context_retrieval import CapturingTransport, submit
+from tests.test_financial_tools import NoWorkflowData
 from tests.test_stock import (
     company_judgments,
     research_fixture,
@@ -34,6 +35,34 @@ from tests.test_theme import theme_request, theme_turns
 
 def call(name, arguments=None, id=None):
     return ModelTurn(calls=[ToolCall(id or name, name, json.dumps(arguments or {}))])
+
+
+WORKFLOW_NAMES = (
+    "run_exposure_review", "run_stock_analysis", "run_new_cash_allocation",
+    "run_portfolio_reunderwriting", "run_theme_exploration",
+)
+
+
+@pytest.mark.parametrize("selected,called", [
+    (selected, called) for selected in WORKFLOW_NAMES for called in WORKFLOW_NAMES if selected != called
+])
+def test_explicit_workflow_rejects_conflicting_adapter_before_pipeline_execution(tmp_path, selected, called):
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
+    arguments = {"position_id": "p1"} if called == "run_stock_analysis" else {}
+    model = CapturingTransport([call(called, arguments), ModelTurn(text="Use the selected workflow.")])
+    with TestClient(create_app(model=model, data=NoWorkflowData(), portfolio_store=store,
+                              settings=Settings(api_key="sk-test", model="test"))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Run the selected workflow.", workflow_input={"workflow": selected})
+        assert run["status"] == "completed", run
+        assert run["artifact_ids"] == []
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+        outcome = messages[1]["tool_outcomes"][0]
+        assert outcome["name"] == called
+        assert outcome["status"] == "error"
+        assert outcome["error"] == "Requested workflow conflicts with the explicit workflow selection."
+        assert len(model.requests) == 2
 
 
 def workflow_case(name):
@@ -378,7 +407,8 @@ def test_missing_workflow_inputs_are_persisted_as_typed_form_requirements(tmp_pa
         assert len(model.requests) == 2
 
 
-def test_exposure_workflow_stores_original_result_and_bound_revision(tmp_path):
+@pytest.mark.parametrize("workflow", [None, "run_exposure_review"])
+def test_exposure_workflow_stores_original_result_and_bound_revision(tmp_path, workflow):
     store = PortfolioStore(database_path=tmp_path / "portfolio.db")
     store.save(SavedPortfolio.model_validate({"snapshot": snapshot(), "average_costs": {"p1": "12.34"}}))
     model = CapturingTransport([
@@ -390,7 +420,9 @@ def test_exposure_workflow_stores_original_result_and_bound_revision(tmp_path):
     with TestClient(create_app(model=model, data=FakeDataProvider(), financial=FakeFinancialProvider(),
                               portfolio_store=store, settings=Settings(api_key="sk-test", model="test", request_timeout=5))) as client:
         thread = client.post("/api/threads").json()["id"]
-        run = submit(client, thread, "Review my exposure.", workflow_input={"analysis_date": "2026-09-30"})
+        run = submit(client, thread, "Review my exposure.", workflow_input={
+            "analysis_date": "2026-09-30", "workflow": workflow,
+        })
         assert run["status"] == "completed", run
         artifact = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()
         assert artifact["reference"]["kind"] == "analysis_result"
@@ -399,3 +431,28 @@ def test_exposure_workflow_stores_original_result_and_bound_revision(tmp_path):
         assert artifact["payload"]["portfolio"]["total_value"] == "3600"
         assert artifact["payload"]["recommendation"] == recommendation()
         assert "12.34" not in json.dumps(model.requests)
+
+
+def test_conflicting_workflow_call_can_recover_with_the_explicitly_selected_workflow(tmp_path):
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
+    model = CapturingTransport([call("run_portfolio_reunderwriting"), call("run_exposure_review"),
+                                call("review_portfolio"), ModelTurn(answer=recommendation()),
+                                ModelTurn(text="The selected exposure review is ready.")])
+    with TestClient(create_app(model=model, financial=FakeFinancialProvider(),
+                              portfolio_store=store, settings=Settings(api_key="sk-test", model="test", request_timeout=5))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Review my exposure.", workflow_input={
+            "workflow": "run_exposure_review", "analysis_date": "2026-09-30",
+        })
+        assert run["status"] == "completed", run
+        assert len(run["artifact_ids"]) == 1
+        artifact = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()
+        assert artifact["payload"]["portfolio"]["total_value"] == "3600"
+        assert artifact["payload"]["stock"] is None
+        assert artifact["payload"]["reunderwriting"] is None
+        outcomes = [outcome for message in client.get(f"/api/threads/{thread}").json()["messages"]
+                    for outcome in message["tool_outcomes"]]
+        assert [(outcome["name"], outcome["status"]) for outcome in outcomes] == [
+            ("run_portfolio_reunderwriting", "error"), ("run_exposure_review", "success"),
+        ]
