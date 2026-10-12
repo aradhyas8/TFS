@@ -36,6 +36,9 @@ export function useConversation() {
   const [loadError, setLoadError] = useState<string | null>(null);
   // The open thread as asynchronous work sees it: a late response for a thread the user has left is dropped.
   const viewing = useRef<string | null>(null);
+  // One delivery at a time. A second delivery of a message that has no thread yet would create a second
+  // thread, and the same message would then be accepted in both.
+  const delivering = useRef(false);
 
   const refreshThreads = () =>
     listThreads()
@@ -78,39 +81,53 @@ export function useConversation() {
   }
 
   async function deliver(send: PendingSend) {
-    const origin = viewing.current;
-    setPending(send);
-    setSendError(null);
-    let threadId = send.threadId;
+    if (delivering.current) return;
+    delivering.current = true;
     try {
-      if (!threadId) {
-        threadId = (await createThread()).id;
-        send = { ...send, threadId };
-        setPending(send);
-        // Follow the new thread only if the user is still where they sent from.
-        if (viewing.current === origin) view(threadId);
-      }
-      remember(PENDING_KEY, JSON.stringify(send));
-      for (let attempt = 0; ; attempt++) {
-        try {
-          await submitThreadMessage(threadId, { client_request_id: send.clientRequestId, text: send.text });
-          break;
-        } catch (error) {
-          if (attempt > 0 || !unacknowledged(error)) throw error;
+      const origin = viewing.current;
+      // Stored before any request, so a reload while the thread is still being created keeps the message.
+      const hold = (next: PendingSend) => {
+        send = next;
+        setPending(next);
+        remember(PENDING_KEY, JSON.stringify(next));
+      };
+      hold(send);
+      setSendError(null);
+      let threadId = send.threadId;
+      try {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            if (!threadId) {
+              // A creation whose response was lost leaves an empty thread behind. It never receives the
+              // message, so the message is accepted only in the thread recorded here.
+              threadId = (await createThread()).id;
+              hold({ ...send, threadId });
+              // Follow the new thread only if the user is still where they sent from.
+              if (viewing.current === origin) view(threadId);
+            }
+            await submitThreadMessage(threadId, { client_request_id: send.clientRequestId, text: send.text });
+            break;
+          } catch (error) {
+            if (attempt > 0 || !unacknowledged(error)) throw error;
+          }
         }
+      } catch (error) {
+        setSendError(message(error));
+        return;
       }
-    } catch (error) {
-      setSendError(message(error));
-      return;
+      await load(threadId);
+      remember(PENDING_KEY, null);
+      setPending(null);
+      void refreshThreads();
+    } finally {
+      delivering.current = false;
     }
-    await load(threadId);
-    remember(PENDING_KEY, null);
-    setPending(null);
-    void refreshThreads();
   }
 
   /** Sends one message into the open thread, or into a new thread when none is open.
-   *  ponytail: one unacknowledged send at a time; a new send replaces an earlier one that failed and was left behind. */
+   *  ponytail: one unacknowledged send at a time; a new send replaces an earlier one that failed and was left behind.
+   *  ponytail: two tabs reloaded with the same thread-less send each create a thread; a client-supplied thread ID
+   *  on POST /api/threads would make creation idempotent too. */
   const send = (text: string) => deliver({ threadId: viewing.current, clientRequestId: crypto.randomUUID(), text });
 
   const retry = () => (pending ? deliver(pending) : Promise.resolve());
@@ -133,8 +150,9 @@ export function useConversation() {
     } catch {
       /* nothing to recover */
     }
-    if (unsent?.threadId && unsent.clientRequestId && unsent.text) {
-      open(unsent.threadId);
+    if (unsent?.clientRequestId && unsent.text) {
+      // No thread ID means the reload came before the thread existed: delivery resumes by creating it.
+      if (unsent.threadId) open(unsent.threadId);
       void deliver(unsent);
     } else if (last) open(last);
     // eslint-disable-next-line react-hooks/exhaustive-deps

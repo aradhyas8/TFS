@@ -291,3 +291,67 @@ test("discarding a first message that could not be sent returns to the start, no
   await expect(page.getByRole("status", { name: "Loading conversation" })).toHaveCount(0);
   await expect(ask(page)).toBeFocused();
 });
+
+// A first message has no thread yet. These cover the request that creates one going wrong.
+const titled = async (page: Page) => (await threads(page)).filter((item: { title: string | null }) => item.title);
+const pendingSend = (page: Page) => page.evaluate(() => localStorage.getItem("desk.pendingSend"));
+
+async function expectAcceptedOnce(page: Page, question: string) {
+  await expect(thread(page)).toContainText(`Plain answer to: ${question}`);
+  await expect(thread(page).getByText(question, { exact: true })).toHaveCount(1);
+  const saved = await titled(page);
+  expect(saved).toHaveLength(1);
+  const detail = await (await page.request.get(`/api/threads/${saved[0].id}`)).json();
+  expect(detail.runs).toHaveLength(1);
+  expect(detail.messages.filter((message: { role: string }) => message.role === "user")).toHaveLength(1);
+  expect(await pendingSend(page)).toBeNull();
+}
+
+test("a first message whose thread-creation response is lost is still sent, once", async ({ page }) => {
+  await open(page);
+  let creations = 0;
+  await page.route("**/api/threads", async route => {
+    if (route.request().method() !== "POST" || ++creations > 1) return route.continue();
+    await route.fetch(); // the backend creates the thread, then the response never arrives
+    await route.abort("connectionreset");
+  });
+
+  await send(page, "What is a stock?");
+  await expectAcceptedOnce(page, "What is a stock?");
+  expect(creations).toBe(2);
+});
+
+test("a first message is recovered after a reload while thread creation is still waiting", async ({ page }) => {
+  await open(page);
+  await page.route("**/api/threads", async route => {
+    if (route.request().method() !== "POST") return route.continue();
+    await route.fetch();
+    await new Promise(() => {});
+  });
+  await send(page, "What is a treasury bill?");
+  await expect(thread(page)).toContainText("Sending");
+  // Stored before the thread exists, so the reload below has something to recover.
+  expect(await pendingSend(page)).toContain("What is a treasury bill?");
+
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await page.reload();
+  await expectAcceptedOnce(page, "What is a treasury bill?");
+});
+
+test("a first message whose thread creation fails stays on screen across a reload and sends once on retry", async ({ page }) => {
+  await open(page);
+  await page.route("**/api/threads", route =>
+    route.request().method() === "POST" ? route.fulfill({ status: 503, json: { detail: "The analyst service is offline." } }) : route.continue());
+  await send(page, "What is a coupon?");
+  const notSent = thread(page).getByRole("alert").filter({ hasText: "Not sent" });
+  await expect(notSent).toContainText("The analyst service is offline.");
+
+  await page.reload();
+  await expect(thread(page)).toContainText("What is a coupon?");
+  await expect(notSent).toContainText("The analyst service is offline.");
+  expect(await threads(page)).toEqual([]);
+
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await thread(page).getByRole("button", { name: "Send again" }).click();
+  await expectAcceptedOnce(page, "What is a coupon?");
+});
