@@ -282,10 +282,12 @@ def test_private_or_restricted_queries_never_reach_search(tmp_path: Path, query:
         thread = client.post("/api/threads").json()["id"]
         run = submit(client, thread, "Should I add to Acme?")
         payload = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()["payload"]
+        thread_json = client.get(f"/api/threads/{thread}").text
     assert len(model.requests) == 2
     assert all(request["tools"] != [{"type": "web_search"}] for request in model.requests)
     assert payload["status"] == "unavailable" and payload["reason"] == "rejected_query"
     assert payload["query"] is None
+    assert query not in thread_json and query not in json.dumps(model.requests[1]["messages"][:-2])
 
 
 def test_public_account_type_and_ticker_queries_are_searched(tmp_path: Path) -> None:
@@ -332,3 +334,51 @@ def test_source_instructions_stay_untrusted_data(tmp_path: Path, caplog: pytest.
     urls = [row["url"] for row in payload["citations"] + payload["sources"]]
     assert urls == ["https://news.example/acme", "https://news.example/acme", "https://other.example/acme"]
     assert "Acme guidance news" not in caplog.text and "ignore prior instructions" not in caplog.text
+
+
+def test_citation_indices_address_the_joined_text_of_multi_part_messages() -> None:
+    output = [SEARCH_OUTPUT[0], {**SEARCH_OUTPUT[1], "content": [
+        {"type": "output_text", "text": "Background. ", "annotations": []},
+        *SEARCH_OUTPUT[1]["content"],
+    ]}]
+    turn = asyncio.run(transport(lambda request: httpx.Response(200, json=response(output))).respond(
+        [{"role": "user", "content": "Acme guidance"}], tools=[{"type": "web_search"}]))
+    [citation] = turn.citations
+    assert turn.text is not None
+    assert turn.text[citation["start_index"]:citation["end_index"]] == "Acme raised guidance"
+    assert citation["cited_text"] == "Acme raised guidance"
+
+
+def test_completed_search_after_a_rejected_query_is_not_reported_unavailable(tmp_path: Path) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(saved_portfolio())
+    uncited = search_turn()
+    uncited.citations = [{"type": "url_citation", "url": "http://[bad", "title": None,
+                          "start_index": 0, "end_index": 4, "cited_text": "Acme"}]
+    model = CapturingTransport([search_call("Acme for 437 shares"), search_call("Acme guidance news", "search-2"),
+                                uncited, ModelTurn(text="Acme raised guidance.")])
+    with client_for(store, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Any Acme news?")
+        answer = client.get(f"/api/threads/{thread}").json()["messages"][-1]
+        payloads = [client.get(f"/api/artifacts/{id}").json()["payload"] for id in run["artifact_ids"]]
+    assert [payload["status"] for payload in payloads] == ["unavailable", "completed"]
+    assert payloads[1]["citations"] == []
+    assert [source["url"] for source in payloads[1]["sources"]] == [
+        "https://news.example/acme", "https://other.example/acme"]
+    assert answer["text"] == "Acme raised guidance."
+
+
+def test_hosted_search_obeys_the_run_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("analyst.orchestrator.MAX_DEADLINE_SECONDS", 0.3)
+    settings = Settings("sk-test", "test-model", request_timeout=20)
+    model = SlowSearch([search_call("Acme price today"), ModelTurn(text="Late answer.")])
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    app = create_app(settings=settings, portfolio_store=store, orchestrator=Orchestrator(store.db, model, settings))
+    with TestClient(app) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "How did Acme trade today?")
+        payload = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()["payload"]
+    assert run["status"] == "failed" and "deadline" in run["error"]
+    assert payload["status"] == "unavailable" and payload["reason"] == "deadline"
+    assert len(model.requests) == 2

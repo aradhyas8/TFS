@@ -336,6 +336,8 @@ class OpenAIResponseTransport:
                 for content_part in getattr(item, "content", []):
                     if getattr(content_part, "type", None) == "output_text":
                         text_val = getattr(content_part, "text", "")
+                        # Annotation indices are per part; shift them to address the joined text.
+                        offset = sum(len(text) for text in plain_texts)
                         if text_val:
                             plain_texts.append(text_val)
                         for annotation in getattr(content_part, "annotations", []) or []:
@@ -346,8 +348,8 @@ class OpenAIResponseTransport:
                                     "type": "url_citation",
                                     "url": getattr(annotation, "url", ""),
                                     "title": getattr(annotation, "title", ""),
-                                    "start_index": start,
-                                    "end_index": end,
+                                    "start_index": start + offset,
+                                    "end_index": end + offset,
                                     "cited_text": text_val[start:end],
                                 })
 

@@ -48,7 +48,7 @@ NO_LOOKUP = "No current web lookup occurred."
 # Registered account types are public vocabulary; any other account name or ID is private.
 PUBLIC_ACCOUNT_NAMES = {"TFSA", "RRSP", "RESP", "FHSA", "RRIF", "LIRA", "IRA", "401K", "ROTH",
                         "CASH", "MARGIN"}
-SEDAR_HOSTS = {"sedarplus.ca", "www.sedarplus.ca", "sedar.com", "www.sedar.com"}
+SEDAR_HOSTS = {"sedarplus.ca", "sedar.com"}
 
 
 class WebSearchArguments(ReadArguments):
@@ -57,8 +57,13 @@ class WebSearchArguments(ReadArguments):
 
 def usable_url(url: str) -> bool:
     """Only clickable public web links; SEDAR+ is never fetched or cited through search."""
-    parts = urlsplit(url)
-    return parts.scheme in {"http", "https"} and bool(parts.hostname) and parts.hostname not in SEDAR_HOSTS
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    host = parts.hostname or ""
+    return parts.scheme in {"http", "https"} and bool(host) and not any(
+        host == restricted or host.endswith(f".{restricted}") for restricted in SEDAR_HOSTS)
 
 
 class WebSearchTools:
@@ -70,6 +75,7 @@ class WebSearchTools:
         self.search = search
         self.settings = settings
         self.citations: list[dict[str, Any]] = []
+        self.completed = False
         self.unavailable = False
         self.capabilities = {
             "web_search": ReadCapability(WebSearchArguments,
@@ -149,10 +155,11 @@ class WebSearchTools:
         if not searches:
             return self.unavailable_result(
                 context, "source_unavailable" if turn.searches else "no_search", query)
-        citations = [WebCitation.model_validate(c) for c in turn.citations if usable_url(c.get("url", ""))]
+        citations = [WebCitation.model_validate({**c, "title": c.get("title") or ""})
+                     for c in turn.citations if usable_url(str(c.get("url", "")))]
         titles = {citation.url: citation.title for citation in citations}
         urls = dict.fromkeys([source["url"] for search in searches for source in search.get("sources", [])
-                              if usable_url(source.get("url", ""))] + list(titles))
+                              if usable_url(str(source.get("url", "")))] + list(titles))
         payload = WebResearch(
             status="completed", query=query,
             queries=[q for search in searches for q in search.get("queries", [])],
@@ -161,6 +168,7 @@ class WebSearchTools:
             qualifications=[UNTRUSTED],
         )
         result = self.store(context, payload)
+        self.completed = True
         logger.info("Hosted web search completed for run %s: sources=%d citations=%d",
                     context.run.id, len(payload.sources), len(citations))
         for citation in citations:

@@ -183,7 +183,7 @@ class Orchestrator:
                 # Conceptual / tool-free answer path: model produced text response
                 if turn.text or not turn.calls:
                     assistant_text = turn.text or ""
-                    if web.unavailable and not web.citations:
+                    if web.unavailable and not web.completed:
                         # Never let prose imply a current lookup that did not occur.
                         assistant_text = (
                             f"{assistant_text}\n\nHosted web search was unavailable. {NO_LOOKUP}".strip())
@@ -219,6 +219,8 @@ class Orchestrator:
                 for key in ("reference", "before_artifact", "after_artifact"):
                     if isinstance(result.get(key), dict):
                         artifact_ids.append(result[key]["id"])
+                rejected_query = (isinstance(result.get("payload"), dict)
+                                  and result["payload"].get("reason") == "rejected_query")
                 output = json.dumps(result, cls=DecimalEncoder)
                 exchange = list(turn.continuation)
                 if not continuation_calls:
@@ -242,7 +244,8 @@ class Orchestrator:
                                       error=result.get("error"), artifact_ids=artifact_ids)
                 outcome_message = self.db.add_message(
                     thread_id, "assistant", json.dumps({"retrieval": {
-                        "tool": call.name, "arguments": parsed.model_dump(),
+                        # A rejected search query may hold private details: never persist it.
+                        "tool": call.name, "arguments": {} if rejected_query else parsed.model_dump(),
                     }}, cls=DecimalEncoder), run_id=run_id,
                     tool_outcomes=[outcome], artifact_ids=artifact_ids,
                 )
