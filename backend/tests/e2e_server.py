@@ -450,6 +450,15 @@ app = create_app(
 )
 
 
+@app.post("/api/test/restart")
+async def restart() -> None:
+    """Test server only: what a process restart does to runs in flight. They are marked interrupted and their
+    work is abandoned without recording anything; nothing is replayed."""
+    portfolio_store.db.recover_interrupted_runs()
+    for task in list(app.state.orchestrator._active_tasks.values()):
+        task.cancel()
+
+
 @app.delete("/api/test/portfolio")
 def forget_portfolio() -> None:
     """Test server only: each browser journey starts without a saved portfolio or a leftover source fixture."""

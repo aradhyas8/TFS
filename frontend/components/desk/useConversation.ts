@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createThread, getThread, getThreadRun, listThreads, submitThreadMessage, type ThreadDetail, type ThreadSummary } from "../../lib/contracts";
+import { cancelThreadRun, createThread, getThread, getThreadRun, listThreads, submitThreadMessage, type ThreadDetail, type ThreadSummary } from "../../lib/contracts";
 
 // Which thread is open, so a reload returns to it. The messages themselves always come from the backend.
 const THREAD_KEY = "desk.thread";
@@ -10,7 +10,7 @@ const PENDING_KEY = "desk.pendingSend";
 const POLL_MS = 1000;
 
 /** A message this browser has sent but the backend has not acknowledged. No thread ID yet means a new conversation. */
-export type PendingSend = { threadId: string | null; clientRequestId: string; text: string; workflowInput?: Record<string, unknown> };
+export type PendingSend = { threadId: string | null; clientRequestId: string; text: string; workflowInput?: Record<string, unknown>; hypotheticalArtifactId?: string };
 
 const remember = (key: string, value: string | null) => {
   try {
@@ -34,6 +34,8 @@ export function useConversation() {
   const [pending, setPending] = useState<PendingSend | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
   // The open thread as asynchronous work sees it: a late response for a thread the user has left is dropped.
   const viewing = useRef<string | null>(null);
   // One delivery at a time. A second delivery of a message that has no thread yet would create a second
@@ -52,6 +54,7 @@ export function useConversation() {
   function view(id: string | null) {
     viewing.current = id;
     setOpenId(id);
+    setStopError(null);
     remember(THREAD_KEY, id);
   }
 
@@ -105,7 +108,10 @@ export function useConversation() {
               // Follow the new thread only if the user is still where they sent from.
               if (viewing.current === origin) view(threadId);
             }
-            await submitThreadMessage(threadId, { client_request_id: send.clientRequestId, text: send.text, workflow_input: send.workflowInput });
+            await submitThreadMessage(threadId, {
+              client_request_id: send.clientRequestId, text: send.text, workflow_input: send.workflowInput,
+              hypothetical_artifact_id: send.hypotheticalArtifactId,
+            });
             break;
           } catch (error) {
             if (attempt > 0 || !unacknowledged(error)) throw error;
@@ -126,12 +132,12 @@ export function useConversation() {
 
   /** Sends one message into the open thread, or into a new thread when none is open. Explicit form inputs
    *  (a chosen stock, a confirmed new-cash or theme form) travel with it and start a new run; they are
-   *  never inferred from the text.
+   *  never inferred from the text. A stored hypothetical portfolio is analyzed only when its ID is given here.
    *  ponytail: one unacknowledged send at a time; a new send replaces an earlier one that failed and was left behind.
    *  ponytail: two tabs reloaded with the same thread-less send each create a thread; a client-supplied thread ID
    *  on POST /api/threads would make creation idempotent too. */
-  const send = (text: string, workflowInput?: Record<string, unknown>) =>
-    deliver({ threadId: viewing.current, clientRequestId: crypto.randomUUID(), text, workflowInput });
+  const send = (text: string, workflowInput?: Record<string, unknown>, hypotheticalArtifactId?: string) =>
+    deliver({ threadId: viewing.current, clientRequestId: crypto.randomUUID(), text, workflowInput, hypotheticalArtifactId });
 
   const retry = () => (pending ? deliver(pending) : Promise.resolve());
 
@@ -165,6 +171,23 @@ export function useConversation() {
   const runningThread = running?.thread_id;
   const runningId = running?.id;
   const seen = running?.message_ids.length ?? 0;
+
+  /** Asks the backend to cancel the open thread's running run. The thread is then read again, so what is
+   *  shown is the stored outcome; only that one run is named, never another run or a proposal. */
+  async function stop() {
+    if (!running || stopping) return;
+    setStopping(true);
+    setStopError(null);
+    try {
+      await cancelThreadRun(running.thread_id, running.id);
+      await load(running.thread_id, true);
+      void refreshThreads();
+    } catch (error) {
+      if (viewing.current === running.thread_id) setStopError(message(error));
+    } finally {
+      setStopping(false);
+    }
+  }
 
   // Short status requests until the run ends. Reopening a thread with a running run resumes here.
   useEffect(() => {
@@ -206,6 +229,9 @@ export function useConversation() {
     loadError,
     busy: !!running || (!!pending && !sendError),
     running: !!running,
+    stopping,
+    stopError: running ? stopError : null,
+    stop,
     open,
     close,
     send,

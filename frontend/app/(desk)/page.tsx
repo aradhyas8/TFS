@@ -54,6 +54,7 @@ import {
   type Tab,
 } from "../../components/desk/Memo";
 import { isConversation, route, type Route } from "../../components/desk/route";
+import { Checkbox } from "@/components/arc/checkbox/checkbox";
 import Thread, { type ClarificationForm } from "../../components/desk/Thread";
 import threadStyles from "../../components/desk/Thread.module.css";
 import { Button } from "@/components/arc/button/button";
@@ -307,6 +308,9 @@ export default function DeskPage() {
   const [saveFailed, setSaveFailed] = useState<string | null>(null);
   // A workflow form opened from a clarification: its submission is a new run in this conversation.
   const [resuming, setResuming] = useState(false);
+  // Explicit choice, for one question: analyze the unsaved draft as a hypothetical portfolio.
+  const [useDraft, setUseDraft] = useState(false);
+  const [capturing, setCapturing] = useState(false);
   const threadEnd = useRef<HTMLDivElement>(null);
   const wasRunning = useRef(false);
 
@@ -1006,11 +1010,42 @@ export default function DeskPage() {
     // rather than landing in a thread that is not on screen.
     if (!showThread) conversation.close();
     showConversation();
-    void conversation.send(text.trim());
+    void sendToConversation(text.trim());
+  }
+
+  /** Sends into the conversation. With the draft selected, the draft is first stored as an immutable
+   *  hypothetical portfolio and only that stored copy is analyzed: later edits never reach the run, and
+   *  without the selection no draft state is sent at all. */
+  async function sendToConversation(text: string, workflowInput?: Record<string, unknown>) {
+    if (!(useDraft && isDirty && draftSnapshot)) return void conversation.send(text, workflowInput);
+    const portfolio: SavedPortfolio = structuredClone({
+      snapshot: draftSnapshot,
+      settings: storedSettings(draftSettings),
+      benchmark: draftBenchmark,
+      unresolved: draftUnresolved,
+      average_costs: draftAverageCosts,
+      saved_at: null,
+    });
+    setCapturing(true);
+    try {
+      const captured = await createArtifact({
+        portfolio,
+        label: "Hypothetical Draft Portfolio",
+        source_artifact_id: committedRevision ? `art-rev-${committedRevision}` : null,
+      });
+      setUseDraft(false);
+      void conversation.send(text, workflowInput, captured.id);
+    } catch {
+      setQuestion(text);
+      setNotice("Your draft could not be stored, so the question was not sent. Check that the analyst service is running, then ask again.");
+    } finally {
+      setCapturing(false);
+    }
   }
 
   function ask(text: string) {
-    if (isConversation(text, committedSnapshot)) {
+    // With the draft selected, any question that is not a slash shortcut goes to the conversation as a hypothetical.
+    if (useDraft && isDirty ? !text.trim().startsWith("/") : isConversation(text, committedSnapshot)) {
       chat(text);
       return;
     }
@@ -1451,7 +1486,7 @@ export default function DeskPage() {
   /** An explicit form submission into the open conversation. It starts a new run; it never edits an earlier one. */
   function submitWorkflow(text: string, workflowInput: Record<string, unknown>) {
     setWorkflow(null);
-    void conversation.send(text.trim(), workflowInput);
+    void sendToConversation(text.trim(), workflowInput);
   }
 
   function openClarificationForm(form: ClarificationForm) {
@@ -1464,6 +1499,21 @@ export default function DeskPage() {
   }
 
   const activeSnapshot = answer?.snapshot || committedSnapshot;
+  // Shown wherever a question can be asked, so the draft is only ever analyzed by explicit choice.
+  const draftBasis = isDirty && (
+    <div data-testid="draft-note" style={{ marginTop: 24, display: "flex", flexDirection: "column", gap: 8 }}>
+      <p className="cap">
+        Answers use your saved portfolio. Unsaved draft edits are not included until you review and confirm them.
+      </p>
+      <Checkbox
+        label="Ask about my unsaved draft"
+        description="Your next question uses the draft as a hypothetical portfolio. Your saved portfolio stays as it is, and slash workflows still use it."
+        checked={useDraft}
+        disabled={conversation.busy || capturing}
+        onCheckedChange={next => setUseDraft(next === true)}
+      />
+    </div>
+  );
   let center;
   if (registerOpen)
     center = (
@@ -1564,6 +1614,9 @@ export default function DeskPage() {
           }}
           onAskAgain={chat}
           onReload={() => void conversation.reload()}
+          onStop={() => void conversation.stop()}
+          stopping={conversation.stopping}
+          stopError={conversation.stopError}
           snapshot={committedSnapshot}
           committedRevision={committedRevision}
           proposals={proposalsLoaded ? proposals : null}
@@ -1576,11 +1629,7 @@ export default function DeskPage() {
           onOpenForm={openClarificationForm}
           onSubmitWorkflow={submitWorkflow}
         />
-        {isDirty && (
-          <p className="cap" data-testid="draft-note" style={{ marginTop: 24 }}>
-            Answers use your saved portfolio. Unsaved draft edits are not included until you review and confirm them.
-          </p>
-        )}
+        {draftBasis}
         <div ref={threadEnd} />
       </>
     );
@@ -1995,6 +2044,7 @@ export default function DeskPage() {
               </div>
             )}
             {center}
+            {!showThread && !run && !reopened && !registerOpen && !clarify && !failure && draftBasis}
             <p className="sr-only" aria-live="polite">
               {result && !run ? "Answer ready." : ""}
             </p>
@@ -2015,7 +2065,7 @@ export default function DeskPage() {
             themeCandidates={themeCandidates}
             onAddCandidate={addThemeCandidate}
             onRemoveCandidate={removeThemeCandidate}
-            running={!!run || conversation.busy}
+            running={!!run || conversation.busy || capturing}
             inThread={showThread}
             collapsed={collapsed && !!(answer || failure || run)}
             onExpand={() => setCollapsed(false)}
