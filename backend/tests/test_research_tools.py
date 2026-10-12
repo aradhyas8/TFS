@@ -1,8 +1,10 @@
 """Direct research and scenarios at the approved FastAPI seam."""
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +23,8 @@ from tests.test_financial_tools import NoWorkflowData, evidence, portfolio
 from tests.test_stock import company_judgments, research_fixture
 
 
-def run_tools(tmp_path, calls, *, saved=True, record=None, discovery=None, canadian=False, model=None):
+def run_tools(tmp_path, calls, *, saved=True, record=None, discovery=None, canadian=False, model=None,
+              financial=None, research=None, workflow_input=None):
     store = PortfolioStore(database_path=tmp_path / "portfolio.db")
     holding = portfolio()
     holding.snapshot.positions[0].listing = "XNAS"
@@ -49,13 +52,14 @@ def run_tools(tmp_path, calls, *, saved=True, record=None, discovery=None, canad
         ModelTurn(text="Done."),
     ])
     with TestClient(create_app(
-        model=model, data=NoWorkflowData(), financial=FakeFinancialProvider(facts),
-        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(record or research_fixture())}),
+        model=model, data=NoWorkflowData(), financial=financial or FakeFinancialProvider(facts),
+        research=research or ReviewedResearchProvider({"acme": CompanyResearch.model_validate(record or research_fixture())}),
         discovery=discovery, portfolio_store=store,
         settings=Settings(api_key="sk-test", model="test-model", request_timeout=5),
     )) as client:
         thread = client.post("/api/threads").json()["id"]
-        run = submit(client, thread, "Retrieve primary issuer evidence.")
+        run = submit(client, thread, "Retrieve primary issuer evidence.", workflow_input=workflow_input)
+        run["messages"] = client.get(f"/api/threads/{thread}").json()["messages"]
         artifacts = [client.get(f"/api/artifacts/{id}").json() for id in run["artifact_ids"]]
         current = client.get("/api/portfolio").json()
         if saved:
@@ -127,6 +131,63 @@ def comparison_args():
     }
 
 
+@pytest.mark.parametrize("structured", [False, True])
+def test_two_company_screen_cases_and_comparison_deliver_final_answer_in_eight_turns(tmp_path, structured):
+    class TwoCompanies:
+        async def scan(self, snapshot):
+            stock = snapshot.positions[0]
+            return DiscoveryScan(scanned_at=datetime.now(UTC), as_of=snapshot.as_of, source="Reviewed fixture",
+                candidates=[DiscoveryCandidate(
+                    position=stock.model_copy(update={"id": id, "shares": Decimal(0), "ticker": ticker,
+                                                      "company_id": company, "company_name": company.title()}),
+                    as_of=snapshot.as_of, source="Reviewed fixture", signal="Review conditional operating evidence.",
+                ) for id, ticker, company in (("one", "ACME", "acme"), ("two", "BETA", "beta"))])
+
+    records = {}
+    facts = evidence()
+    for id, ticker, company in (("one", "ACME", "acme"), ("two", "BETA", "beta")):
+        record = research_fixture()
+        record["company_id"] = company
+        for doc in record["documents"]:
+            doc["company_id"] = company
+        records[company] = CompanyResearch.model_validate(record)
+        facts.identities[id] = facts.identities["stock"].model_copy(update={
+            "ticker": ticker, "listing": "XNAS", "currency": "USD", "company_id": company, "company_name": company.title(),
+        })
+        facts.quotes[id] = facts.quotes["stock"].model_copy(update={"ticker": ticker, "listing": "XNAS", "currency": "USD"})
+    args = comparison_args()
+    for id in ("one", "two"):
+        args["alternatives"].insert(0, {"id": id, "kind": "stock", "position_id": id})
+        stock_driver = driver(id, reinvest=False)
+        stock_driver.update(annual_returns=None, income_multipliers=None)
+        args["judgments"]["alternatives"].insert(0, {"alternative_id": id, "cases": [
+            {"name": name, "drivers": [stock_driver], "assumptions": ["Conditional company cases apply."],
+             "downside": "Operating losses impair capital.", "uncertainty": ["Valuation may differ."]}
+            for name in ("downside", "base", "upside")]})
+    calls = [("review_portfolio", {}), ("scan_opportunities", {})]
+    for id in ("one", "two"):
+        calls.extend([
+            ("get_company_research", {"position_id": id}),
+            ("calculate_company_cases", {"position_id": id, "judgments": company_judgments()}),
+        ])
+    calls.append(("calculate_comparison", args))
+    run, artifacts, model = run_tools(tmp_path, calls, discovery=TwoCompanies(),
+        financial=FakeFinancialProvider(facts), research=ReviewedResearchProvider(records),
+        workflow_input={"comparison": {key: args[key] for key in ("scope_position_ids", "alternatives")}} if structured else None)
+    assert run["status"] == "completed", run.get("error")
+    assert len(model.requests) == 8
+    assert run["messages"][-1]["text"] == "Done."
+    comparison = artifacts[-1]["payload"]
+    assert len(comparison["source_artifact_ids"]) == 2
+    assert comparison["result"]["starting_value"] == "800"
+    assert {row["selection"]["id"] for row in comparison["result"]["alternatives"]} == {"one", "two", "cash", "keep"}
+    for row in comparison["result"]["alternatives"][:2]:
+        assert row["cases"][1]["known_terminal_value"] == "4000"
+    outcomes = [outcome for message in run["messages"] for outcome in message["tool_outcomes"]]
+    assert [outcome["name"] for outcome in outcomes] == [name for name, _ in calls]
+    assert all(outcome["status"] == "success" for outcome in outcomes)
+
+
 def test_direct_comparison_keeps_common_capital_and_unknown_effects(tmp_path):
     run, artifacts, _ = run_tools(tmp_path, [("calculate_comparison", comparison_args())])
     assert run["status"] == "completed"
@@ -138,6 +199,104 @@ def test_direct_comparison_keeps_common_capital_and_unknown_effects(tmp_path):
         assert case["known_terminal_value"] == "882.840192"
         assert case["terminal_value"] is None
         assert "taxes" in case["unmodeled"]
+
+
+def test_structured_comparison_selection_is_available_without_ids_in_question(tmp_path):
+    args = comparison_args()
+    args["alternatives"][0]["id"] = "user-cash-choice"
+    args["alternatives"][1]["id"] = "user-retain-choice"
+    selection = {key: args[key] for key in ("scope_position_ids", "alternatives")}
+    selection["effects"] = [{"alternative_id": "user-cash-choice", "transaction_cost": "5",
+                             "terminal_tax": "10", "as_of": portfolio().snapshot.as_of.isoformat(),
+                             "source": "Explicit user input"}]
+
+    class FromBoundSelection(CapturingTransport):
+        async def respond(self, messages, **kwargs):
+            self.requests.append({"messages": messages, **kwargs})
+            if len(self.requests) > 1:
+                return ModelTurn(text="The selected alternatives have been compared.")
+            context = json.loads(messages[1]["content"])
+            bound = context["comparison_inputs"]
+            assert bound["scope_position_ids"] == ["cash"]
+            assert [row["id"] for row in bound["alternatives"]] == ["user-cash-choice", "user-retain-choice"]
+            judgments = comparison_args()["judgments"]
+            for judgment, alternative in zip(judgments["alternatives"], bound["alternatives"], strict=True):
+                judgment["alternative_id"] = alternative["id"]
+            return ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps({
+                "scope_position_ids": bound["scope_position_ids"], "alternatives": bound["alternatives"],
+                "judgments": judgments,
+            }))])
+    run, artifacts, model = run_tools(tmp_path, [], workflow_input={"comparison": selection}, model=FromBoundSelection([]))
+    assert run["status"] == "completed", run.get("error")
+    assert run["messages"][-1]["text"] == "The selected alternatives have been compared."
+    result = artifacts[0]["payload"]["result"]
+    assert result["inputs"]["effects"] == selection["effects"]
+    assert result["alternatives"][0]["cases"][1]["terminal_value"] == "867.3224408"
+    assert "12.34" not in json.dumps(model.requests)
+
+
+@pytest.mark.parametrize("replacement", ["scope", "alternative_id", "destination", "omit_alternative"])
+def test_model_cannot_replace_structured_comparison_selection(tmp_path, replacement):
+    bound = comparison_args()
+    selection = {key: bound[key] for key in ("scope_position_ids", "alternatives")}
+    args = comparison_args()
+    if replacement == "scope":
+        args["scope_position_ids"] = ["stock"]
+    elif replacement == "alternative_id":
+        args["alternatives"][0]["id"] = "invented-choice"
+    elif replacement == "destination":
+        args["alternatives"][0] = {"id": "cash", "kind": "stock", "position_id": "stock"}
+    else:
+        args["alternatives"].pop()
+    run, artifacts, _ = run_tools(tmp_path, [("calculate_comparison", args)], workflow_input={"comparison": selection})
+    assert run["status"] == "completed"
+    assert len(artifacts) == 1
+    assert "explicitly selected scope and alternatives" in artifacts[0]["payload"]["clarification_required"]["message"]
+
+
+def test_combined_canadian_primary_research_preserves_jurisdiction_and_case_validation(tmp_path):
+    run, artifacts, _ = run_tools(tmp_path, [
+        ("get_company_research", {"position_id": "stock"}),
+        ("calculate_company_cases", {"position_id": "stock", "judgments": company_judgments()}),
+    ], canadian=True, record=canadian_research_fixture())
+    assert run["status"] == "completed"
+    assert artifacts[0]["payload"]["document_ids"] == ["sedar_filing", "issuer_release"]
+    assert artifacts[1]["payload"]["result"]["cases"][1]["terminal_price"] == "100"
+
+
+def test_combined_research_cannot_extend_the_shared_six_hundred_second_deadline(tmp_path, monkeypatch):
+    elapsed = 0
+
+    class ClockedAsyncio:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        def get_event_loop(self):
+            loop = asyncio.get_event_loop()
+            return SimpleNamespace(time=lambda: loop.time() + elapsed)
+
+    class Research(ReviewedResearchProvider):
+        async def company(self, position, as_of):
+            nonlocal elapsed
+            result = await super().company(position, as_of)
+            elapsed = 601
+            return result
+
+    monkeypatch.setattr("analyst.orchestrator.asyncio", ClockedAsyncio())
+    run, _, model = run_tools(tmp_path, [("get_company_research", {"position_id": "stock"})],
+        research=Research({"acme": CompanyResearch.model_validate(research_fixture())}))
+    assert run["status"] == "failed"
+    assert run["error"] == "Run deadline of 600 seconds exceeded."
+    assert len(model.requests) == 1
+    assert not any(message["text"] == "Done." for message in run["messages"])
+
+
+def test_combined_research_cannot_extend_the_eight_turn_limit(tmp_path):
+    run, _, model = run_tools(tmp_path, [("get_company_research", {"position_id": "stock"})] * 8)
+    assert run["status"] == "failed"
+    assert run["error"] == "Maximum orchestration turns (8) reached without terminal completion."
+    assert len(model.requests) == 8
+    assert not any(message["text"] == "Done." for message in run["messages"])
 
 
 def test_direct_screen_is_bounded_and_does_not_add_holdings(tmp_path):
@@ -189,6 +348,7 @@ def test_cases_require_primary_retrieval(tmp_path):
 
 @pytest.mark.parametrize("name,args", [
     ("get_sec_filings", {"position_id": "stock", "url": "https://example.com"}),
+    ("get_company_research", {"position_id": "stock", "research": {}}),
     ("calculate_company_cases", {"position_id": "stock", "judgments": company_judgments(), "facts": []}),
     ("calculate_comparison", {**comparison_args(), "effects": []}),
     ("calculate_comparison", {**comparison_args(), "fund_facts": []}),
@@ -277,10 +437,11 @@ class ThreeCandidateScreen:
             ) for id in ("one", "two", "three")])
 
 
-def test_screen_research_stops_after_two_candidates(tmp_path):
+@pytest.mark.parametrize("name", ["get_sec_filings", "get_company_research"])
+def test_screen_research_stops_after_two_candidates(tmp_path, name):
     run, artifacts, _ = run_tools(tmp_path, [
         ("scan_opportunities", {}),
-        *[("get_sec_filings", {"position_id": id}) for id in ("one", "two", "three")],
+        *[(name, {"position_id": id}) for id in ("one", "two", "three")],
     ], discovery=ThreeCandidateScreen())
     assert run["status"] == "completed"
     assert len([a for a in artifacts if a["reference"]["kind"] == "company_research"]) == 2

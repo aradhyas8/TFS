@@ -38,7 +38,7 @@ class ResearchArguments(ReadArguments):
     position_id: Identifier
 
 
-ResearchName = Literal["get_sec_filings", "get_sedar_filings", "get_issuer_material"]
+ResearchName = Literal["get_sec_filings", "get_sedar_filings", "get_issuer_material", "get_company_research"]
 
 
 class PrimaryResearch(Contract):
@@ -89,7 +89,8 @@ class ResearchTools:
         self.read: dict[str, set[str]] = {}
         self.stocks: dict[str, StockResult] = {}
         self.stock_artifacts: dict[str, str] = {}
-        self.workflow_input = workflow_input or {}
+        supplied_comparison = (workflow_input or {}).get("comparison")
+        self.comparison = ComparisonInput.model_validate(supplied_comparison) if supplied_comparison is not None else None
         self.discovery = discovery or ReviewedDiscoveryProvider()
         self.scan_result: DiscoveryScan | None = None
         self.screen_researched: set[str] = set()
@@ -100,9 +101,14 @@ class ResearchTools:
                 "known_instruments", self.handler(cast(ResearchName, name)))
             for name in ("get_sec_filings", "get_sedar_filings", "get_issuer_material")
         }
+        self.capabilities["get_company_research"] = ReadCapability(
+            ResearchArguments, "Retrieve primary filings and issuer material together for one known US/Canadian stock. "
+            "Use this before company cases, especially for screened candidates, to fit both companies and a final answer "
+            "within eight turns. Calls execute sequentially; facts and jurisdiction come from the backend provider.",
+            "known_instruments", self.handler("get_company_research"))
         self.capabilities["calculate_company_cases"] = ReadCapability(
             CaseArguments, "Calculate conditional company cases using retrieved primary facts and existing explained judgment schemas. "
-            "Requires filing and issuer retrieval plus a saved reporting-currency context. Does not authorize sizing.",
+            "Requires get_company_research (or separate filing and issuer retrieval) plus a saved reporting-currency context. Does not authorize sizing.",
             "primary_research", self.cases)
         self.capabilities["calculate_comparison"] = ReadCapability(
             ComparisonArguments, "Compare selected alternatives on the same actual held capital, including no action. "
@@ -111,7 +117,8 @@ class ResearchTools:
             "bound_revision", self.compare)
         self.capabilities["scan_opportunities"] = ReadCapability(
             ReadArguments, "Retrieve the existing dated opportunity screen once per run (at most eight candidates). "
-            "Candidates stay temporary; primary research is limited to two screened stock candidates.",
+            "Candidates stay temporary; primary research is limited to two screened stock candidates. "
+            "Use get_company_research and then calculate_company_cases for each candidate before comparison and a final answer.",
             "bound_revision", self.scan)
 
     def handler(self, name: ResearchName) -> Any:
@@ -167,11 +174,14 @@ class ResearchTools:
         if not canadian and any(doc.authority in {"sedar", "sedar_plus"} for doc in record.documents):
             return self.financial.clarification(context, "unresolved_identity", "Research jurisdiction conflicts with the selected listing.")
         authorities = {"sec"} if name == "get_sec_filings" else {"sedar", "sedar_plus"} if name == "get_sedar_filings" else {"issuer"}
+        if name == "get_company_research":
+            authorities = {"sedar", "sedar_plus", "issuer"} if canadian else {"sec", "issuer"}
         selected = record.model_copy(deep=True)
         documents = [doc for doc in selected.documents if doc.authority in authorities]
         if not any(doc.available for doc in documents):
             selected.issues.append("Requested primary material is unavailable; no current coverage is claimed.")
-        self.read.setdefault(target.id, set()).add(name)
+        self.read.setdefault(target.id, set()).update(
+            {expected, "get_issuer_material"} if name == "get_company_research" else {name})
         return self.financial.store(context, PrimaryResearch(
             capability=name, position_id=target.id, target=target, as_of=as_of,
             document_ids=[doc.id for doc in documents], research=selected,
@@ -206,9 +216,8 @@ class ResearchTools:
         if context.portfolio is None:
             return self.financial.clarification(context, "portfolio_required", "Save a portfolio to establish actual comparison capital.")
         selection = ComparisonInput(scope_position_ids=parsed.scope_position_ids, alternatives=parsed.alternatives)
-        supplied = self.workflow_input.get("comparison")
-        if supplied is not None:
-            explicit = ComparisonInput.model_validate(supplied)
+        if self.comparison is not None:
+            explicit = self.comparison
             if (selection.scope_position_ids, selection.alternatives) != (explicit.scope_position_ids, explicit.alternatives):
                 return self.financial.clarification(context, "unavailable", "Compare exactly the explicitly selected scope and alternatives.")
             selection = explicit

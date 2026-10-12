@@ -101,9 +101,10 @@ class Orchestrator:
         try:
             context = RunContext(self.db, run_record)
             financial_tools = FinancialTools(self.financial)
+            research_tools = ResearchTools(financial_tools, self.research, workflow_input, self.discovery)
             capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
-                            **ResearchTools(financial_tools, self.research, workflow_input, self.discovery).capabilities}
-            messages = context.messages()
+                            **research_tools.capabilities}
+            messages = context.messages(comparison=research_tools.comparison)
             initial_messages = messages
             exchanges: list[list[dict[str, Any]]] = []
             seen_calls: set[str] = set()
