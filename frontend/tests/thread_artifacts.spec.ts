@@ -48,7 +48,7 @@ test("a workflow run in the conversation shows the stored financial result, unch
   page.on("request", request => { if (request.url().includes("/api/analyze")) analyses.push(request.url()); });
 
   await send(page, "Review my exposure in chat");
-  const result = thread(page).getByRole("article", { name: /Exposure Review/ });
+  const result = thread(page).getByRole("article", { name: "Exposure review result" });
   const memo = result.getByRole("region", { name: "Analyst memo" });
   // The backend's computed values, in the existing review memo. The run is dated today, so the test server's
   // September marks are out of date and only the cash balance is a known value: nothing is filled in by prose.
@@ -61,16 +61,18 @@ test("a workflow run in the conversation shows the stored financial result, unch
 
   const stored = (await detail(page)).runs[0].artifact_ids as string[];
   expect(stored).toHaveLength(1);
-  const first = await memo.innerText();
+  const first = await result.innerText();
 
-  // A changed portfolio does not rewrite a result that was computed on revision 1.
-  const next = await page.request.put("/api/portfolio", { data: { base_revision: 1, portfolio: { ...SAVED, settings: { single_company_cap: "0.5" } } } });
+  // A changed portfolio (a renamed account, a looser rule) does not rewrite a result computed on revision 1.
+  const renamed = { ...SAVED.snapshot, accounts: [{ id: "tfsa", name: "Tax free" }, { id: "rrsp", name: "RRSP" }] };
+  const next = await page.request.put("/api/portfolio", { data: { base_revision: 1, portfolio: { ...SAVED, snapshot: renamed, settings: { single_company_cap: "0.5" } } } });
   await page.request.post(`/api/portfolio/proposals/${(await next.json()).proposal.id}/confirm`);
   expect((await holdings(page)).revision).toBe(2);
 
   await page.reload();
   await expect(memo).toContainText("known C$1,000");
-  expect(await memo.innerText()).toBe(first);
+  await expect(memo).toContainText("ACME · TFSA");
+  expect(await result.innerText()).toBe(first);
   await expect(result).toContainText("Portfolio revision 1");
   expect((await detail(page)).runs[0].artifact_ids).toEqual(stored);
   // The thread never re-runs an analysis to draw a result.
@@ -118,19 +120,23 @@ test("a failed web search says no lookup took place, and the answer claims no so
 
 test("a direct calculation shows its stored values, and a result that no longer exists says so", async ({ page }) => {
   await open(page);
+  const artifacts: string[] = [];
+  page.on("response", async response => { if (response.url().includes("/api/artifacts/")) artifacts.push(await response.text().catch(() => "")); });
   await send(page, "Show my exposure numbers");
 
-  const card = thread(page).getByRole("article").filter({ hasText: "Portfolio exposure and guardrails" });
+  const card = thread(page).getByRole("article", { name: "Portfolio exposure and guardrails" });
   await expect(card).toContainText("Portfolio revision 1");
-  const toggle = card.getByRole("button", { name: /Portfolio exposure and guardrails/ });
-  await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await toggle.focus();
-  await page.keyboard.press("Enter");
-  await expect(toggle).toHaveAttribute("aria-expanded", "true");
   // The stored calculation, value for value: the cash balance the backend recorded, not a paraphrase.
   const values = card.getByRole("tree", { name: "Portfolio exposure and guardrails values" });
   await expect(values).toContainText('capability:"review_portfolio"');
   await expect(values).toContainText('holdings_as_of:"2026-09-30"');
+  // Stored values reach the browser without the private cost basis or any credential.
+  const shown = (await page.getByRole("main").innerHTML()) + JSON.stringify(await page.evaluate(() => ({ ...localStorage })));
+  for (const secret of ["average_cost", "sk-test-backend-only-never-browser", "continuation"]) {
+    expect(shown).not.toContain(secret);
+    for (const body of artifacts) expect(body).not.toContain(secret);
+  }
+  expect(artifacts.length).toBeGreaterThan(0);
 
   await page.route("**/api/artifacts/*", route => route.fulfill({ status: 404, json: { detail: "Artifact not found." } }));
   await page.reload();
@@ -225,6 +231,13 @@ test("new cash is only run from the explicit form with its confirmation, as a ne
   // The stored result is what the investor reads; the note about the model's reading budget is not shown as a failure.
   await expect(thread(page)).toContainText("Checked new cash allocation");
   await expect(thread(page)).not.toContainText("retrieval budget");
+
+  // Re-running from the stored result reopens the form: the earlier confirmation is not carried forward.
+  await result.getByRole("button", { name: "Re-run with these" }).click();
+  await expect(form.getByRole("checkbox")).not.toBeChecked();
+  await expect(form.getByLabel("Amount", { exact: true })).toHaveValue("500");
+  await expect(analyze).toBeDisabled();
+  expect(bodies).toHaveLength(2);
 });
 
 test("a theme is researched only after the form is complete and then explicitly agreed", async ({ page }) => {
@@ -407,9 +420,7 @@ for (const [name, width, height] of [["phone", 390, 844], ["tablet", 768, 1024],
     await send(page, "What is the latest news on Acme?");
     await expect(thread(page).getByRole("list", { name: "Sources for this answer" })).toBeVisible();
     await send(page, "Show my exposure numbers");
-    const card = thread(page).getByRole("article").filter({ hasText: "Portfolio exposure and guardrails" });
-    await card.getByRole("button", { name: /Portfolio exposure and guardrails/ }).click();
-    await expect(card.getByRole("tree")).toBeVisible();
+    await expect(thread(page).getByRole("article", { name: "Portfolio exposure and guardrails" }).getByRole("tree")).toBeVisible();
     await send(page, "Set my ACME shares to 12");
     const proposal = thread(page).getByRole("article", { name: "Proposed portfolio changes" });
     await expect(proposal).toContainText("Waiting for your review");

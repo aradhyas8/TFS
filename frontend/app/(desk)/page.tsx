@@ -54,7 +54,7 @@ import {
   type Tab,
 } from "../../components/desk/Memo";
 import { isConversation, route, type Route } from "../../components/desk/route";
-import Thread from "../../components/desk/Thread";
+import Thread, { type ClarificationForm } from "../../components/desk/Thread";
 import threadStyles from "../../components/desk/Thread.module.css";
 import { Button } from "@/components/arc/button/button";
 import { useConversation } from "../../components/desk/useConversation";
@@ -111,6 +111,14 @@ function storedSettings(settings: PortfolioSettings): PortfolioSettings | null {
     return v !== undefined && v !== null;
   });
   return hasAny ? cleaned : null;
+}
+
+/** Which workflow computed a result, read from the result itself. */
+function workflowOf(result: Analysis): DecisionWorkflow {
+  if (result.reunderwriting) return "rebalance";
+  if (result.stock && !result.allocation) return "stock";
+  if (result.theme) return "theme";
+  return result.allocation ? "new_cash" : "review";
 }
 
 function pastDurations(sent: Sent | null): number[] {
@@ -221,6 +229,7 @@ export default function DeskPage() {
   // Proposal review and confirmation state
   const [proposals, setProposals] = useState<PortfolioProposal[]>([]);
   const [proposalsLoaded, setProposalsLoaded] = useState(false);
+  const [proposalsFailed, setProposalsFailed] = useState(false);
   const [activeProposal, setActiveProposal] = useState<PortfolioProposal | null>(null);
   const [pendingProposals, setPendingProposals] = useState<PortfolioProposal[]>([]);
   const [reviewing, setReviewing] = useState(false);
@@ -234,9 +243,10 @@ export default function DeskPage() {
       .then(res => {
         setProposals(res);
         setProposalsLoaded(true);
+        setProposalsFailed(false);
         setPendingProposals(res.filter(p => p.status === "pending"));
       })
-      .catch(() => {});
+      .catch(() => setProposalsFailed(true));
   }
 
   function openProposal(proposal: PortfolioProposal) {
@@ -283,6 +293,7 @@ export default function DeskPage() {
   // on the decision if duplicate register entries become a problem.
   const [savedResults, setSavedResults] = useState<Record<string, SavedDecision>>({});
   const [savingResult, setSavingResult] = useState<string | null>(null);
+  const [saveFailed, setSaveFailed] = useState<string | null>(null);
   // A workflow form opened from a clarification: its submission is a new run in this conversation.
   const [resuming, setResuming] = useState(false);
   const threadEnd = useRef<HTMLDivElement>(null);
@@ -1050,21 +1061,18 @@ export default function DeskPage() {
 
   /** The register entry for a result: its workflow and subject, from what was sent when known, else from the stored result itself. */
   function decisionFor(result: Analysis, from: Sent | null): { workflow: DecisionWorkflow; subject: DecisionSubject } {
-    const workflow: DecisionWorkflow = from?.stock
-      ? "stock"
-      : from?.newCash
-        ? "new_cash"
-        : from?.theme
-          ? "theme"
-          : from?.rebalance || result.reunderwriting
-            ? "rebalance"
-            : result.stock && !result.allocation
-              ? "stock"
-              : result.theme
-                ? "theme"
-                : result.allocation
-                  ? "new_cash"
-                  : "review";
+    // A desk answer keeps its long-standing precedence; a stored result has only itself to go by.
+    const workflow: DecisionWorkflow = !from
+      ? workflowOf(result)
+      : from.stock || result.stock
+        ? "stock"
+        : from.newCash || result.allocation
+          ? "new_cash"
+          : from.theme || result.theme
+            ? "theme"
+            : from.rebalance || result.reunderwriting
+              ? "rebalance"
+              : "review";
     if (workflow === "stock") {
       const id = from?.stock || result.stock?.position_id;
       const held = result.portfolio.positions.find(row => row.supplied.id === id)?.supplied;
@@ -1119,13 +1127,13 @@ export default function DeskPage() {
   /** Saves a decision from a result stored in the conversation. The stored values are saved as they are. */
   async function saveResult(artifactId: string, analysis: Analysis) {
     setSavingResult(artifactId);
-    setNotice("");
+    setSaveFailed(null);
     try {
       const record = await post<SavedDecision>("/api/decisions", { result: analysis, ...decisionFor(analysis, null) });
       setSavedResults(map => ({ ...map, [artifactId]: record }));
       setDecisions(list => [record, ...list.filter(d => d.id !== record.id)]);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "The decision couldn't be saved.");
+    } catch {
+      setSaveFailed(artifactId);
     } finally {
       setSavingResult(null);
     }
@@ -1355,11 +1363,12 @@ export default function DeskPage() {
       onConfirm: (action: DecisionAction, notes: string | undefined) =>
         o.saved ? confirm(o.saved, action, notes) : Promise.resolve(),
     };
-    if (analysis.reunderwriting) return <RebalanceAnswer key={key} {...shared} />;
-    if (analysis.stock && !analysis.allocation) return <StockAnswer key={key} {...shared} />;
-    if (analysis.theme) return <ThemeAnswer key={key} {...shared} onAgree={o.onAgree} />;
-    if (!analysis.allocation) return <ReviewAnswer key={key} {...shared} />;
-    const cash = o.cash ?? analysis.allocation.context;
+    const workflow = workflowOf(analysis);
+    if (workflow === "rebalance") return <RebalanceAnswer key={key} {...shared} />;
+    if (workflow === "stock") return <StockAnswer key={key} {...shared} />;
+    if (workflow === "theme") return <ThemeAnswer key={key} {...shared} onAgree={o.onAgree} />;
+    if (workflow === "review") return <ReviewAnswer key={key} {...shared} />;
+    const cash = o.cash ?? analysis.allocation!.context;
     return (
       <Answer
         key={key}
@@ -1371,7 +1380,7 @@ export default function DeskPage() {
   }
 
   /** A stored analysis inside the conversation: the same memo, reading the stored values, with its own save control. */
-  function storedResult(analysis: Analysis, reference: ArtifactReference) {
+  function storedResult(analysis: Analysis, reference: ArtifactReference, source: Snapshot) {
     const open = () => setThreadResult({ id: reference.id, analysis });
     const savedHere = savedResults[reference.id] ?? null;
     return (
@@ -1389,13 +1398,17 @@ export default function DeskPage() {
             open();
             openTab(next);
           },
-          snapshot: committedSnapshot,
-          onRerun: next =>
-            submitWorkflow(analysis.question, { workflow: "run_new_cash_allocation", new_cash: next }),
+          snapshot: source,
+          // A stored result never carries its confirmation forward: the form opens for a fresh one.
+          onRerun: next => {
+            setNewCash({ ...next, confirmed: false });
+            setQuestion(analysis.question);
+            openClarificationForm("/new-cash");
+          },
         })}
         <div className={threadStyles.save}>
           {savedHere ? (
-            <span>Saved to Decisions {clock(savedHere.saved_at)}</span>
+            <span role="status">Saved to Decisions {clock(savedHere.saved_at)}</span>
           ) : (
             <Button
               variant="secondary"
@@ -1404,6 +1417,9 @@ export default function DeskPage() {
             >
               Save decision
             </Button>
+          )}
+          {saveFailed === reference.id && (
+            <span role="alert">The decision was not saved. Check that the analyst service is running, then save it again.</span>
           )}
         </div>
       </>
@@ -1416,7 +1432,7 @@ export default function DeskPage() {
     void conversation.send(text.trim(), workflowInput);
   }
 
-  function openClarificationForm(form: string) {
+  function openClarificationForm(form: ClarificationForm) {
     if (form === "holdings") return openTab("holdings");
     setResuming(true);
     setWorkflow(form === "/theme" ? "theme" : "new-cash");
@@ -1529,6 +1545,8 @@ export default function DeskPage() {
           snapshot={committedSnapshot}
           committedRevision={committedRevision}
           proposals={proposalsLoaded ? proposals : null}
+          proposalsFailed={proposalsFailed}
+          onReloadProposals={refreshProposals}
           theme={theme}
           busy={conversation.busy}
           renderResult={storedResult}

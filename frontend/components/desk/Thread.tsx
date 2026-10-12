@@ -2,7 +2,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Alert } from "@/components/arc/alert/alert";
 import { Badge } from "@/components/arc/badge/badge";
 import { Button } from "@/components/arc/button/button";
-import { ExpandableCard } from "@/components/arc/expandable-card/expandable-card";
 import { JsonViewer } from "@/components/arc/json-viewer/json-viewer";
 import { Skeleton } from "@/components/arc/skeleton/skeleton";
 import { TextShimmer } from "@/components/arc/text-shimmer/text-shimmer";
@@ -37,19 +36,24 @@ type Props = {
   committedRevision: number | null;
   /** Proposal records from the backend; null until the first list has arrived. */
   proposals: PortfolioProposal[] | null;
+  proposalsFailed: boolean;
+  onReloadProposals: () => void;
   /** The theme form as filled in this session, shown again when only the agreement is missing. */
   theme: ThemeInput;
   busy: boolean;
-  /** Draws a stored analysis with the desk's existing result memo. */
-  renderResult: (result: Analysis, reference: ArtifactReference) => ReactNode;
+  /** Draws a stored analysis with the desk's existing result memo, against the portfolio it was computed from. */
+  renderResult: (result: Analysis, reference: ArtifactReference, source: Snapshot) => ReactNode;
   onReviewProposal: (proposal: PortfolioProposal) => void;
   /** Opens an existing form (a workflow form or the holdings editor) so the missing inputs can be given. */
-  onOpenForm: (form: string) => void;
+  onOpenForm: (form: ClarificationForm) => void;
   /** An explicit submission: a new message with typed workflow input, which starts a new run. */
   onSubmitWorkflow: (text: string, workflowInput: Record<string, unknown>) => void;
 };
 
-type Shared = Pick<Props, "snapshot" | "committedRevision" | "proposals" | "theme" | "busy" | "renderResult" | "onReviewProposal" | "onOpenForm" | "onSubmitWorkflow">;
+/** The existing desk forms a request for inputs can point at. A stock is chosen in place, so it opens none. */
+export type ClarificationForm = "/new-cash" | "/theme" | "holdings";
+
+type Shared = Pick<Props, "snapshot" | "committedRevision" | "proposals" | "proposalsFailed" | "onReloadProposals" | "theme" | "busy" | "renderResult" | "onReviewProposal" | "onOpenForm" | "onSubmitWorkflow">;
 
 const RUN_NOTICE: Partial<Record<RunRecord["status"], string>> = {
   failed: "This answer did not finish",
@@ -106,18 +110,44 @@ function useArtifact(id: string): [Loaded, () => void] {
 }
 
 /** What a stored result was computed from. It is fixed when the result is stored and never follows the current portfolio. */
-function provenance(reference: ArtifactReference, committedRevision: number | null): string {
-  const basis = reference.basis === "hypothetical"
-    ? "Hypothetical, not your saved portfolio"
-    : reference.revision
-      ? `Portfolio revision ${reference.revision}${committedRevision && committedRevision !== reference.revision ? `, before the current revision ${committedRevision}` : ""}`
-      : "No portfolio used";
+function provenance(reference: ArtifactReference): string {
+  const basis = reference.basis === "hypothetical" ? "Hypothetical portfolio" : reference.revision ? `Portfolio revision ${reference.revision}` : "No portfolio used";
   return `${basis} · stored ${fullDate(reference.created_at)}`;
+}
+
+const unreadable = (
+  <Alert tone="warning" title="This stored result cannot be shown">
+    Its stored values are not in a form the desk can read. Ask again to compute a new result.
+  </Alert>
+);
+
+/** The holdings and accounts a stored analysis was computed from, as the analysis itself recorded them.
+ *  A memo drawn from a stored result names these, never today's portfolio. */
+function storedSnapshot({ portfolio }: Analysis): Snapshot {
+  return {
+    as_of: portfolio.holdings_as_of ?? portfolio.as_of,
+    reporting_currency: portfolio.reporting_currency,
+    accounts: portfolio.accounts.map(({ id, name }) => ({ id, name })),
+    positions: portfolio.positions.map(row => row.supplied),
+    fx: [],
+  };
+}
+
+function SourceLink({ url, title }: { url: URL; title: string }) {
+  return (
+    <>
+      <a href={url.href} target="_blank" rel="noopener noreferrer">
+        {title}
+        <span className="sr-only"> (opens in a new tab)</span>
+      </a>
+      <span className={styles.host}>{url.hostname}</span>
+    </>
+  );
 }
 
 type WebResearch = { status?: string; query?: string | null; sources?: { url?: string; title?: string | null }[]; qualifications?: string[] };
 
-function Artifact({ id, shared }: { id: string; shared: Shared }) {
+function Artifact({ id, actionable, shared }: { id: string; actionable: boolean; shared: Shared }) {
   const [loaded, retry] = useArtifact(id);
   if (loaded.state === "loading") return <Skeleton label="Loading stored result" lines={2} />;
   if (loaded.state === "missing")
@@ -138,19 +168,23 @@ function Artifact({ id, shared }: { id: string; shared: Shared }) {
       </div>
     );
   const { reference, payload } = loaded.envelope;
-  const source = provenance(reference, shared.committedRevision);
+  const source = provenance(reference);
   if (reference.kind === "portfolio_snapshot" || !reference.kind) return <Badge size="sm">{reference.label}</Badge>;
   // A financial capability that could not proceed stores what it needs; that is a request, not a result to read.
   const needed = (payload as { clarification_required?: Record<string, unknown> } | null)?.clarification_required;
   if (needed) {
     const form = ["portfolio_required", "unresolved_identity"].includes(text(needed.code)) ? "holdings" : "";
-    return <Clarification clarification={{ ...needed, form }} actionable shared={shared} />;
+    return <Clarification clarification={{ ...needed, form }} actionable={actionable} shared={shared} />;
   }
   if (reference.kind === "analysis_result")
     return (
       <article className={styles.result} aria-label={`${sentenceCase(reference.label)} result`}>
         <p className={styles.source}>{`${sentenceCase(reference.label)} · ${source}`}</p>
-        {shared.renderResult(payload as Analysis, reference)}
+        {(payload as Partial<Analysis> | null)?.portfolio?.positions && (payload as Analysis).recommendation ? (
+          shared.renderResult(payload as Analysis, reference, storedSnapshot(payload as Analysis))
+        ) : (
+          unreadable
+        )}
       </article>
     );
   if (reference.kind === "web_research") {
@@ -168,18 +202,19 @@ function Artifact({ id, shared }: { id: string; shared: Shared }) {
           </Alert>
         ) : (
           <>
-            <ul className={styles.sources} aria-label="Sources consulted">
-              {sources.map(item => (
-                <li key={item.url.href}>
-                  <a href={item.url.href} target="_blank" rel="noopener noreferrer">
-                    {item.title}
-                  </a>
-                  <span className={styles.host}>{item.url.hostname}</span>
-                </li>
-              ))}
-            </ul>
-            {list(research.qualifications).map(note => (
-              <p key={note} className={styles.source}>
+            {sources.length ? (
+              <ul className={styles.sources} aria-label="Sources consulted">
+                {sources.map(item => (
+                  <li key={item.url.href}>
+                    <SourceLink url={item.url} title={item.title} />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className={styles.source}>No sources were stored for this search.</p>
+            )}
+            {list(research.qualifications).map((note, index) => (
+              <p key={index} className={styles.source}>
                 {sentence(note)}
               </p>
             ))}
@@ -191,9 +226,10 @@ function Artifact({ id, shared }: { id: string; shared: Shared }) {
   // ponytail: research, evidence and calculation records show their stored values as a tree, never as prose.
   // Give a kind its own view when its values need more than reading.
   return (
-    <ExpandableCard title={reference.label} description={source}>
+    <article className={styles.result} aria-label={reference.label}>
+      <p className={styles.source}>{`${reference.label} · ${source}`}</p>
       <JsonViewer data={payload} rootName="result" label={`${reference.label} values`} defaultExpandDepth={2} searchable={false} showPath={false} maxHeight={320} />
-    </ExpandableCard>
+    </article>
   );
 }
 
@@ -226,10 +262,7 @@ function Citations({ citations }: { citations: MessageRecord["citations"] }) {
     <ol className={styles.sources} aria-label="Sources for this answer">
       {cited.map(item => (
         <li key={`${item.url.href}|${item.quote}`}>
-          <a href={item.url.href} target="_blank" rel="noopener noreferrer">
-            {item.title}
-          </a>
-          <span className={styles.host}>{item.url.hostname}</span>
+          <SourceLink url={item.url} title={item.title} />
           {item.quote && <q className={styles.quote}>{item.quote}</q>}
         </li>
       ))}
@@ -250,6 +283,12 @@ const FIELD: Record<string, string> = {
   "theme.shortlist": "A shortlist of one to four candidates",
   "theme.confirmed": "Your agreement to the theme and shortlist",
 };
+const REQUEST: Record<string, string> = {
+  missing_inputs: "It cannot run this until you give the inputs below.",
+  invalid_inputs: "Some of the inputs cannot be used together. Change them in the form, then submit it again.",
+  portfolio_required: "It needs your holdings for this. Save a portfolio first.",
+  unresolved_identity: "Some holdings are not identified yet. Identify them in your holdings first.",
+};
 const fieldLabel = (field: string) => FIELD[field] ?? sentence(field.replace(/[._]/g, " ")).slice(0, -1);
 
 /** What a run could not go on without. The inputs are given through the desk's own forms and sent as a new run;
@@ -265,10 +304,8 @@ function Clarification({ clarification, actionable, shared }: { clarification: R
   return (
     <div className={styles.notice} data-testid="clarification">
       <Alert tone="info" title="The analyst needs more from you">
-        {/* The stored note for missing inputs is written for the model; the list below says what is needed. */}
-        {text(clarification.code) === "missing_inputs" || !text(clarification.message)
-          ? "It cannot run this until you give the inputs below."
-          : sentence(text(clarification.message))}
+        {/* A workflow's stored note is written for the model; the desk says the same thing to the investor. */}
+        {(clarification.workflow ? REQUEST[text(clarification.code)] : undefined) ?? sentence(text(clarification.message) || "Some inputs are missing")}
       </Alert>
       {fields.length > 0 && (
         <ul className={styles.fields} aria-label="Missing inputs">
@@ -344,7 +381,19 @@ const PROPOSAL_STATE: Record<PortfolioProposal["status"], [label: string, tone: 
 /** A prepared change to the saved portfolio. It only opens the existing review: nothing here confirms or applies it. */
 function Proposal({ id, shared }: { id: string; shared: Shared }) {
   const { proposals, committedRevision } = shared;
-  if (!proposals) return <Skeleton label="Loading proposed changes" lines={2} />;
+  if (!proposals)
+    return shared.proposalsFailed ? (
+      <div className={styles.notice}>
+        <Alert tone="danger" title="The proposed changes could not be loaded">
+          Check that the analyst service is running, then load them again. Nothing has been changed.
+        </Alert>
+        <Button variant="secondary" onClick={shared.onReloadProposals}>
+          Load proposed changes again
+        </Button>
+      </div>
+    ) : (
+      <Skeleton label="Loading proposed changes" lines={2} />
+    );
   const proposal = proposals.find(item => item.id === id);
   if (!proposal)
     return (
@@ -397,6 +446,7 @@ function Message({ message, actionable, shared }: { message: MessageRecord; acti
     return (
       <li className={styles.stepGroup}>
         <div className={styles.step}>
+          <span className="sr-only">Analyst step: </span>
           {message.tool_outcomes.map(outcome => {
             const [done, failed] = STEP[outcome.name] ?? [`Checked ${toolLabel(outcome.name)}`, `Could not check ${toolLabel(outcome.name)}`];
             return (
@@ -415,12 +465,17 @@ function Message({ message, actionable, shared }: { message: MessageRecord; acti
           <Revisions ids={message.artifact_ids} />
         </div>
         {clarification && <Clarification clarification={clarification} actionable={actionable} shared={shared} />}
-        {results.map(id => (
-          <Artifact key={id} id={id} shared={shared} />
-        ))}
-        {message.proposal_ids.map(id => (
-          <Proposal key={id} id={id} shared={shared} />
-        ))}
+        {/* Stored records load after the thread opens; they are read on demand, not announced as new messages. */}
+        {(results.length > 0 || message.proposal_ids.length > 0) && (
+          <div className={styles.stepGroup} aria-live="off">
+            {results.map(id => (
+              <Artifact key={id} id={id} actionable={actionable} shared={shared} />
+            ))}
+            {message.proposal_ids.map(id => (
+              <Proposal key={id} id={id} shared={shared} />
+            ))}
+          </div>
+        )}
       </li>
     );
   }
