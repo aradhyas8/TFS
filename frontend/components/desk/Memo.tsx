@@ -851,7 +851,7 @@ export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onAgree, onC
             return <div key={test.position_id} className="pgroup" data-testid={`test-${test.position_id}`}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span className="serif" style={{ fontSize: 18 }}>{ticker}</span>
-                <span className={`verdict ${test.conclusion}`}>{test.conclusion}</span>
+                <span className={`verdict ${test.conclusion}`}>{test.conclusion.charAt(0).toUpperCase() + test.conclusion.slice(1)}</span>
               </div>
               <p className="body">{test.explanation}<Cites ids={test.evidence_ids} cite={cite} /></p>
               {etfMissingFacts && <span className="cap amber">Fund facts and dated sponsor holdings are missing; verdict and overlap remain unknown.</span>}
@@ -861,7 +861,7 @@ export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onAgree, onC
             <div key={etf.id} className="pgroup" data-testid={`test-${etf.id}`}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span className="serif" style={{ fontSize: 18 }}>{etf.ticker}</span>
-                <span className="verdict unknown">unknown</span>
+                <span className="verdict unknown">Unknown</span>
               </div>
               <p className="body">No dated fund facts or sponsor holdings were available for this ETF.</p>
               <span className="cap amber">Fund facts and dated sponsor holdings are missing; verdict and overlap remain unknown.</span>

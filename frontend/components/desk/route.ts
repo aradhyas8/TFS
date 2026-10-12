@@ -273,16 +273,17 @@ export function route(raw: string, snapshot: Snapshot | null): Route {
   const theme = parseTheme(question);
   if (theme.matches) return { kind: "theme", question, name: theme.name };
 
-  // Unowned candidate ticker token in the question (e.g. standalone ticker or query mentioning ticker)
-  const candidateTokens = (question.match(/\$?[A-Za-z][A-Za-z0-9.-]*/g) || [])
+  // An explicitly marked unowned ticker ($NVDA) anywhere in the question. A bare capitalised word is not enough:
+  // "What is an ETF?" is an ordinary question, not a lookup of the ticker ETF.
+  const candidateTokens = (question.match(/\$[A-Za-z][A-Za-z0-9.-]*/g) || [])
     .filter(token => isCandidateTicker(token, false) && !stocks.some(s => s.ticker === token.replace(/^\$/, "").toUpperCase()));
   if (candidateTokens.length === 1 && !PORTFOLIO.test(question)) {
     return { kind: "candidate", question, ticker: candidateTokens[0].replace(/^\$/, "") };
   }
 
-  // 6. Otherwise, review (unchanged).
-  // Unmatched company subject with no ticker shape returns a short clarify question.
-  if (intent && subject) return resolved(question, [], subject, stocks);
+  // 6. Otherwise the default. Typed without a slash this is ordinary conversation (see isConversation);
+  // only /review runs a portfolio review. A subject that matches no holding and has no ticker shape is
+  // not guessed at here: the conversation can ask about it.
   return { kind: "review", question };
 }
 

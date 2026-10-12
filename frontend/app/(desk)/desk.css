@@ -37,7 +37,7 @@ body:has(.desk) { margin: 0; background: var(--surface); scroll-padding-top: 72p
 .desk .skip { position: absolute; left: 8px; top: -48px; z-index: 50; background: var(--text); color: var(--ground); padding: 8px 12px; border-radius: 6px; }
 .desk .skip:focus { top: 8px; }
 .desk sup { line-height: 1; vertical-align: super; font-size: 11px; }
-.desk sup button { color: var(--brass); padding: 0 1px; font-variant-numeric: tabular-nums; }
+.desk sup button { color: var(--brass); padding: 0 1px; font-variant-numeric: tabular-nums; text-decoration: underline; text-underline-offset: 2px; }
 
 /* Buttons and inputs */
 .desk .btn { display: inline-flex; align-items: center; justify-content: center; padding: 0 16px; min-height: 40px; border-radius: 6px; font-weight: 500; white-space: nowrap; }
@@ -117,7 +117,7 @@ body:has(.desk) { margin: 0; background: var(--surface); scroll-padding-top: 72p
 .desk .body { font-size: 15px; line-height: 24px; color: var(--text-2); }
 .desk .bullets { padding-left: 16px; font-size: 15px; line-height: 24px; color: var(--text-2); display: flex; flex-direction: column; gap: 6px; }
 .desk .display { font-family: var(--serif); font-weight: 400; font-size: 32px; line-height: 40px; letter-spacing: var(--tracking-display); }
-.desk .display .amt { color: var(--brass); font-variant-numeric: tabular-nums; }
+.desk .display .amt { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
 .desk .meta { display: flex; gap: 16px; flex-wrap: wrap; }
 .desk .alts { display: flex; flex-direction: column; gap: 10px; }
 .desk .alt { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 16px; }
@@ -126,7 +126,7 @@ body:has(.desk) { margin: 0; background: var(--surface); scroll-padding-top: 72p
 .desk .more .arrow { color: var(--brass); }
 .desk .expand { padding: 4px 0 16px; }
 .desk .bar { position: relative; height: 6px; background: var(--raised); border-radius: 3px; }
-.desk .bar .now { position: absolute; left: 0; top: 0; bottom: 0; background: var(--brass-dim); border-radius: 3px 0 0 3px; }
+.desk .bar .now { position: absolute; left: 0; top: 0; bottom: 0; background: var(--rule-strong); border-radius: 3px 0 0 3px; }
 .desk .bar .chg { position: absolute; top: 0; bottom: 0; background: var(--brass); }
 .desk .bar .chg.over { background: var(--amber); }
 .desk .bar .tick { position: absolute; top: -5px; bottom: -5px; width: 2px; background: var(--muted); }
@@ -147,7 +147,8 @@ body:has(.desk) { margin: 0; background: var(--surface); scroll-padding-top: 72p
 .desk .identify { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; border-top: 1px solid var(--rule); }
 .desk .setup { display: grid; grid-template-columns: minmax(0, 180px) minmax(0, 140px); gap: 16px; }
 .desk .drop { display: flex; align-items: center; justify-content: center; min-height: 96px; border: 1px dashed var(--rule-strong); border-radius: 8px; color: var(--text-2); cursor: pointer; text-align: center; padding: 16px; }
-.desk .drop:focus-within { border-color: var(--brass); border-style: solid; }
+/* The file input is visually hidden, so its label carries the keyboard focus ring in Arc's outline tokens. */
+.desk .drop:has(input:focus-visible) { outline: var(--focus-outline-width, 2px) solid var(--focus-outline); outline-offset: var(--focus-outline-offset, 2px); }
 .desk .drop input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 
 /* Composer */

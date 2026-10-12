@@ -4,13 +4,13 @@ import { decisionLabel, doneLabel, fullDate, money, pct, shortDate } from "./for
 type Props = {
   snapshot: Snapshot | null; unresolved: UnresolvedHolding[]; settings: PortfolioSettings; result: Analysis | null;
   decisions: SavedDecision[]; currentId: string | null; running: string | null;
-  threads: ThreadSummary[]; threadId: string | null; onThread: (id: string) => void;
+  threads: ThreadSummary[] | null; threadsError: boolean; threadId: string | null; onThread: (id: string) => void;
   onNew: () => void; onHoldings: () => void; onOpen: (decision: SavedDecision) => void; onAllDecisions: () => void; onStock: (position: Position) => void;
   onDelete: (decision: SavedDecision) => void; onClearAll: () => void;
 };
 
 /** Left rail: which portfolio and which decisions am I working with? */
-export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, threads, threadId, onThread, onNew, onHoldings, onOpen, onAllDecisions, onStock, onDelete, onClearAll }: Props) {
+export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, threads, threadsError, threadId, onThread, onNew, onHoldings, onOpen, onAllDecisions, onStock, onDelete, onClearAll }: Props) {
   const review = result?.portfolio;
   // A supported stock row offers Stock Analysis; funds and cash are listed only.
   const holding = (row: Position, figure: string) => {
@@ -19,7 +19,7 @@ export default function Rail({ snapshot, unresolved, settings, result, decisions
       <span>{name}</span><span className="m">{figure}</span></button> : <span className="pv" key={row.id}><span>{name}</span><span className="m">{figure}</span></span>;
   };
   const rules = [settings.single_company_cap && `cap ${pct(settings.single_company_cap)}`, settings.active_budget && `active ${pct(settings.active_budget)}`].filter(Boolean);
-  return <nav className="rail" aria-label="Portfolio and decisions" id="rail">
+  return <nav className="rail" aria-label="Portfolio, conversations and decisions" id="rail">
     <div className="rail-head">
       <span className="wordmark">Analyst</span>
       <button type="button" className="icon-btn" aria-label="New conversation" title="New conversation" onClick={onNew}>
@@ -48,10 +48,12 @@ export default function Rail({ snapshot, unresolved, settings, result, decisions
     {/* Only threads the backend stores are listed; none is made up from a cached answer or a saved decision. */}
     <div className="decisions">
       <span className="lbl dhead"><span>Conversations</span></span>
-      {threads.length === 0 && <span className="cap" style={{ padding: "0 12px" }}>No conversations yet. Ask a question to start one.</span>}
-      {threads.map(thread => <button type="button" className="ditem" key={thread.id} data-testid="thread-item" aria-label={`Conversation: ${thread.title}`}
+      {threadsError ? <span className="cap amber" role="status" style={{ padding: "0 12px" }}>Conversations could not be loaded. Reload the page to try again.</span>
+        : !threads ? <span className="cap" role="status" style={{ padding: "0 12px" }}>Loading conversations</span>
+        : threads.length === 0 && <span className="cap" style={{ padding: "0 12px" }}>No conversations yet. Ask a question to start one.</span>}
+      {threads?.map(thread => <button type="button" className="ditem" key={thread.id} data-testid="thread-item"
         aria-current={thread.id === threadId} onClick={() => onThread(thread.id)} title={thread.title || undefined}>
-        <span className="title"><span>{thread.title}</span></span>
+        <span className="title"><span><span className="sr-only">Conversation: </span>{thread.title}</span></span>
         <span className="cap">{shortDate(thread.updated_at)}</span>
       </button>)}
     </div>

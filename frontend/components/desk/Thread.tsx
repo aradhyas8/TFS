@@ -31,7 +31,6 @@ const artifactLabel = (id: string) => {
   return revision ? `Portfolio revision ${revision[1]}` : `Saved result ${id}`;
 };
 const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
-const webLink = (value: unknown) => (typeof value === "string" && /^https?:\/\//i.test(value) ? value : null);
 
 function References({ ids }: { ids: string[] }) {
   if (!ids.length) return null;
@@ -66,9 +65,6 @@ function Message({ message }: { message: MessageRecord }) {
         <References ids={message.artifact_ids} />
       </li>
     );
-  const sources = message.citations
-    .map(citation => ({ url: webLink(citation.url), title: typeof citation.title === "string" ? citation.title : null }))
-    .filter((source): source is { url: string; title: string | null } => !!source.url);
   return (
     <li className={styles.assistant}>
       <span className="sr-only">Analyst answered: </span>
@@ -76,17 +72,6 @@ function Message({ message }: { message: MessageRecord }) {
       {message.text.split(/\n{2,}/).map((paragraph, index) => (
         <p key={index}>{paragraph}</p>
       ))}
-      {sources.length > 0 && (
-        <ul className={styles.sources} aria-label="Sources">
-          {sources.map((source, index) => (
-            <li key={index}>
-              <a href={source.url} target="_blank" rel="noopener noreferrer">
-                {source.title || source.url}
-              </a>
-            </li>
-          ))}
-        </ul>
-      )}
       <References ids={message.artifact_ids} />
     </li>
   );
@@ -100,7 +85,7 @@ export default function Thread({ thread, pending, sendError, loadError, onRetryS
         <Alert tone="danger" title="This conversation could not be loaded">
           {sentence(loadError)}
         </Alert>
-        <Button variant="secondary" size="sm" onClick={onReload}>
+        <Button variant="secondary" onClick={onReload}>
           Load conversation again
         </Button>
       </div>
@@ -116,8 +101,11 @@ export default function Thread({ thread, pending, sendError, loadError, onRetryS
   // Once the backend has stored the message, the thread shows it; until then it is only this browser's unsent text.
   const unsent = pending && !thread?.runs.some(run => run.client_request_id === pending.clientRequestId) ? pending : null;
 
+  if (!messages.length && !unsent) return <p className={styles.empty}>This conversation has no messages yet. Ask a question to start it.</p>;
+
   return (
-    <ol className={styles.thread} role="log" aria-label="Conversation" aria-live="polite">
+    <div role="log" aria-label="Conversation">
+    <ol className={styles.thread}>
       {messages.map(message => {
         const run = message.run_id && lastOfRun.get(message.run_id) === message.id ? runs.get(message.run_id) : undefined;
         const notice = run && RUN_NOTICE[run.status];
@@ -131,11 +119,12 @@ export default function Thread({ thread, pending, sendError, loadError, onRetryS
           ),
           run && notice && (
             <li key={`${run.id}-notice`} className={styles.notice}>
-              <Alert tone={run.status === "failed" ? "danger" : "warning"} title={notice}>
+              {/* A stored outcome, not a new emergency: announced politely, also when a thread is reopened. */}
+              <Alert tone="warning" title={notice}>
                 {`${sentence(run.error || "No answer was saved for this question")} Your question is kept in this conversation.`}
               </Alert>
               {asked && (
-                <Button variant="secondary" size="sm" onClick={() => onAskAgain(asked)}>
+                <Button variant="secondary" onClick={() => onAskAgain(asked)}>
                   Ask again
                 </Button>
               )}
@@ -145,6 +134,7 @@ export default function Thread({ thread, pending, sendError, loadError, onRetryS
       })}
       {unsent && (
         <li className={styles.user}>
+          <span className="sr-only">You asked, not sent yet: </span>
           <p className={`${styles.bubble} ${styles.unsent}`}>{unsent.text}</p>
           {!sendError && <span className={styles.status}>Sending</span>}
         </li>
@@ -155,15 +145,16 @@ export default function Thread({ thread, pending, sendError, loadError, onRetryS
             {`${sentence(sendError)} This message is not part of the conversation yet.`}
           </Alert>
           <div className={styles.actions}>
-            <Button variant="secondary" size="sm" onClick={onRetrySend}>
+            <Button variant="secondary" onClick={onRetrySend}>
               Send again
             </Button>
-            <Button variant="ghost" size="sm" onClick={onDiscardSend}>
+            <Button variant="ghost" onClick={onDiscardSend}>
               Discard message
             </Button>
           </div>
         </li>
       )}
     </ol>
+    </div>
   );
 }

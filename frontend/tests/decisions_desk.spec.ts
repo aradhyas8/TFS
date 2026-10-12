@@ -60,7 +60,7 @@ async function open(page: Page) {
   return sent;
 }
 
-const rail = (page: Page) => page.getByRole("navigation", { name: "Portfolio and decisions" });
+const rail = (page: Page) => page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
 const ask = (page: Page) => page.getByRole("textbox", { name: /type \/ for workflows/ });
 
 test.describe("Decisions workflow, re-run, and register", () => {

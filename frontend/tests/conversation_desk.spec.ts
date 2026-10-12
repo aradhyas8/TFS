@@ -19,7 +19,7 @@ const SAVED = {
 
 const ask = (page: Page) => page.getByRole("textbox", { name: /type \/ for workflows/ });
 const thread = (page: Page) => page.getByRole("log", { name: "Conversation" });
-const rail = (page: Page) => page.getByRole("navigation", { name: "Portfolio and decisions" });
+const rail = (page: Page) => page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
 const threads = async (page: Page) => (await page.request.get("/api/threads")).json();
 
 async function open(page: Page, saved?: object) {
@@ -159,10 +159,12 @@ test("a failed send and a failed answer stay distinct from the saved conversatio
   await expect(thread(page).getByRole("alert")).toHaveCount(0);
 
   await send(page, "Fail this answer about diversification");
-  const failed = thread(page).getByRole("alert").filter({ hasText: "This answer did not finish" });
+  const failed = thread(page).getByRole("status").filter({ hasText: "This answer did not finish" });
   await expect(failed).toContainText("the fake model is unavailable");
   await thread(page).getByRole("button", { name: "Ask again" }).click();
-  await expect(thread(page).getByRole("alert").filter({ hasText: "This answer did not finish" })).toHaveCount(2);
+  await expect(failed).toHaveCount(2);
+  // The composer takes the keyboard back once the answer has ended.
+  await expect(ask(page)).toBeFocused();
 
   const [summary] = await threads(page);
   const detail = await (await page.request.get(`/api/threads/${summary.id}`)).json();
@@ -231,4 +233,61 @@ test("conversation state shows result references but never credentials, private 
     expect(text).not.toContain("continuation");
   }
   expect(payloads.length).toBeGreaterThan(2);
+});
+
+test("ordinary questions stay in the conversation when a portfolio exists, and a hidden thread is never written to", async ({ page }) => {
+  await open(page, SAVED);
+  const lookups: string[] = [];
+  page.on("request", request => { if (/\/api\/(candidates|analyze)/.test(request.url())) lookups.push(request.url()); });
+
+  // A capitalised word is not a ticker lookup, and an unknown subject is not a stock clarification.
+  await send(page, "What is an ETF?");
+  await expect(thread(page)).toContainText("Plain answer to: What is an ETF?");
+  await send(page, "How is inflation measured?");
+  await expect(thread(page)).toContainText("Plain answer to: How is inflation measured?");
+  await send(page, "What do you think about Shopify?");
+  await expect(thread(page)).toContainText("Plain answer to: What do you think about Shopify?");
+  expect(lookups).toEqual([]);
+  expect(await threads(page)).toHaveLength(1);
+
+  // Asked from the decision register, a question starts its own conversation.
+  await rail(page).getByTestId("all-decisions-link").click();
+  await expect(page.getByRole("heading", { name: "Decisions Register" })).toBeVisible();
+  await send(page, "What is a bond?");
+  await expect(thread(page)).toContainText("Plain answer to: What is a bond?");
+  await expect(thread(page)).not.toContainText("What is an ETF?");
+  expect(await threads(page)).toHaveLength(2);
+});
+
+test("a send that was never acknowledged is recovered after a reload without running twice", async ({ page }) => {
+  await open(page);
+  // The backend accepts the message; the browser never hears back and is reloaded mid-wait.
+  await page.route("**/api/threads/*/messages", async route => {
+    await route.fetch();
+    await new Promise(() => {});
+  });
+  await send(page, "What is a mutual fund?");
+  await expect(thread(page)).toContainText("Sending");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("desk.pendingSend"))).toContain("What is a mutual fund?");
+  await expect.poll(async () => (await threads(page)).length).toBe(1);
+
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await page.reload();
+  await expect(thread(page)).toContainText("Plain answer to: What is a mutual fund?");
+  await expect(thread(page).getByText("What is a mutual fund?", { exact: true })).toHaveCount(1);
+  const [summary] = await threads(page);
+  expect((await (await page.request.get(`/api/threads/${summary.id}`)).json()).runs).toHaveLength(1);
+  expect(await page.evaluate(() => localStorage.getItem("desk.pendingSend"))).toBeNull();
+});
+
+test("discarding a first message that could not be sent returns to the start, not to an empty conversation", async ({ page }) => {
+  await open(page);
+  await page.route("**/api/threads/*/messages", route => route.fulfill({ status: 503, json: { detail: "The analyst service is offline." } }));
+  await send(page, "What is a share?");
+  await expect(thread(page).getByRole("alert")).toContainText("Not sent");
+  await thread(page).getByRole("button", { name: "Discard message" }).click();
+  await expect(thread(page)).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Start with what you own." })).toBeVisible();
+  await expect(page.getByRole("status", { name: "Loading conversation" })).toHaveCount(0);
+  await expect(ask(page)).toBeFocused();
 });

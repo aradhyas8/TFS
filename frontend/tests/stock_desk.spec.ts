@@ -122,7 +122,7 @@ test("/stock with a ticker runs Stock Analysis", async ({ page }) => {
 
 test("clicking a holding in the rail offers its Stock Analysis", async ({ page }) => {
   const sent = await open(page);
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   await expect(rail.getByRole("button", { name: "Analyze BROAD" })).toHaveCount(0); // funds aren't single companies
   await rail.getByRole("button", { name: "Analyze ACME" }).click();
   await expect(ask(page)).toHaveValue("/stock ACME");
@@ -194,7 +194,7 @@ test("an unowned stock candidate runs Stock Analysis with price source, no-cash 
   await expect(memo).toContainText("No cash to compare on. Use /new-cash with an amount to compare against the fund and cash.");
 
   // Rail excludes unowned candidate row
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   await expect(rail.locator(".holdings-mini")).not.toContainText("NVDA");
 
   // Holdings tab in details panel excludes unowned candidate row

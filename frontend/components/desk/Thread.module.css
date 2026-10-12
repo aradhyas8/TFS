@@ -14,6 +14,5 @@
 .notice > :first-child { align-self: stretch; }
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
-.refs, .sources { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.sources { flex-direction: column; font-size: var(--text-sm); }
-.sources a { overflow-wrap: anywhere; }
+.refs { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.empty { margin: 0; font-size: var(--text-sm); color: var(--text-muted); }

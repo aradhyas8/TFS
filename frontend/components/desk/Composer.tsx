@@ -320,10 +320,10 @@ export default function Composer({
         <div className="box-line">
           {workflow === "new-cash" && <span className="prefix">New cash</span>}
           {workflow === "theme" && <span className="prefix">Theme</span>}
-          <label htmlFor="ask" className="sr-only">{workflow ? "Question" : "Ask about your portfolio or a holding, or type / for workflows"}</label>
+          <label htmlFor="ask" className="sr-only">{workflow ? "Question" : "Ask anything, or type / for workflows"}</label>
           <input id="ask" autoComplete="off" maxLength={1000} value={question} disabled={running} onKeyDown={keys}
             aria-controls={slashOpen ? "slash-menu" : undefined} aria-expanded={slashOpen}
-            placeholder={running ? "You can ask a follow-up once this answer arrives." : workflow === "new-cash" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?") : workflow === "theme" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "Explore a theme against your shortlist.") : inThread ? "Ask a follow-up, or type / for a workflow" : "Ask anything, or type / for a workflow"}
+            placeholder={running ? "Wait for this answer to finish" : workflow === "new-cash" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?") : workflow === "theme" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "Explore a theme against your shortlist.") : inThread ? "Ask a follow-up, or type / for a workflow" : "Ask anything, or type / for a workflow"}
             onChange={event => { onQuestion(event.target.value); setActive(0); }} />
           {(workflow || question.trim()) && blocked && !running && !slashOpen && <span className="cap amber hint">{blocked}</span>}
           {workflow ? <button type="submit" className="btn primary" disabled={!!blocked || running}>Analyze</button>

@@ -28,7 +28,7 @@ test("portfolio review: the app opens on the saved portfolio and /review runs a 
   const stored = await (await page.request.get("/api/portfolio")).json();
 
   await page.goto("/");
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
   await expect(rail).toContainText("ACME");
   await expect(rail).toContainText("BROAD");
@@ -169,7 +169,7 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   expect(stored.settings.benchmark).toBeUndefined();
 
   // Benchmark is absent from rail
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   await expect(rail).not.toContainText("SPY");
   await expect(rail).toContainText("ACME");
 

@@ -281,10 +281,24 @@ export default function DeskPage() {
     wasRunning.current = conversation.running;
   }, [conversation.running]);
 
-  const threadLength = (conversation.thread?.messages.length ?? 0) + (conversation.pending ? 1 : 0);
+  // Anything new at the end of the thread (a message, a run outcome, a send that failed) is brought into view.
+  const threadTail = [
+    conversation.openId,
+    conversation.thread?.messages.length,
+    conversation.thread?.runs.at(-1)?.status,
+    conversation.pending?.clientRequestId,
+    conversation.sendError,
+  ].join("|");
   useEffect(() => {
-    if (threadLength) threadEnd.current?.scrollIntoView({ block: "end" });
-  }, [threadLength, conversation.openId]);
+    threadEnd.current?.scrollIntoView({ block: "end" });
+  }, [threadTail]);
+
+  // The composer is disabled while an answer is on its way; hand the keyboard back when it can be used again.
+  const wasBusy = useRef(false);
+  useEffect(() => {
+    if (wasBusy.current && !conversation.busy) document.getElementById("ask")?.focus();
+    wasBusy.current = conversation.busy;
+  }, [conversation.busy]);
 
   useEffect(() => {
     try {
@@ -941,6 +955,9 @@ export default function DeskPage() {
   }
 
   function chat(text: string) {
+    // A question asked from another view (the register, a workflow answer) starts a new conversation
+    // rather than landing in a thread that is not on screen.
+    if (!showThread) conversation.close();
     showConversation();
     void conversation.send(text.trim());
   }
@@ -1372,7 +1389,10 @@ export default function DeskPage() {
           sendError={conversation.sendError}
           loadError={conversation.loadError}
           onRetrySend={() => void conversation.retry()}
-          onDiscardSend={conversation.discardPending}
+          onDiscardSend={() => {
+            conversation.discardPending();
+            document.getElementById("ask")?.focus();
+          }}
           onAskAgain={chat}
           onReload={() => void conversation.reload()}
         />
@@ -1585,6 +1605,7 @@ export default function DeskPage() {
         decisions={decisions}
         currentId={reopened?.id ?? saved?.id ?? null}
         threads={conversation.threads}
+        threadsError={conversation.threadsError}
         threadId={showThread ? conversation.openId : null}
         onThread={openThread}
         running={
@@ -1887,13 +1908,12 @@ export default function DeskPage() {
                   themeCandidates,
                 });
               else {
+                // A workflow form keeps the typed question as its own; everything else has been sent.
                 const next = route(question, committedSnapshot);
-                if (next.kind === "new-cash" || next.kind === "theme") {
-                  ask(question);
-                } else {
-                  ask(question);
-                  setQuestion("");
-                }
+                const opensForm =
+                  !isConversation(question, committedSnapshot) && (next.kind === "new-cash" || next.kind === "theme");
+                ask(question);
+                if (!opensForm) setQuestion("");
               }
             }}
           />

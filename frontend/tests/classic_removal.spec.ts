@@ -18,7 +18,7 @@ test("/classic returns 404 and no classic links or references exist in desk", as
   await expect(classicLinks).toHaveCount(0);
 
   // 4. Verify Rail contains no "Classic view"
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   await expect(rail).not.toContainText("Classic view");
   await expect(rail).not.toContainText("classic");
 

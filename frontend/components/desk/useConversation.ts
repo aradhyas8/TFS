@@ -4,11 +4,13 @@ import { createThread, getThread, getThreadRun, listThreads, submitThreadMessage
 // Which thread is open, so a reload returns to it. The messages themselves always come from the backend.
 const THREAD_KEY = "desk.thread";
 // A send the backend has not yet acknowledged. Resending it with the same client request ID is safe:
-// the backend returns the run it already accepted instead of starting a second one.
+// the backend returns the run it already accepted instead of starting a second one. Once acknowledged,
+// the run is found again through the thread itself, which lists every run with its client request ID.
 const PENDING_KEY = "desk.pendingSend";
 const POLL_MS = 1000;
 
-export type PendingSend = { threadId: string; clientRequestId: string; text: string };
+/** A message this browser has sent but the backend has not acknowledged. No thread ID yet means a new conversation. */
+export type PendingSend = { threadId: string | null; clientRequestId: string; text: string };
 
 const remember = (key: string, value: string | null) => {
   try {
@@ -24,65 +26,74 @@ const unacknowledged = (error: unknown) => error instanceof TypeError || (error 
 
 /** Durable conversation state for the desk: thread list, the open thread, one idempotent send, and run polling. */
 export function useConversation() {
-  const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  // null until the first list arrives, so "none yet" is never claimed before it is known.
+  const [threads, setThreads] = useState<ThreadSummary[] | null>(null);
+  const [threadsError, setThreadsError] = useState(false);
   const [thread, setThread] = useState<ThreadDetail | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingSend | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // The thread the user is looking at now; late responses for another thread are dropped.
-  const current = useRef<string | null>(null);
+  // The open thread as asynchronous work sees it: a late response for a thread the user has left is dropped.
+  const viewing = useRef<string | null>(null);
 
   const refreshThreads = () =>
     listThreads()
-      .then(list => setThreads(list.filter(item => item.title)))
-      .catch(() => {
-        /* the list is retried on the next change; the open thread reports its own errors */
-      });
+      .then(list => {
+        // A thread with no accepted question (its first send failed) is not a conversation yet.
+        setThreads(list.filter(item => item.title));
+        setThreadsError(false);
+      })
+      .catch(() => setThreadsError(true));
 
-  async function load(id: string) {
+  function view(id: string | null) {
+    viewing.current = id;
+    setOpenId(id);
+    remember(THREAD_KEY, id);
+  }
+
+  /** Background refreshes stay quiet: a failed poll keeps the messages already shown. */
+  async function load(id: string, quiet = false) {
     try {
       const detail = await getThread(id);
-      if (current.current !== id) return;
+      if (viewing.current !== id) return;
       setThread(detail);
       setLoadError(null);
     } catch (error) {
-      if (current.current === id) setLoadError(message(error));
+      if (viewing.current === id && !quiet) setLoadError(message(error));
     }
   }
 
   function open(id: string) {
-    current.current = id;
-    setOpenId(id);
+    view(id);
     setThread(null);
     setLoadError(null);
-    remember(THREAD_KEY, id);
     void load(id);
   }
 
   function close() {
-    current.current = null;
-    setOpenId(null);
+    view(null);
     setThread(null);
     setLoadError(null);
-    remember(THREAD_KEY, null);
   }
 
   async function deliver(send: PendingSend) {
+    const origin = viewing.current;
     setPending(send);
     setSendError(null);
+    let threadId = send.threadId;
     try {
-      if (!send.threadId) {
-        send = { ...send, threadId: (await createThread()).id };
-        current.current = send.threadId;
-        setOpenId(send.threadId);
+      if (!threadId) {
+        threadId = (await createThread()).id;
+        send = { ...send, threadId };
         setPending(send);
-        remember(THREAD_KEY, send.threadId);
+        // Follow the new thread only if the user is still where they sent from.
+        if (viewing.current === origin) view(threadId);
       }
       remember(PENDING_KEY, JSON.stringify(send));
       for (let attempt = 0; ; attempt++) {
         try {
-          await submitThreadMessage(send.threadId, { client_request_id: send.clientRequestId, text: send.text });
+          await submitThreadMessage(threadId, { client_request_id: send.clientRequestId, text: send.text });
           break;
         } catch (error) {
           if (attempt > 0 || !unacknowledged(error)) throw error;
@@ -92,14 +103,15 @@ export function useConversation() {
       setSendError(message(error));
       return;
     }
-    await load(send.threadId);
+    await load(threadId);
     remember(PENDING_KEY, null);
     setPending(null);
     void refreshThreads();
   }
 
-  /** Sends one message into the open thread, or into a new thread when none is open. */
-  const send = (text: string) => deliver({ threadId: current.current ?? "", clientRequestId: crypto.randomUUID(), text });
+  /** Sends one message into the open thread, or into a new thread when none is open.
+   *  ponytail: one unacknowledged send at a time; a new send replaces an earlier one that failed and was left behind. */
+  const send = (text: string) => deliver({ threadId: viewing.current, clientRequestId: crypto.randomUUID(), text });
 
   const retry = () => (pending ? deliver(pending) : Promise.resolve());
 
@@ -107,6 +119,8 @@ export function useConversation() {
     remember(PENDING_KEY, null);
     setPending(null);
     setSendError(null);
+    // A conversation whose only message was never accepted has nothing left to show.
+    if (!thread?.messages.length) close();
   }
 
   useEffect(() => {
@@ -143,7 +157,7 @@ export function useConversation() {
         if (stopped) return;
         if (run.status !== "running" || run.message_ids.length !== known) {
           known = run.message_ids.length;
-          await load(runningThread);
+          await load(runningThread, true);
           if (run.status !== "running") void refreshThreads();
         }
       } catch {
@@ -159,13 +173,15 @@ export function useConversation() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runningThread, runningId]);
 
-  const unsent = pending && pending.threadId === (openId ?? "") ? pending : null;
+  // The unacknowledged send belongs to one thread and shows only there.
+  const pendingHere = pending && pending.threadId === openId ? pending : null;
   return {
     threads,
+    threadsError,
     thread,
     openId,
-    pending: unsent,
-    sendError: unsent ? sendError : null,
+    pending: pendingHere,
+    sendError: pendingHere ? sendError : null,
     loadError,
     busy: !!running || (!!pending && !sendError),
     running: !!running,
