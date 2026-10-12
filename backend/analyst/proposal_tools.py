@@ -41,7 +41,7 @@ class ProposalTools:
         }
 
     def prepare(self, context: RunContext, parsed: PrepareProposalArguments) -> dict[str, Any]:
-        saved = context.portfolio
+        saved = context.committed
         if saved is None:
             return clarify("portfolio_required", "portfolio", "Create the portfolio in the holdings form first.")
         positions = {row.id: row.model_dump() for row in saved.snapshot.positions}

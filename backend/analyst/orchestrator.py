@@ -151,6 +151,8 @@ class Orchestrator:
                     logger.error("Model transport error during run %s: %s", run_id, exc, exc_info=True)
                     self._record_terminal_failure(run_id, f"Model service error: {exc}")
                     return
+                if self._stopped(thread_id, run_id):
+                    return
 
                 if turn.calls:
                     if (len(turn.calls) != 1 or turn.text or turn.answer is not None
@@ -233,6 +235,8 @@ class Orchestrator:
                               else {"error": "Financial request timed out; no result is available."})
                 except ValueError:
                     result = {"error": "Requested data is unavailable to this run."}
+                if self._stopped(thread_id, run_id):
+                    return
                 artifact_ids = list(result.get("artifact_ids", []))
                 proposal_ids = list(result.get("proposal_ids", []))
                 for key in ("reference", "before_artifact", "after_artifact"):
@@ -305,6 +309,17 @@ class Orchestrator:
 
         coro = self.transport.respond(messages, **kwargs)
         return cast(ModelTurn, await asyncio.wait_for(coro, timeout=timeout))
+
+    def _stopped(self, thread_id: str, run_id: str) -> bool:
+        """Whether the run ended while provider work was still returning; its late output is then dropped.
+
+        Checked after every await and before the next write, with no await in between, so a stop
+        cannot land between the check and the write.
+        ponytail: holds for the single-process deployment only; a second process needs the check
+        inside the write's transaction.
+        """
+        current = self.db.get_run(thread_id, run_id)
+        return current is None or current.status != "running"
 
     def _record_terminal_failure(self, run_id: str, error_message: str) -> None:
         """Safely record terminal failure without overwriting cancelled state."""

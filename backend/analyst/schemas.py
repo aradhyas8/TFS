@@ -1893,6 +1893,8 @@ class RunRecord(Contract):
     error: Text | None = None
     message_ids: list[Identifier] = Field(default_factory=list)
     artifact_ids: list[Identifier] = Field(default_factory=list)
+    # The immutable draft this run analyzes instead of the committed holdings; never a commit.
+    hypothetical_artifact_id: Identifier | None = None
 
 
 class ThreadDetail(Contract):

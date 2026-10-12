@@ -121,11 +121,14 @@ class FinancialTools:
 
     def store(self, context: RunContext, payload: Contract, kind: ArtifactKind,
               label: str, basis: ArtifactBasis = "committed") -> dict[str, Any]:
+        revision = context.run.bound_revision
+        draft = context.run.hypothetical_artifact_id
         reference = ArtifactReference(
             id=f"art-fin-{uuid4().hex}", kind=kind, label=label, created_at=datetime.now(UTC),
-            revision=context.run.bound_revision,
-            basis=basis if context.run.bound_revision else "none",
-            source_artifact_id=f"art-rev-{context.run.bound_revision}" if context.run.bound_revision else None,
+            # Everything a hypothetical run derives is labeled with the draft, never a committed revision.
+            revision=None if draft else revision,
+            basis="hypothetical" if draft else basis if revision else "none",
+            source_artifact_id=draft or (f"art-rev-{revision}" if revision else None),
             originating_run_id=context.run.id,
         )
         context.db.store_artifact(reference, payload)

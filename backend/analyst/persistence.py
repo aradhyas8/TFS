@@ -33,7 +33,7 @@ from .schemas import (
     build_artifact_payload,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class SchemaMigrationError(RuntimeError):
@@ -134,19 +134,22 @@ class Database:
         with self.connect() as conn:
             cursor = conn.execute("PRAGMA user_version;")
             current_version = int(cursor.fetchone()[0])
-            if current_version == 0:
-                self._apply_initial_schema(conn)
-                self._apply_migration_v2(conn)
-                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
-            elif current_version == 1:
-                # Backup database before forward migration
-                self._backup_database(conn)
-                self._apply_migration_v2(conn)
-                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
-            elif current_version > SCHEMA_VERSION:
+            if current_version > SCHEMA_VERSION:
                 raise SchemaMigrationError(
                     f"Database schema version {current_version} is higher than supported {SCHEMA_VERSION}."
                 )
+            if current_version == SCHEMA_VERSION:
+                return
+            if current_version == 0:
+                self._apply_initial_schema(conn)
+            else:
+                # Backup database before forward migration
+                self._backup_database(conn)
+            if current_version < 2:
+                self._apply_migration_v2(conn)
+            if current_version < 3:
+                self._apply_migration_v3(conn)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
 
     def _backup_database(self, source_conn: sqlite3.Connection) -> Path:
         """Create an atomic backup using SQLite backup API before forward migration."""
@@ -311,6 +314,14 @@ class Database:
 
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?);",
+            (datetime.now(UTC).isoformat(),),
+        )
+
+    def _apply_migration_v3(self, conn: sqlite3.Connection) -> None:
+        """Apply migration v3: a run records the hypothetical portfolio artifact it was asked to analyze."""
+        conn.execute("ALTER TABLE runs ADD COLUMN hypothetical_artifact_id TEXT;")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?);",
             (datetime.now(UTC).isoformat(),),
         )
 
@@ -1065,7 +1076,8 @@ class Database:
             run_cursor = conn.execute(
                 """
                 SELECT id, thread_id, client_request_id, status, bound_revision,
-                       created_at, updated_at, error, message_ids_json, artifact_ids_json
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
                 FROM runs
                 WHERE thread_id = ?
                 ORDER BY created_at ASC;
@@ -1143,7 +1155,8 @@ class Database:
             cursor = conn.execute(
                 """
                 SELECT id, thread_id, client_request_id, request_payload_hash, status,
-                       bound_revision, created_at, updated_at, error, message_ids_json, artifact_ids_json
+                       bound_revision, created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
                 FROM runs
                 WHERE thread_id = ? AND client_request_id = ?;
                 """,
@@ -1179,8 +1192,9 @@ class Database:
                 """
                 INSERT INTO runs (
                     id, thread_id, client_request_id, request_payload_hash, status,
-                    bound_revision, created_at, updated_at, error, message_ids_json, artifact_ids_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    bound_revision, created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                    hypothetical_artifact_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     run_id,
@@ -1194,6 +1208,7 @@ class Database:
                     None,
                     json.dumps([msg_id]),
                     "[]",
+                    request.hypothetical_artifact_id,
                 ),
             )
 
@@ -1233,6 +1248,7 @@ class Database:
                 error=None,
                 message_ids=[msg_id],
                 artifact_ids=[],
+                hypothetical_artifact_id=request.hypothetical_artifact_id,
             )
             return run_record, True
 
@@ -1242,7 +1258,8 @@ class Database:
             cursor = conn.execute(
                 """
                 SELECT id, thread_id, client_request_id, status, bound_revision,
-                       created_at, updated_at, error, message_ids_json, artifact_ids_json
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
                 FROM runs
                 WHERE id = ? AND thread_id = ?;
                 """,
@@ -1263,7 +1280,8 @@ class Database:
             cursor = conn.execute(
                 """
                 SELECT id, thread_id, client_request_id, status, bound_revision,
-                       created_at, updated_at, error, message_ids_json, artifact_ids_json
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
                 FROM runs
                 WHERE id = ? AND thread_id = ?;
                 """,
@@ -1285,7 +1303,8 @@ class Database:
                 cursor = conn.execute(
                     """
                     SELECT id, thread_id, client_request_id, status, bound_revision,
-                           created_at, updated_at, error, message_ids_json, artifact_ids_json
+                           created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                           hypothetical_artifact_id
                     FROM runs
                     WHERE id = ?;
                     """,
@@ -1313,7 +1332,8 @@ class Database:
             cursor = conn.execute(
                 """
                 SELECT id, thread_id, client_request_id, status, bound_revision,
-                       created_at, updated_at, error, message_ids_json, artifact_ids_json
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
                 FROM runs
                 WHERE id = ?;
                 """,
@@ -1361,7 +1381,8 @@ class Database:
             cursor = conn.execute(
                 """
                 SELECT id, thread_id, client_request_id, status, bound_revision,
-                       created_at, updated_at, error, message_ids_json, artifact_ids_json
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
                 FROM runs
                 WHERE id = ?;
                 """,
@@ -1474,6 +1495,7 @@ class Database:
             error=row["error"],
             message_ids=json.loads(row["message_ids_json"]),
             artifact_ids=json.loads(row["artifact_ids_json"]),
+            hypothetical_artifact_id=row["hypothetical_artifact_id"],
         )
 
     def _row_to_message(self, row: sqlite3.Row) -> MessageRecord:

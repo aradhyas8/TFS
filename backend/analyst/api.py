@@ -654,6 +654,11 @@ def create_app(
 
     @app.post("/api/threads/{thread_id}/messages", response_model=RunRecord, status_code=202)
     async def submit_thread_message(thread_id: str, request: SubmitMessageRequest) -> RunRecord:
+        if request.hypothetical_artifact_id is not None:
+            selected = portfolios.get_artifact_reference(request.hypothetical_artifact_id)
+            if selected is None or selected.kind != "portfolio_snapshot" or selected.basis != "hypothetical":
+                raise HTTPException(422, "Select a stored hypothetical portfolio.")
+
         # Bind revision once at acceptance: latest committed portfolio revision or None if absent
         current_rev = portfolios.get_revisioned()
         bound_revision = current_rev.revision if current_rev else None
