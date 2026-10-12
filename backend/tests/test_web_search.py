@@ -378,7 +378,8 @@ def test_hosted_search_obeys_the_run_deadline(tmp_path: Path, monkeypatch: pytes
     with TestClient(app) as client:
         thread = client.post("/api/threads").json()["id"]
         run = submit(client, thread, "How did Acme trade today?")
-        payload = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()["payload"]
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
     assert run["status"] == "failed" and "deadline" in run["error"]
-    assert payload["status"] == "unavailable" and payload["reason"] == "deadline"
+    assert "Late answer." not in json.dumps(messages)
     assert len(model.requests) == 2
+
