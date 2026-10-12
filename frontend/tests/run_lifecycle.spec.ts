@@ -235,4 +235,20 @@ test("a draft question is sent to the conversation it was asked in, even if anot
   expect(await questions("First topic")).toEqual(["First topic"]);
   // The conversation on screen is still the one the investor opened.
   await expect(thread(page)).not.toContainText("Draft question for the second topic");
+
+  // A draft that cannot be stored after the investor has moved on does not put its question into the
+  // conversation now on screen, where asking it would send it to the wrong place.
+  await page.unroute("**/api/portfolio/artifacts");
+  let fail = () => {};
+  const failing = new Promise<void>(resolve => { fail = resolve; });
+  await page.route("**/api/portfolio/artifacts", async route => { await failing; await route.fulfill({ status: 503, json: { detail: "offline" } }); });
+  await page.getByRole("checkbox", { name: "Ask about my unsaved draft" }).check();
+  await send(page, "Draft question for the first topic");
+  await rail.getByRole("button", { name: "Conversation: Second topic" }).click();
+  await expect(thread(page)).toContainText("Plain answer to: Second topic");
+  fail();
+  await expect(page.getByText("Your draft could not be stored, so the question was not sent.")).toBeVisible();
+  await expect(ask(page)).toHaveValue("");
+  expect(await questions("First topic")).toEqual(["First topic"]);
+  expect(await questions("Second topic")).toEqual(["Second topic", "Draft question for the second topic"]);
 });

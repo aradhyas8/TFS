@@ -1045,7 +1045,8 @@ export default function DeskPage() {
       setUseDraft(false);
       void conversation.send(text, workflowInput, captured.id, destination);
     } catch {
-      setQuestion(text);
+      // The question returns to the composer only where it was asked; elsewhere it would be re-sent to the wrong conversation.
+      if (conversation.destination() === destination) setQuestion(text);
       setNotice("Your draft could not be stored, so the question was not sent. Check that the analyst service is running, then ask again.");
     } finally {
       setCapturing(false);
