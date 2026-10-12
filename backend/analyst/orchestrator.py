@@ -17,12 +17,15 @@ import logging
 import re
 from typing import Any, cast
 
+from .allocation import DiscoveryProvider
 from .config import Settings
 from .context import CHARACTER_LIMIT, READ_CAPABILITIES, RunContext, read_tools
 from .financial_data import FinancialProvider
 from .financial_tools import FinancialTools
 from .persistence import Database, DecimalEncoder
 from .providers import ModelTurn
+from .research import ResearchProvider
+from .research_tools import ResearchTools
 from .schemas import RunRecord, ToolOutcome
 
 logger = logging.getLogger(__name__)
@@ -40,11 +43,15 @@ class Orchestrator:
         transport: Any,
         settings: Settings,
         financial: FinancialProvider | None = None,
+        research: ResearchProvider | None = None,
+        discovery: DiscoveryProvider | None = None,
     ) -> None:
         self.db = db
         self.transport = transport
         self.settings = settings
         self.financial = financial
+        self.research = research
+        self.discovery = discovery
         self._active_tasks: dict[str, asyncio.Task[None]] = {}
 
     def submit_supervised_run(
@@ -93,8 +100,11 @@ class Orchestrator:
 
         try:
             context = RunContext(self.db, run_record)
-            capabilities = {**READ_CAPABILITIES, **FinancialTools(self.financial).capabilities}
-            messages = context.messages()
+            financial_tools = FinancialTools(self.financial)
+            research_tools = ResearchTools(financial_tools, self.research, workflow_input, self.discovery)
+            capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
+                            **research_tools.capabilities}
+            messages = context.messages(comparison=research_tools.comparison)
             initial_messages = messages
             exchanges: list[list[dict[str, Any]]] = []
             seen_calls: set[str] = set()

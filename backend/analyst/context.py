@@ -7,10 +7,19 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from openai import pydantic_function_tool
 from pydantic import BaseModel, ConfigDict, Field
 
 from .persistence import Database, DecimalEncoder
-from .schemas import Identifier, MessageRecord, RunRecord, build_artifact_payload, model_safe
+from .providers import sanitize_schema
+from .schemas import (
+    ComparisonInput,
+    Identifier,
+    MessageRecord,
+    RunRecord,
+    build_artifact_payload,
+    model_safe,
+)
 
 MESSAGE_LIMIT = 20
 CHARACTER_LIMIT = 32_000
@@ -50,7 +59,8 @@ class ReadCapability:
 def read_tools(capabilities: dict[str, ReadCapability] | None = None) -> list[dict[str, Any]]:
     return [
         {"type": "function", "name": name, "description": capability.description,
-         "strict": True, "parameters": capability.arguments.model_json_schema()}
+         "strict": True, "parameters": sanitize_schema(
+             pydantic_function_tool(capability.arguments)["function"]["parameters"])}
         for name, capability in (capabilities if capabilities is not None else READ_CAPABILITIES).items()
     ]
 
@@ -185,7 +195,7 @@ class RunContext:
         detail["after_portfolio"] = self.db.get_artifact(proposal.after_artifact.id, projection="model")
         return cast(dict[str, Any], model_safe(detail))
 
-    def messages(self) -> list[dict[str, Any]]:
+    def messages(self, comparison: ComparisonInput | None = None) -> list[dict[str, Any]]:
         saved = self.portfolio
         history = self.history()
         context = {
@@ -199,6 +209,9 @@ class RunContext:
             "artifact_references": [ref.model_dump(mode="json") for artifact_id in sorted(self.artifact_ids)
                                     if (ref := self.db.get_artifact_reference(artifact_id)) is not None],
         }
+        if comparison is not None:
+            context["comparison_inputs"] = comparison.model_dump(
+                mode="json", include={"scope_position_ids", "alternatives"})
         return [
             {"role": "system", "content": (
                 "You are a personal investment analyst. Answer conceptual questions directly. "

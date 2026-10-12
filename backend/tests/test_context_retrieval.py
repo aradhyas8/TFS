@@ -46,9 +46,11 @@ def client_for(store: PortfolioStore, model: CapturingTransport) -> TestClient:
     ))
 
 
-def submit(client: TestClient, thread: str, text: str, request_id: str = "req-1") -> dict[str, Any]:
+def submit(client: TestClient, thread: str, text: str, request_id: str = "req-1", *,
+           workflow_input: dict[str, Any] | None = None) -> dict[str, Any]:
     response = client.post(f"/api/threads/{thread}/messages", json={
         "text": text, "client_request_id": request_id,
+        **({"workflow_input": workflow_input} if workflow_input is not None else {}),
     })
     assert response.status_code == 202
     run = response.json()
@@ -79,6 +81,8 @@ def test_followup_gets_compact_bound_context_without_full_holdings(tmp_path: Pat
     assert {tool["name"] for tool in request["tools"]} == {
         "get_holdings", "get_artifact", "get_proposal", "get_messages",
         "review_portfolio", "get_financial_data", "resolve_candidate", "refresh_quotes", "check_proposed_changes",
+        "get_sec_filings", "get_sedar_filings", "get_issuer_material", "calculate_company_cases",
+        "calculate_comparison", "scan_opportunities", "get_company_research",
     }
 
 
