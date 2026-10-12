@@ -171,15 +171,21 @@ def test_stopping_one_run_leaves_other_runs_and_pending_proposals_alone(tmp_path
         running = accept(client, other, "Other question")
         until(lambda: len(model.requests) == 4)
 
-        # A run is stopped only through its own conversation.
+        # A run is stopped only through its own conversation: naming it under another thread is refused
+        # and must not interrupt its work either.
+        assert client.post(f"/api/threads/{first}/runs/{running['id']}/cancel").status_code == 404
         assert client.post(f"/api/threads/{other}/runs/{stopping['id']}/cancel").status_code == 404
         assert client.get(f"/api/threads/{first}/runs/{stopping['id']}").json()["status"] == "running"
+        assert client.get(f"/api/threads/{other}/runs/{running['id']}").json()["status"] == "running"
 
         assert client.post(f"/api/threads/{first}/runs/{stopping['id']}/cancel").json()["status"] == "cancelled"
         assert client.get(f"/api/threads/{other}/runs/{running['id']}").json()["status"] == "running"
         model.release.set()
         until(lambda: client.get(f"/api/threads/{other}/runs/{running['id']}").json()["status"] == "completed")
+        # The run that was wrongly named kept working, and its answer is stored exactly once.
         assert texts(client, other) == ["Other question", "Other answer."]
+        assert texts(client, first)[-1] == "Slow question"
+        assert len(model.requests) == 4
 
         # Stopping a run that already ended changes nothing, and no proposal is cancelled or applied by a stop.
         for thread, run in ((first, prepared), (other, running)):

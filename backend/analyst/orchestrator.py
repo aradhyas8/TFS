@@ -85,11 +85,16 @@ class Orchestrator:
         task.add_done_callback(_cleanup)
 
     async def cancel_run(self, thread_id: str, run_id: str) -> RunRecord | None:
-        """Cancel active in-process task and mark run cancelled in database."""
+        """Mark the run cancelled in the database, then stop its in-process task.
+
+        The database decides first: a run that is not in this thread, or that already ended some
+        other way, keeps its task untouched.
+        """
+        record = self.db.cancel_run(thread_id, run_id)
         task = self._active_tasks.get(run_id)
-        if task and not task.done():
+        if record is not None and record.status == "cancelled" and task and not task.done():
             task.cancel()
-        return self.db.cancel_run(thread_id, run_id)
+        return record
 
     async def _execute_run(
         self,
