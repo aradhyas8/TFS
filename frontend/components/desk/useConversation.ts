@@ -10,7 +10,8 @@ const PENDING_KEY = "desk.pendingSend";
 const POLL_MS = 1000;
 
 /** A message this browser has sent but the backend has not acknowledged. No thread ID yet means a new conversation. */
-export type PendingSend = { threadId: string | null; clientRequestId: string; text: string; workflowInput?: Record<string, unknown>; hypotheticalArtifactId?: string };
+/** `view`: the view it was sent from, and the only one it is shown in. Thread IDs cannot say this: every new conversation has none. */
+export type PendingSend = { threadId: string | null; view: string; clientRequestId: string; text: string; workflowInput?: Record<string, unknown>; hypotheticalArtifactId?: string };
 
 const remember = (key: string, value: string | null) => {
   try {
@@ -53,15 +54,18 @@ export function useConversation() {
       .catch(() => setThreadsError(true));
 
   // Which view is on screen: a thread, or one particular new conversation. A thread ID cannot tell two new
-  // conversations apart, so each one entered from a thread gets its own number.
+  // conversations apart, so every new conversation that is started gets its own number.
   const newViews = useRef(0);
   const viewKeyNow = useRef("new:0");
   const [viewKey, setViewKey] = useState("new:0");
+  // A new conversation that received its thread is the same view under a new key.
+  const [rekeyed, setRekeyed] = useState<{ from: string; to: string; threadId: string } | null>(null);
 
-  function view(id: string | null) {
-    if (id === null && viewing.current !== null) newViews.current++;
+  /** `newKey` returns to one particular new conversation instead of starting another. */
+  function view(id: string | null, newKey?: string) {
+    if (id === null && !newKey) newViews.current++;
     viewing.current = id;
-    viewKeyNow.current = id ? `thread:${id}` : `new:${newViews.current}`;
+    viewKeyNow.current = id ? `thread:${id}` : (newKey ?? `new:${newViews.current}`);
     setViewKey(viewKeyNow.current);
     setOpenId(id);
     setStopError(null);
@@ -87,18 +91,19 @@ export function useConversation() {
     void load(id);
   }
 
-  function close() {
-    view(null);
+  /** Leaves the open thread for a new conversation. `fresh: false` stays in the new conversation already on screen. */
+  function close(fresh = true) {
+    if (fresh || viewing.current !== null) view(null);
     setThread(null);
     setLoadError(null);
   }
 
-  /** `follow`: a thread created for this send is opened, unless the user has gone elsewhere since. */
-  async function deliver(send: PendingSend, follow = true) {
-    if (delivering.current) return;
+  /** A thread created for the message is opened only while the view it was sent from is still on screen.
+   *  Resolves false when another delivery is under way and this one was not started. */
+  async function deliver(send: PendingSend): Promise<boolean> {
+    if (delivering.current) return false;
     delivering.current = true;
     try {
-      const origin = viewing.current;
       // Stored before any request, so a reload while the thread is still being created keeps the message.
       const hold = (next: PendingSend) => {
         send = next;
@@ -115,9 +120,14 @@ export function useConversation() {
               // A creation whose response was lost leaves an empty thread behind. It never receives the
               // message, so the message is accepted only in the thread recorded here.
               threadId = (await createThread()).id;
-              hold({ ...send, threadId });
+              const asked = send.view;
+              // From here on the message belongs to its thread, wherever that is opened.
+              hold({ ...send, threadId, view: `thread:${threadId}` });
               // Follow the new thread only if the user is still where they sent from.
-              if (follow && viewing.current === origin) view(threadId);
+              if (viewKeyNow.current === asked) {
+                view(threadId);
+                setRekeyed({ from: asked, to: viewKeyNow.current, threadId });
+              }
             }
             await submitThreadMessage(threadId, {
               client_request_id: send.clientRequestId, text: send.text, workflow_input: send.workflowInput,
@@ -130,12 +140,13 @@ export function useConversation() {
         }
       } catch (error) {
         setSendError(message(error));
-        return;
+        return true;
       }
       await load(threadId);
       remember(PENDING_KEY, null);
       setPending(null);
       void refreshThreads();
+      return true;
     } finally {
       delivering.current = false;
     }
@@ -152,22 +163,20 @@ export function useConversation() {
     workflowInput?: Record<string, unknown>,
     hypotheticalArtifactId?: string,
     // Where the question was asked. Given when work came between the asking and the sending, so a
-    // conversation opened in the meantime never receives it.
-    threadId: string | null = viewing.current
+    // conversation opened in the meantime never receives it and is never replaced by it.
+    asked: { threadId: string | null; view: string } = { threadId: viewing.current, view: viewKeyNow.current }
   ) =>
-    deliver(
-      { threadId, clientRequestId: crypto.randomUUID(), text, workflowInput, hypotheticalArtifactId },
-      threadId === viewing.current
-    );
+    deliver({ threadId: asked.threadId, view: asked.view, clientRequestId: crypto.randomUUID(), text, workflowInput, hypotheticalArtifactId });
 
-  const retry = () => (pending ? deliver(pending) : Promise.resolve());
+  const retry = () => (pending ? deliver(pending) : Promise.resolve(false));
 
   function discardPending() {
     remember(PENDING_KEY, null);
     setPending(null);
     setSendError(null);
     // A conversation whose only message was never accepted has nothing left to show.
-    if (!thread?.messages.length) close();
+    // Stays in the same new conversation when it never got a thread.
+    if (!thread?.messages.length) close(false);
   }
 
   useEffect(() => {
@@ -183,7 +192,8 @@ export function useConversation() {
     if (unsent?.clientRequestId && unsent.text) {
       // No thread ID means the reload came before the thread existed: delivery resumes by creating it.
       if (unsent.threadId) open(unsent.threadId);
-      void deliver(unsent);
+      // View keys do not outlive the page: the recovered message belongs to the view restored here.
+      void deliver({ ...unsent, view: viewKeyNow.current });
     } else if (last) open(last);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -239,7 +249,7 @@ export function useConversation() {
   }, [runningThread, runningId]);
 
   // The unacknowledged send belongs to one thread and shows only there.
-  const pendingHere = pending && pending.threadId === openId ? pending : null;
+  const pendingHere = pending && pending.view === viewKey ? pending : null;
   return {
     threads,
     threadsError,
@@ -248,6 +258,8 @@ export function useConversation() {
     pending: pendingHere,
     sendError: pendingHere ? sendError : null,
     loadError,
+    // ponytail: a delivery under way for another view also holds the composer here for its short duration,
+    // because only one delivery runs at a time. Queue sends per view if that wait is ever felt.
     busy: !!running || (!!pending && !sendError),
     running: !!running,
     stopping,
@@ -259,6 +271,13 @@ export function useConversation() {
     viewKey,
     /** The same identity read at call time, for use right after a navigation in the same handler. */
     currentView: () => viewKeyNow.current,
+    rekeyed,
+    /** Returns to a new conversation that was left before it had a thread. */
+    reopenNew: (key: string) => {
+      view(null, key);
+      setThread(null);
+      setLoadError(null);
+    },
     open,
     close,
     send,

@@ -263,17 +263,21 @@ test("a failed draft capture keeps its question and retry in the conversation it
 
   // Nothing about it appears in the conversation now on screen, or in a new one.
   await expect(notSent(page)).toHaveCount(0);
-  await expect(page.getByText("could not be stored")).toHaveCount(0);
   await expect(ask(page)).toHaveValue("");
+  // A second draft question, failing here, is kept here; it does not replace the one waiting elsewhere.
+  await useDraft(page).check();
+  await send(page, "Draft question for the first topic");
+  await expect(notSent(page)).toContainText("Draft question for the first topic");
   await rail(page).getByRole("button", { name: "New conversation" }).click();
   await expect(notSent(page)).toHaveCount(0);
   await expect(ask(page)).toHaveValue("");
 
   // Back where it was asked, the question and its retry are waiting.
   await rail(page).getByRole("button", { name: "Conversation: Second topic" }).click();
+  await expect(notSent(page)).toHaveCount(1);
   await expect(notSent(page)).toContainText("Draft question for the second topic");
   await page.unroute("**/api/portfolio/artifacts");
-  await notSent(page).locator("..").getByRole("button", { name: "Send question again" }).click();
+  await page.getByRole("button", { name: "Send question again" }).click();
   await expect(thread(page).getByText("Hypothetical draft", { exact: true })).toHaveCount(1);
   await expect(notSent(page)).toHaveCount(0);
   expect(await questions(page, "Second topic")).toEqual(["Second topic", "Draft question for the second topic"]);
@@ -295,7 +299,66 @@ test("a failed draft capture from one new conversation is not shown in a differe
   await failed;
 
   await expect(notSent(page)).toHaveCount(0);
-  await expect(page.getByText("could not be stored")).toHaveCount(0);
   await expect(ask(page)).toHaveValue("");
   expect((await (await page.request.get("/api/threads")).json()).filter((item: { title: string | null }) => item.title)).toHaveLength(2);
+
+  // The conversation it was asked in has no thread to list, so the rail lists the question as the way back.
+  await rail(page).getByRole("button", { name: "Unsent question: Draft question for a third topic" }).click();
+  await expect(notSent(page)).toContainText("Draft question for a third topic");
+  await page.unroute("**/api/portfolio/artifacts");
+  await page.getByRole("button", { name: "Send question again" }).click();
+  await expect(thread(page).getByText("Hypothetical draft", { exact: true })).toHaveCount(1);
+  await expect(rail(page).getByRole("button", { name: /Unsent question/ })).toHaveCount(0);
+  expect(await questions(page, "Draft question for a third topic")).toEqual(["Draft question for a third topic"]);
+});
+
+test("a slow draft capture from one new conversation does not replace a different new conversation", async ({ page }) => {
+  const settle = await twoTopics(page, "stored");
+  await rail(page).getByRole("button", { name: "New conversation" }).click();
+  await useDraft(page).check();
+  await send(page, "Draft question for a third topic");
+  await rail(page).getByRole("button", { name: "Conversation: First topic" }).click();
+  await expect(thread(page)).toContainText("Plain answer to: First topic");
+  await rail(page).getByRole("button", { name: "New conversation" }).click();
+  await expect(thread(page)).toHaveCount(0);
+  // Creating the question's thread is slow too: while it waits, nothing of it shows in this new conversation.
+  let create = () => {};
+  const creating = new Promise<void>(resolve => { create = resolve; });
+  await page.route("**/api/threads", async route => {
+    if (route.request().method() === "POST") await creating;
+    await route.continue();
+  });
+  const creation = page.waitForRequest(request => request.method() === "POST" && request.url().endsWith("/api/threads"));
+  settle();
+  await creation;
+  await expect(page.getByText("Draft question for a third topic")).toHaveCount(0);
+  await expect(thread(page)).toHaveCount(0);
+  create();
+
+  // The question gets its own conversation, listed in the rail; the new conversation on screen stays empty.
+  await expect(rail(page).getByRole("button", { name: "Conversation: Draft question for a third topic" })).toBeVisible();
+  await expect.poll(() => questions(page, "Draft question for a third topic")).toEqual(["Draft question for a third topic"]);
+  await expect(thread(page)).toHaveCount(0);
+  await expect(ask(page)).toBeEnabled();
+});
+
+test("a failed draft question asked in a new conversation stays with it once that conversation has its thread", async ({ page }) => {
+  await open(page);
+  await page.getByRole("complementary", { name: "Details" }).getByLabel("Single-company cap (%)").fill("20");
+  await page.route("**/api/portfolio/artifacts", route => route.fulfill({ status: 503, json: { detail: "offline" } }));
+  await useDraft(page).check();
+  await send(page, "Draft question for a new topic");
+  await expect(notSent(page)).toContainText("Draft question for a new topic");
+
+  // An ordinary question from the same view creates the thread. The failed question is still here, and
+  // sending it again continues this conversation rather than starting another.
+  await send(page, "Plain question first");
+  await expect(thread(page)).toContainText("Plain answer to: Plain question first");
+  await expect(notSent(page)).toContainText("Draft question for a new topic");
+  await page.unroute("**/api/portfolio/artifacts");
+  await page.getByRole("button", { name: "Send question again" }).click();
+  await expect(thread(page).getByText("Hypothetical draft", { exact: true })).toHaveCount(1);
+  await expect(notSent(page)).toHaveCount(0);
+  expect(await questions(page, "Plain question first")).toEqual(["Plain question first", "Draft question for a new topic"]);
+  expect((await (await page.request.get("/api/threads")).json()).filter((item: { title: string | null }) => item.title)).toHaveLength(1);
 });

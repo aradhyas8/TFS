@@ -62,10 +62,9 @@ import { Checkbox } from "@/components/arc/checkbox/checkbox";
 import { useConversation } from "../../components/desk/useConversation";
 import { clock, fullDate, newCashLabel, pct, shortDate } from "../../components/desk/format";
 
-/** A question and its workflow: new cash with its input, Stock Analysis of one holding (position ID), a rebalance, theme discovery, else a portfolio review.
- *  Each one is a fresh analysis of the saved portfolio; nothing from an earlier answer is carried over. */
 /** A question asked about the unsaved draft: the draft as captured, and where the question was asked. */
 type DraftQuestion = {
+  id: string;
   /** The view it was asked in; its progress and any failure show only there. */
   view: string;
   /** The thread it is sent to; null starts a new conversation. */
@@ -75,6 +74,8 @@ type DraftQuestion = {
   portfolio: SavedPortfolio;
 };
 
+/** A question and its workflow: new cash with its input, Stock Analysis of one holding (position ID), a rebalance, theme discovery, else a portfolio review.
+ *  Each one is a fresh analysis of the saved portfolio; nothing from an earlier answer is carried over. */
 type Sent = {
   question: string;
   newCash: NewCashInput | null;
@@ -324,9 +325,22 @@ export default function DeskPage() {
   const [useDraft, setUseDraft] = useState(false);
   // Storing the draft is a request, and the investor may navigate while it runs. Its progress and its failure
   // belong to the view the question was asked in, named by that view's key, and show nowhere else.
-  const [capturing, setCapturing] = useState<string | null>(null);
-  // ponytail: one failed draft question is kept; a later one replaces it. Keep one per view if that loses work.
-  const [captureFailed, setCaptureFailed] = useState<DraftQuestion | null>(null);
+  const [capturing, setCapturing] = useState<string[]>([]);
+  const [captureFailed, setCaptureFailed] = useState<Record<string, DraftQuestion>>({});
+  // By question, not by view: the view's key changes when a new conversation receives its thread.
+  const forgetFailed = (id: string) =>
+    setCaptureFailed(failed => Object.fromEntries(Object.entries(failed).filter(([, asked]) => asked.id !== id)));
+  // A new conversation that received its thread keeps its failed question, which now continues that thread.
+  useEffect(() => {
+    const moved = conversation.rekeyed;
+    if (!moved) return;
+    setCaptureFailed(failed => {
+      const kept = failed[moved.from];
+      if (!kept) return failed;
+      const others = Object.fromEntries(Object.entries(failed).filter(([key]) => key !== moved.from));
+      return { ...others, [moved.to]: { ...kept, view: moved.to, destination: moved.threadId } };
+    });
+  }, [conversation.rekeyed]);
   const threadEnd = useRef<HTMLDivElement>(null);
   const wasRunning = useRef(false);
 
@@ -1035,7 +1049,8 @@ export default function DeskPage() {
   function chat(text: string) {
     // A question asked from another view (the register, a workflow answer) starts a new conversation
     // rather than landing in a thread that is not on screen.
-    if (!showThread) conversation.close();
+    // Asked from the new conversation already on screen, it stays in that same view.
+    if (!showThread) conversation.close(registerOpen || !!reopened || !!run || !!clarify || !!failure || !!answer);
     showConversation();
     void sendToConversation(text.trim());
   }
@@ -1057,23 +1072,32 @@ export default function DeskPage() {
     // open, is a different one and is left alone when this capture finishes.
     setUseDraft(false);
     // Fixed before the draft is stored: the question goes where it was asked, whatever is opened meanwhile.
-    void askAboutDraft({ view: conversation.currentView(), destination: conversation.destination(), text, workflowInput, portfolio });
+    void askAboutDraft({ id: crypto.randomUUID(), view: conversation.currentView(), destination: conversation.destination(), text, workflowInput, portfolio });
   }
 
   /** Stores the captured draft, then sends the question about it. A failure keeps the whole question, with the
    *  draft as it was captured, so it can be sent again from the view it was asked in. */
   async function askAboutDraft(asked: DraftQuestion) {
-    setCaptureFailed(null);
-    setCapturing(asked.view);
+    setCapturing(views => [...views, asked.view]);
     try {
       const captured = await storeDraft(asked.portfolio);
-      void conversation.send(asked.text, asked.workflowInput, captured.id, asked.destination);
+      const started = await conversation.send(asked.text, asked.workflowInput, captured.id, { threadId: asked.destination, view: asked.view });
+      // Another message was still being delivered, so this one was not started.
+      if (!started) throw new Error("not sent");
+      forgetFailed(asked.id);
     } catch {
-      setCaptureFailed(asked);
+      // ponytail: one failed draft question is kept per view; a second failure there replaces the first.
+      setCaptureFailed(failed => ({ ...failed, [asked.view]: asked }));
     } finally {
-      setCapturing(current => (current === asked.view ? null : current));
+      setCapturing(views => views.filter(view => view !== asked.view));
     }
   }
+
+  /** Failed draft questions whose conversation is not on screen and is not listed: a new conversation, or a
+   *  thread with no accepted question yet. The rail lists the question itself as the way back to it. */
+  const unsentElsewhere = Object.values(captureFailed).filter(
+    asked => asked.view !== conversation.viewKey && !conversation.threads?.some(item => item.id === asked.destination)
+  );
 
   function ask(text: string) {
     // With the draft selected, any question that is not a slash shortcut goes to the conversation as a hypothetical.
@@ -1532,20 +1556,20 @@ export default function DeskPage() {
 
   const activeSnapshot = answer?.snapshot || committedSnapshot;
   // Shown wherever a question can be asked, so the draft is only ever analyzed by explicit choice.
-  const capturingHere = capturing === conversation.viewKey;
-  const captureFailedHere = captureFailed?.view === conversation.viewKey ? captureFailed : null;
+  const capturingHere = capturing.includes(conversation.viewKey);
+  const captureFailedHere = captureFailed[conversation.viewKey] ?? null;
   const draftBasis = (captureFailedHere || isDirty) && (
     <div className={threadStyles.draft}>
       {captureFailedHere && (
         <div className={threadStyles.notice}>
           <Alert tone="danger" title="Your question was not sent">
-            {`"${captureFailedHere.text}" was asked about your unsaved draft, and the draft could not be stored. Check that the analyst service is running, then send the question again.`}
+            {`"${captureFailedHere.text}" was asked about your unsaved draft and could not be sent. Check that the analyst service is running, then send the question again.`}
           </Alert>
           <div className={threadStyles.actions}>
             <Button variant="secondary" disabled={capturingHere || conversation.busy} onClick={() => void askAboutDraft(captureFailedHere)}>
               Send question again
             </Button>
-            <Button variant="ghost" onClick={() => setCaptureFailed(null)}>
+            <Button variant="ghost" onClick={() => forgetFailed(captureFailedHere.id)}>
               Discard question
             </Button>
           </div>
@@ -1835,6 +1859,18 @@ export default function DeskPage() {
         threadsError={conversation.threadsError}
         threadId={showThread ? conversation.openId : null}
         onThread={openThread}
+        unsent={unsentElsewhere.map(asked => ({ key: asked.id, text: asked.text }))}
+        onUnsent={id => {
+          const asked = unsentElsewhere.find(item => item.id === id);
+          if (!asked) return;
+          // Back to the conversation as it was, not to a workflow answer shown since.
+          setAnswer(null);
+          if (asked.destination) openThread(asked.destination);
+          else {
+            showConversation();
+            conversation.reopenNew(asked.view);
+          }
+        }}
         running={
           run
             ? run.newCash
