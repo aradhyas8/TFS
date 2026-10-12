@@ -208,7 +208,7 @@ class Orchestrator:
                             tool_remaining,
                         ))
                     else:
-                        result = cast(dict[str, Any], pending_result)
+                        result = pending_result
                 except TimeoutError:
                     if (capability.effect == "workflow" and tool_remaining <= self.settings.request_timeout
                             or asyncio.get_event_loop().time() >= deadline):
