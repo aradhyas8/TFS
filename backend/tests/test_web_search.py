@@ -383,3 +383,78 @@ def test_hosted_search_obeys_the_run_deadline(tmp_path: Path, monkeypatch: pytes
     assert "Late answer." not in json.dumps(messages)
     assert len(model.requests) == 2
 
+
+@pytest.mark.parametrize("query", [
+    "news for holder of 731 shares of XYZ",
+    "is XYZ cheap versus 44.10 cost",
+])
+def test_unresolved_holding_details_never_reach_search(tmp_path: Path, query: str) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    saved = saved_portfolio().model_dump(mode="json")
+    saved["unresolved"] = [{"account_id": "joint-9917", "ticker": "XYZ", "shares": "731",
+                            "average_cost": "44.10"}]
+    store.save(SavedPortfolio.model_validate(saved))
+    model = CapturingTransport([search_call(query), ModelTurn(text="I could not search.")])
+    with client_for(store, model) as client:
+        run = submit(client, client.post("/api/threads").json()["id"], "Any XYZ news?")
+        payload = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()["payload"]
+    assert payload["reason"] == "rejected_query"
+    assert all(request["tools"] != [{"type": "web_search"}] for request in model.requests)
+
+
+class FailingAfterCall(CapturingTransport):
+    async def respond(self, messages: Any, **kwargs: Any) -> ModelTurn:
+        if self.requests:
+            raise RuntimeError("model down")
+        return await super().respond(messages, **kwargs)
+
+
+def test_rejected_query_is_not_left_in_private_continuation(tmp_path: Path) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(saved_portfolio())
+    query = "Acme outlook for holder of 437 shares"
+    rejected = search_call(query)
+    rejected.continuation = [
+        {"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque", "summary": []},
+        {"type": "function_call", "call_id": "search-1", "name": "web_search",
+         "arguments": rejected.calls[0].arguments},
+    ]
+    model = FailingAfterCall([rejected])
+    with client_for(store, model) as client:
+        run = submit(client, client.post("/api/threads").json()["id"], "Should I add to Acme?")
+    assert run["status"] == "failed"
+    assert query not in json.dumps(store.db.get_private_continuation(run["id"]))
+
+
+def test_accepted_call_continuation_is_still_stored(tmp_path: Path) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    accepted = search_call("Acme guidance news")
+    accepted.continuation = [{"type": "function_call", "call_id": "search-1", "name": "web_search",
+                              "arguments": accepted.calls[0].arguments}]
+    model = FailingAfterCall([accepted])
+    with client_for(store, model) as client:
+        run = submit(client, client.post("/api/threads").json()["id"], "Any Acme news?")
+    assert store.db.get_private_continuation(run["id"]) == accepted.continuation
+
+
+def test_cited_artifact_stays_readable_once_the_search_outcome_leaves_context(tmp_path: Path) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    model = CapturingTransport([search_call("Acme guidance news"), search_turn(),
+                                ModelTurn(text="Acme raised its guidance this week.")])
+    with client_for(store, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Any Acme news?")
+        [artifact_id] = run["artifact_ids"]
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+        assert messages[2]["artifact_ids"] == [artifact_id]
+        # Remove the retrieval-outcome message, as when it falls outside the context window.
+        with store.db.connect() as conn:
+            conn.execute("DELETE FROM messages WHERE id = ?;", (messages[1]["id"],))
+        model.turns = iter([
+            ModelTurn(calls=[ToolCall("read", "get_artifact", json.dumps({"artifact_id": artifact_id}))]),
+            ModelTurn(text="The source was Acme lifts guidance."),
+        ])
+        followup = submit(client, thread, "Which source said that?", "req-2")
+        outcome = client.get(f"/api/threads/{thread}").json()["messages"][-2]["tool_outcomes"][0]
+    assert followup["status"] == "completed"
+    assert outcome["status"] == "success"

@@ -99,7 +99,9 @@ class WebSearchTools:
         if any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", query, re.I) for name in names):
             return True
         private = {value for position in snapshot.positions for value in (position.shares, position.cash)
-                   if value is not None} | set(context.portfolio.average_costs.values())
+                   if value is not None} | set(context.portfolio.average_costs.values()) | {
+                       value for holding in context.portfolio.unresolved
+                       for value in (holding.shares, holding.average_cost) if value is not None}
         for token in re.findall(r"\d[\d,]*(?:\.\d+)?", query):
             try:
                 if Decimal(token.replace(",", "")) in private:

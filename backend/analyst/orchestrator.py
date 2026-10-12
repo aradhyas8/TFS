@@ -182,8 +182,9 @@ class Orchestrator:
                         return
                     seen_calls.add(call.call_id)
 
-                # Check if continuation state is returned (server-only)
-                if turn.continuation:
+                # Continuation state is server-only. A tool-call turn is stored after its handler,
+                # so a rejected search query never reaches storage.
+                if turn.continuation and not turn.calls:
                     self.db.store_private_continuation(run_id, turn.continuation)
 
                 # Conceptual / tool-free answer path: model produced text response
@@ -200,6 +201,8 @@ class Orchestrator:
                         text=assistant_text,
                         run_id=run_id,
                         citations=citations,
+                        # Keeps cited web research readable by later runs once its outcome leaves context.
+                        artifact_ids=list(dict.fromkeys(c["artifact_id"] for c in web.citations)),
                     )
                     # Complete run
                     self.db.update_run(
@@ -235,6 +238,8 @@ class Orchestrator:
                         artifact_ids.append(result[key]["id"])
                 rejected_query = (isinstance(result.get("payload"), dict)
                                   and result["payload"].get("reason") == "rejected_query")
+                if turn.continuation and not rejected_query:
+                    self.db.store_private_continuation(run_id, turn.continuation)
                 output = json.dumps(result, cls=DecimalEncoder)
                 exchange = list(turn.continuation)
                 if not continuation_calls:
