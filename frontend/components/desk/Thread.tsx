@@ -384,7 +384,7 @@ function Proposal({ id, shared }: { id: string; shared: Shared }) {
   if (!proposals)
     return shared.proposalsFailed ? (
       <div className={styles.notice}>
-        <Alert tone="danger" title="The proposed changes could not be loaded">
+        <Alert tone="warning" title="The proposed changes could not be loaded">
           Check that the analyst service is running, then load them again. Nothing has been changed.
         </Alert>
         <Button variant="secondary" onClick={shared.onReloadProposals}>

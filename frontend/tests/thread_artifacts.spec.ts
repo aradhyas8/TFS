@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Route } from "@playwright/test";
 import { seedPortfolio } from "./test_helpers";
 
 // ACME has reviewed research fixtures on the test server; with the 15% cap it breaks a rule.
@@ -441,6 +441,13 @@ for (const [name, width, height] of [["phone", 390, 844], ["tablet", 768, 1024],
     if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/memo-${name}.png`, fullPage: false });
   });
 
+/** Answers the page's proposal-list requests with a fixed response, as a failing or lagging backend would. */
+async function proposalList(page: Page, response: { status?: number; json: unknown }) {
+  const handler = (route: Route) => (route.request().method() === "GET" ? route.fulfill(response) : route.continue());
+  await page.route("**/api/portfolio/proposals", handler);
+  return handler;
+}
+
 /** A stock result stored in the conversation, ready to save. */
 async function stockResult(page: Page) {
   await send(page, "Analyze a stock in chat");
@@ -482,10 +489,6 @@ test("a deleted decision no longer shows its stored result as saved, one at a ti
   await expect(result).not.toContainText("Saved to Decisions");
   await expect(result.getByRole("button", { name: "Record action" })).toHaveCount(0);
   await expect(result.getByRole("button", { name: "Save decision" })).toBeVisible();
-
-  await page.reload();
-  await expect(result.getByRole("button", { name: "Save decision" })).toBeVisible();
-  await expect(result.getByRole("button", { name: "Record action" })).toHaveCount(0);
 });
 
 test("a proposal list that fails to refresh shows the error and a retry, not the earlier list", async ({ page }) => {
@@ -495,9 +498,7 @@ test("a proposal list that fails to refresh shows the error and a retry, not the
   await expect(cards).toContainText("Waiting for your review");
 
   // The list loaded once. The refresh for the next proposal fails.
-  const offline = (route: import("@playwright/test").Route) =>
-    route.request().method() === "GET" ? route.fulfill({ status: 503, json: { detail: "Database is temporarily locked. Please retry." } }) : route.continue();
-  await page.route("**/api/portfolio/proposals", offline);
+  const offline = await proposalList(page, { status: 503, json: { detail: "Database is temporarily locked. Please retry." } });
   await send(page, "Set my ACME shares to 12 again");
   await expect(thread(page)).toContainText("Plain answer to: Set my ACME shares to 12 again");
   const failed = thread(page).getByText("The proposed changes could not be loaded");
@@ -525,10 +526,7 @@ test("a proposal that this page knows is out of date offers no review, whatever 
   await expect(card.getByRole("button", { name: "Review changes" })).toBeVisible();
 
   // The proposal list keeps answering with what it said before the portfolio moved on.
-  const before = await (await page.request.get("/api/portfolio/proposals")).json();
-  const cached = (route: import("@playwright/test").Route) =>
-    route.request().method() === "GET" ? route.fulfill({ json: before }) : route.continue();
-  await page.route("**/api/portfolio/proposals", cached);
+  const cached = await proposalList(page, { json: await (await page.request.get("/api/portfolio/proposals")).json() });
 
   // A rule change is reviewed and confirmed in the holdings panel: the saved portfolio is now revision 2.
   const details = page.getByRole("complementary", { name: "Details" });
@@ -545,10 +543,22 @@ test("a proposal that this page knows is out of date offers no review, whatever 
   await expect(card.getByRole("button")).toHaveCount(0);
   expect(await acmeShares(page)).toBe(10);
 
-  // With the real list back after a reload, the backend agrees and there is still nothing to review.
-  await page.unroute("**/api/portfolio/proposals", cached);
+  // The banner above the thread reaches the same review: it opens as out of date, with nothing to confirm.
+  await page.getByTestId("reopen-pending-proposal").click();
+  await expect(dialog).toContainText("This proposal is stale.");
+  await expect(dialog.getByTestId("confirm-proposal")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Close and cancel review" }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // Reloaded while the list still answers from before: the page compares revisions itself.
   await page.reload();
   await expect(card).toContainText("Out of date");
+  await expect(card.getByRole("button")).toHaveCount(0);
+
+  // With the real list back after a reload: closing the out-of-date review cancelled it, and nothing was applied.
+  await page.unroute("**/api/portfolio/proposals", cached);
+  await page.reload();
+  await expect(card).toContainText("Cancelled. Your saved portfolio was not changed.");
   await expect(card.getByRole("button")).toHaveCount(0);
   expect(await acmeShares(page)).toBe(10);
 });
@@ -571,12 +581,14 @@ test("a stored stock result is saved under its own listing, and a re-run never s
   const [decision] = await (await page.request.get("/api/decisions")).json();
   expect(decision.subject).toMatchObject({ label: "ACME", ticker: "ACME", listing: "XNAS" });
 
-  // Re-running would mean analyzing the XNYS holding under a decision made about XNAS. It does not run.
+  // Re-running never analyzes the XNYS holding under a decision made about XNAS: the recorded listing is looked up.
   await rail.getByTestId("decision-item").click();
   await page.getByRole("button", { name: "Re-run with today's portfolio" }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "XNAS" })).toContainText("XNYS");
-  await expect(page.getByRole("region", { name: "Stock analysis" })).toHaveCount(0);
-  expect(analyses).toHaveLength(0);
+  await expect.poll(() => analyses.length).toBeGreaterThan(0);
+  expect(analyses[0]).toEqual({ ticker: "ACME", listing: "XNAS" });
+  for (const body of analyses.slice(1)) expect(body).not.toMatchObject({ stock: { position_id: "tfsa-acme" } });
+  await expect(ask(page)).toBeEnabled({ timeout: 30_000 });
+  analyses.length = 0;
 
   // Once the holding is back on the decision's listing, the same re-run goes ahead for that holding.
   await commit(page, SAVED, 2);

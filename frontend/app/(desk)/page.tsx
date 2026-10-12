@@ -238,15 +238,25 @@ export default function DeskPage() {
   const [isProposalStale, setIsProposalStale] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
+  // Refreshes start from several places. Only the latest one may report: an older request that fails late
+  // must not hide a list a newer request already loaded.
+  const proposalRefresh = useRef(0);
   function refreshProposals() {
+    const request = ++proposalRefresh.current;
+    setProposalsFailed(false);
     listProposals()
       .then(res => {
+        if (request !== proposalRefresh.current) return;
         setProposals(res);
         setProposalsLoaded(true);
-        setProposalsFailed(false);
         setPendingProposals(res.filter(p => p.status === "pending"));
       })
-      .catch(() => setProposalsFailed(true));
+      .catch(() => {
+        if (request !== proposalRefresh.current) return;
+        // The earlier list is dropped: the conversation shows the failure rather than states it can no longer vouch for.
+        setProposalsLoaded(false);
+        setProposalsFailed(true);
+      });
   }
 
   function openProposal(proposal: PortfolioProposal) {
@@ -1061,7 +1071,11 @@ export default function DeskPage() {
   }
 
   /** The register entry for a result: its workflow and subject, from what was sent when known, else from the stored result itself. */
-  function decisionFor(result: Analysis, from: Sent | null): { workflow: DecisionWorkflow; subject: DecisionSubject } {
+  function decisionFor(
+    result: Analysis,
+    from: Sent | null,
+    snapshot: Snapshot | null = committedSnapshot
+  ): { workflow: DecisionWorkflow; subject: DecisionSubject } {
     // A desk answer keeps its long-standing precedence; a stored result has only itself to go by.
     const workflow: DecisionWorkflow = !from
       ? workflowOf(result)
@@ -1077,10 +1091,10 @@ export default function DeskPage() {
     if (workflow === "stock") {
       const id = from?.stock || result.stock?.position_id;
       const held = result.portfolio.positions.find(row => row.supplied.id === id)?.supplied;
-      // A stored result is saved as the holding it analyzed. Today's portfolio may hold that position ID
-      // under another listing, and is only consulted for a desk answer computed from it just now.
+      // A stored result is saved as the holding it analyzed: today's portfolio may hold that position ID under
+      // another ticker or listing. Only a desk answer, which has no stored source, falls back to it.
       const current = from ? committedSnapshot?.positions.find(row => row.id === id) : undefined;
-      const ticker = (from === sent ? sentStock : null) || held?.ticker || tickerOf(id) || "Stock";
+      const ticker = (from === sent ? sentStock : null) || held?.ticker || (from ? tickerOf(id) : null) || "Stock";
       const listing = from?.candidate?.listing || current?.listing || held?.listing || null;
       return { workflow, subject: { label: ticker, ticker, listing } };
     }
@@ -1089,7 +1103,7 @@ export default function DeskPage() {
       return {
         workflow,
         subject: {
-          label: newCashLabel(cashInput, committedSnapshot) || "New cash",
+          label: newCashLabel(cashInput, snapshot) || "New cash",
           new_cash: {
             amount: cashInput.amount ?? null,
             account_id: cashInput.account_id ?? null,
@@ -1128,11 +1142,11 @@ export default function DeskPage() {
   }
 
   /** Saves a decision from a result stored in the conversation. The stored values are saved as they are. */
-  async function saveResult(artifactId: string, analysis: Analysis) {
+  async function saveResult(artifactId: string, analysis: Analysis, source: Snapshot) {
     setSavingResult(artifactId);
     setSaveFailed(null);
     try {
-      const record = await post<SavedDecision>("/api/decisions", { result: analysis, ...decisionFor(analysis, null) });
+      const record = await post<SavedDecision>("/api/decisions", { result: analysis, ...decisionFor(analysis, null, source) });
       setSavedResults(map => ({ ...map, [artifactId]: record.id }));
       setDecisions(list => [record, ...list.filter(d => d.id !== record.id)]);
     } catch {
@@ -1193,17 +1207,14 @@ export default function DeskPage() {
       const sameTicker = (committedSnapshot?.positions ?? []).filter(
         row => isSupportedStock(row) && !!ticker && row.ticker?.toUpperCase() === ticker.toUpperCase()
       );
-      // A decision that recorded its listing is only re-run on that listing.
-      const held = sameTicker.find(row => !listing || row.listing === listing);
-      if (!held && sameTicker.length) {
-        setReopened(decision);
-        setNotice(
-          `This decision was about ${ticker} on ${listing}. Your portfolio now holds ${ticker} on ${sameTicker
-            .map(row => row.listing || "an unknown listing")
-            .join(", ")}, so it was not re-run. Ask about the listing you want to analyze.`
-        );
-        return;
-      }
+      // A re-run never moves to another listing of the same ticker. A decision that recorded its listing runs
+      // on a holding with that listing; one that recorded none runs on a holding only when a single listing is
+      // held. Anything else goes to the lookup below, which analyzes the recorded listing or asks which one.
+      const held = listing
+        ? sameTicker.find(row => row.listing === listing)
+        : new Set(sameTicker.map(row => row.listing)).size === 1
+          ? sameTicker[0]
+          : undefined;
       if (held) {
         void analyze({ question: decision.question, newCash: null, stock: held.id });
       } else if (ticker) {
@@ -1424,7 +1435,7 @@ export default function DeskPage() {
             <Button
               variant="secondary"
               loading={savingResult === reference.id}
-              onClick={() => void saveResult(reference.id, analysis)}
+              onClick={() => void saveResult(reference.id, analysis, source)}
             >
               Save decision
             </Button>
@@ -1555,7 +1566,7 @@ export default function DeskPage() {
           onReload={() => void conversation.reload()}
           snapshot={committedSnapshot}
           committedRevision={committedRevision}
-          proposals={proposalsLoaded && !proposalsFailed ? proposals : null}
+          proposals={proposalsLoaded ? proposals : null}
           proposalsFailed={proposalsFailed}
           onReloadProposals={refreshProposals}
           theme={theme}
@@ -1887,11 +1898,7 @@ export default function DeskPage() {
                     type="button"
                     className="btn primary small"
                     data-testid="reopen-pending-proposal"
-                    onClick={() => {
-                      setActiveProposal(pendingProposals[0]);
-                      setIsProposalStale(false);
-                      setPreviewError(null);
-                    }}
+                    onClick={() => openProposal(pendingProposals[0])}
                   >
                     Reopen preview
                   </button>
