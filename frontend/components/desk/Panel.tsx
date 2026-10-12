@@ -509,7 +509,7 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
           {pendingProposals.map(p => (
             <div key={p.id} className="pv" style={{ alignItems: "center" }}>
               <span className="cap">
-                {p.origin === "identify" ? "Identity correction" : p.origin === "import" ? "Holdings import" : "Manual edit"} · {p.differences.length} change{p.differences.length === 1 ? "" : "s"}
+                {p.origin === "identify" ? "Identity correction" : p.origin === "import" ? "Holdings import" : p.origin === "chat" ? "Action proposal" : "Manual edit"} · {p.differences.length} change{p.differences.length === 1 ? "" : "s"}
               </span>
               <button type="button" className="btn secondary small" onClick={() => onReopenProposal?.(p)}>
                 Reopen review

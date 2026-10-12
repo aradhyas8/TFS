@@ -326,3 +326,17 @@ test.describe("conversation is the default for free-form input", () => {
     expect(isConversation("I have C$2,000 to invest", SNAPSHOT)).toBe(false);
   });
 });
+
+test.describe("holdings corrections belong to the conversation", () => {
+  test("an instruction to change what is held is not an analysis of the company it names", () => {
+    expect(isConversation("Set my ACME shares to 12", SNAPSHOT)).toBe(true);
+    expect(isConversation("Update my ACME position to 40 shares", SNAPSHOT)).toBe(true);
+    expect(isConversation("Remove ACME from my holdings", SNAPSHOT)).toBe(true);
+  });
+
+  test("questions about a holding, and slash commands, keep their shortcuts", () => {
+    expect(isConversation("Should I sell ACME?", SNAPSHOT)).toBe(false);
+    expect(isConversation("What changed at ACME?", SNAPSHOT)).toBe(false);
+    expect(isConversation("/stock ACME set shares", SNAPSHOT)).toBe(false);
+  });
+});

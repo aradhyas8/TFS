@@ -28,6 +28,6 @@ Arc Free (https://uiarc.dev) is the preferred component library for new or redes
 - Registry: `components.json` maps `@uiarc` to `https://uiarc.dev/r/{name}.json`. Arc needs no Tailwind; components use CSS modules and CSS variables.
 - MCP: the `arc` server is declared in the repository root `.mcp.json` (`https://uiarc.dev/api/mcp`). The first connection opens a browser sign-in. If a tool call fails with an auth error, ask the user to reconnect instead of guessing.
 - Foundation: `components/arc/foundation.css` is imported once in `app/layout.tsx`, with `data-theme="dark"` on `<html>` and Geist and Inter loaded as `--font-geist` and `--font-inter`. The desk tokens in `app/(desk)/desk.css` are aliases of Arc's semantic tokens, so existing desk screens and Arc components share one palette, type and focus ring.
-- Installed Arc Free components: `alert`, `badge`, `button`, `skeleton`, `text-shimmer`.
+- Installed Arc Free components: `alert`, `badge`, `button`, `json-viewer`, `skeleton`, `text-shimmer`.
 - Path alias: `@/*` resolves to this directory (`tsconfig.json`).
 - Existing desk components in `components/desk/` predate this rule. Leave their structure alone until a ticket redesigns them, then move that surface to Arc.

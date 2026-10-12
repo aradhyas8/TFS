@@ -23,6 +23,10 @@ const FORM = new Set(["inc", "incorporated", "corp", "corporation", "co", "compa
 const MONEY_ACTION = /\b(invest\w*|put|allocat\w*|new cash)\b/i;
 const MONEY_QUESTION_NO_AMOUNT = /\b(?:new (?:cash|money)|(?:cash|money) to (?:invest|allocate|put|deploy)|where should (?:new )?(?:cash|money) go|where to (?:invest|put|allocate) (?:new )?(?:cash|money)|allocate (?:new )?(?:cash|money))\b/i;
 
+// A plain instruction to correct what is held ("set my ACME shares to 12", "remove ACME from my holdings").
+// A question about a holding ("should I sell ACME?") is not one.
+const HOLDINGS_EDIT = /^\s*(?:please\s+)?(?:set|change|update|correct|record|remove|delete)\b.*\b(?:shares?|holdings?|positions?|portfolio|quantity|balance)\b/i;
+
 const THEME_STOP_WORDS = new Set(["which", "what", "my", "our", "all", "these", "those", "some", "any", "no", "more", "other", "few", "the", "a", "an"]);
 
 function nameWords(name: string): string[] {
@@ -291,5 +295,7 @@ export function route(raw: string, snapshot: Snapshot | null): Route {
  *  the router resolves to a specific workflow. The router's default review no longer claims ordinary questions. */
 export function isConversation(raw: string, snapshot: Snapshot | null): boolean {
   if (raw.trim().startsWith("/")) return false;
+  // An instruction to change the record is prepared as a proposal in the conversation, even when it names a holding.
+  if (HOLDINGS_EDIT.test(raw)) return true;
   return !snapshot || route(raw, snapshot).kind === "review";
 }
