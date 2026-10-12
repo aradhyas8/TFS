@@ -5,12 +5,14 @@ type Props = {
   snapshot: Snapshot | null; unresolved: UnresolvedHolding[]; settings: PortfolioSettings; result: Analysis | null;
   decisions: SavedDecision[]; currentId: string | null; running: string | null;
   threads: ThreadSummary[] | null; threadsError: boolean; threadId: string | null; onThread: (id: string) => void;
+  /** Questions that were not sent from a new conversation since left: each one reopens that conversation. */
+  unsent: { key: string; text: string }[]; onUnsent: (key: string) => void;
   onNew: () => void; onHoldings: () => void; onOpen: (decision: SavedDecision) => void; onAllDecisions: () => void; onStock: (position: Position) => void;
   onDelete: (decision: SavedDecision) => void; onClearAll: () => void;
 };
 
 /** Left rail: which portfolio and which decisions am I working with? */
-export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, threads, threadsError, threadId, onThread, onNew, onHoldings, onOpen, onAllDecisions, onStock, onDelete, onClearAll }: Props) {
+export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, threads, threadsError, threadId, onThread, unsent, onUnsent, onNew, onHoldings, onOpen, onAllDecisions, onStock, onDelete, onClearAll }: Props) {
   const review = result?.portfolio;
   // A supported stock row offers Stock Analysis; funds and cash are listed only.
   const holding = (row: Position, figure: string) => {
@@ -50,7 +52,11 @@ export default function Rail({ snapshot, unresolved, settings, result, decisions
       <span className="lbl dhead"><span>Conversations</span></span>
       {threadsError ? <span className="cap amber" role="status" style={{ padding: "0 12px" }}>Conversations could not be loaded. Reload the page to try again.</span>
         : !threads ? <span className="cap" role="status" style={{ padding: "0 12px" }}>Loading conversations</span>
-        : threads.length === 0 && <span className="cap" style={{ padding: "0 12px" }}>No conversations yet. Ask a question to start one.</span>}
+        : threads.length === 0 && unsent.length === 0 && <span className="cap" style={{ padding: "0 12px" }}>No conversations yet. Ask a question to start one.</span>}
+      {unsent.map(item => <button type="button" className="ditem" key={item.key} onClick={() => onUnsent(item.key)} title={item.text}>
+        <span className="title"><span><span className="sr-only">Unsent question: </span>{item.text}</span></span>
+        <span className="cap amber">Not sent</span>
+      </button>)}
       {threads?.map(thread => <button type="button" className="ditem" key={thread.id} data-testid="thread-item"
         aria-current={thread.id === threadId} onClick={() => onThread(thread.id)} title={thread.title || undefined}>
         <span className="title"><span><span className="sr-only">Conversation: </span>{thread.title}</span></span>

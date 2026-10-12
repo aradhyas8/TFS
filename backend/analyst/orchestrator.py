@@ -85,11 +85,16 @@ class Orchestrator:
         task.add_done_callback(_cleanup)
 
     async def cancel_run(self, thread_id: str, run_id: str) -> RunRecord | None:
-        """Cancel active in-process task and mark run cancelled in database."""
+        """Mark the run cancelled in the database, then stop its in-process task.
+
+        The database decides first: a run that is not in this thread, or that already ended some
+        other way, keeps its task untouched.
+        """
+        record = self.db.cancel_run(thread_id, run_id)
         task = self._active_tasks.get(run_id)
-        if task and not task.done():
+        if record is not None and record.status == "cancelled" and task and not task.done():
             task.cancel()
-        return self.db.cancel_run(thread_id, run_id)
+        return record
 
     async def _execute_run(
         self,
@@ -150,6 +155,8 @@ class Orchestrator:
                 except Exception as exc:
                     logger.error("Model transport error during run %s: %s", run_id, exc, exc_info=True)
                     self._record_terminal_failure(run_id, f"Model service error: {exc}")
+                    return
+                if self._stopped(thread_id, run_id):
                     return
 
                 if turn.calls:
@@ -233,6 +240,8 @@ class Orchestrator:
                               else {"error": "Financial request timed out; no result is available."})
                 except ValueError:
                     result = {"error": "Requested data is unavailable to this run."}
+                if self._stopped(thread_id, run_id):
+                    return
                 artifact_ids = list(result.get("artifact_ids", []))
                 proposal_ids = list(result.get("proposal_ids", []))
                 for key in ("reference", "before_artifact", "after_artifact"):
@@ -283,7 +292,7 @@ class Orchestrator:
 
         except asyncio.CancelledError:
             logger.info("Supervised task for run %s was cancelled.", run_id)
-            # Database cancel was already handled or will be handled by cancel_run
+            # cancel_run recorded the cancellation in the database before cancelling this task
         except Exception as exc:
             logger.error("Orchestration error in run %s (%s).", run_id, type(exc).__name__)
             self._record_terminal_failure(run_id, "Internal orchestration error.")
@@ -305,6 +314,17 @@ class Orchestrator:
 
         coro = self.transport.respond(messages, **kwargs)
         return cast(ModelTurn, await asyncio.wait_for(coro, timeout=timeout))
+
+    def _stopped(self, thread_id: str, run_id: str) -> bool:
+        """Whether the run ended while provider work was still returning; its late output is then dropped.
+
+        Checked after every await and before the next write, with no await in between, so a stop
+        cannot land between the check and the write.
+        ponytail: holds for the single-process deployment only; a second process needs the check
+        inside the write's transaction.
+        """
+        current = self.db.get_run(thread_id, run_id)
+        return current is None or current.status != "running"
 
     def _record_terminal_failure(self, run_id: str, error_message: str) -> None:
         """Safely record terminal failure without overwriting cancelled state."""

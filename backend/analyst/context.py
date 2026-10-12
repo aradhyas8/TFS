@@ -17,6 +17,7 @@ from .schemas import (
     Identifier,
     MessageRecord,
     RunRecord,
+    SavedPortfolio,
     WorkflowName,
     build_artifact_payload,
     model_safe,
@@ -73,13 +74,23 @@ class RunContext:
         bound = db.get_portfolio_revision(run.bound_revision) if run.bound_revision else None
         if run.bound_revision and bound is None:
             raise ValueError("Bound portfolio revision is unavailable.")
-        self.portfolio = bound.portfolio if bound else None
+        # Proposals always edit the committed holdings; analysis reads `portfolio`, which a
+        # hypothetical run replaces with the immutable draft the user selected.
+        self.committed = bound.portfolio if bound else None
+        self.portfolio = self.committed
         self.proposals = {p.id: p for p in db.list_proposals("pending")
                           if p.base_revision == run.bound_revision and p.created_at <= run.created_at}
         self.known_proposals = dict(self.proposals)
         self.artifact_ids: set[str] = set()
+        self._hypothetical_runs: dict[str, bool] = {}
         if run.bound_revision:
             self.artifact_ids.add(f"art-rev-{run.bound_revision}")
+        if run.hypothetical_artifact_id:
+            draft = db.get_artifact(run.hypothetical_artifact_id)
+            if draft is None:
+                raise ValueError("Selected hypothetical portfolio is unavailable.")
+            self.portfolio = SavedPortfolio.model_validate(draft)
+            self.artifact_ids.add(run.hypothetical_artifact_id)
         for proposal in self.proposals.values():
             self.artifact_ids.add(proposal.after_artifact.id)
             if proposal.before_artifact:
@@ -95,6 +106,7 @@ class RunContext:
             content = self.message_content(message)
             if len(content) > CHARACTER_LIMIT:
                 content = json.dumps(model_safe({"message_id": message.id, "artifact_ids": message.artifact_ids,
+                                      **({"basis": "hypothetical"} if self.from_hypothetical_run(message) else {}),
                                       "completed_tools": [t.model_dump(mode="json") for t in message.tool_outcomes],
                                       "omitted": "Message exceeds context budget."}))
             if len(content) > budget:
@@ -115,9 +127,20 @@ class RunContext:
             budget -= len(content)
         return list(reversed(selected))
 
+    def from_hypothetical_run(self, message: MessageRecord) -> bool:
+        """Whether an earlier message came from a run that analyzed a draft, not the saved holdings."""
+        if message.run_id is None:
+            return False
+        if message.run_id not in self._hypothetical_runs:
+            run = self.db.get_run(message.thread_id, message.run_id)
+            self._hypothetical_runs[message.run_id] = bool(run and run.hypothetical_artifact_id)
+        return self._hypothetical_runs[message.run_id]
+
     def message_content(self, message: MessageRecord) -> str:
         return json.dumps(model_safe({
             "message_id": message.id, "text": message.text, "citations": message.citations,
+            # History from a hypothetical run stays labeled, so it is never read as saved-portfolio fact.
+            **({"basis": "hypothetical"} if self.from_hypothetical_run(message) else {}),
             "artifact_ids": message.artifact_ids, "proposal_ids": message.proposal_ids,
             "completed_tools": [t.model_dump(mode="json") for t in message.tool_outcomes],
         }), ensure_ascii=False)
@@ -166,8 +189,10 @@ class RunContext:
         rows = [("position", p) for p in positions] + [("unresolved", p) for p in unresolved]
         page = rows[parsed.offset:parsed.offset + parsed.limit]
         end = parsed.offset + len(page)
-        return {"revision": self.run.bound_revision,
-                "artifact_ids": [f"art-rev-{self.run.bound_revision}"],
+        draft = self.run.hypothetical_artifact_id
+        return {"revision": None if draft else self.run.bound_revision,
+                **({"basis": "hypothetical"} if draft else {}),
+                "artifact_ids": [draft or f"art-rev-{self.run.bound_revision}"],
                 "holdings_date": saved["snapshot"]["as_of"].isoformat(),
                 "accounts": saved["snapshot"]["accounts"],
                 "positions": [p for kind, p in page if kind == "position"],
@@ -211,6 +236,13 @@ class RunContext:
             "artifact_references": [ref.model_dump(mode="json") for artifact_id in sorted(self.artifact_ids)
                                     if (ref := self.db.get_artifact_reference(artifact_id)) is not None],
         }
+        if self.run.hypothetical_artifact_id:
+            context["hypothetical_portfolio"] = {
+                "artifact_id": self.run.hypothetical_artifact_id,
+                "note": "The user selected an unsaved draft portfolio for this run. Holdings, settings and "
+                        "benchmark come from that draft. Say that results are hypothetical. Saved holdings "
+                        "are unchanged, and any portfolio proposal edits the saved holdings only.",
+            }
         if comparison is not None:
             context["comparison_inputs"] = comparison.model_dump(
                 mode="json", include={"scope_position_ids", "alternatives"})

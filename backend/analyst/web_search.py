@@ -91,17 +91,17 @@ class WebSearchTools:
         # private number; the model restates without it. Add entity recognition if that proves too blunt.
         if re.search(r"sedar", query, re.I):
             return True
-        if context.portfolio is None:
-            return False
-        snapshot = context.portfolio.snapshot
-        names = {value for account in snapshot.accounts for value in (account.id, account.name)
-                 if value.upper() not in PUBLIC_ACCOUNT_NAMES}
+        # A hypothetical run reads the draft, but the saved holdings stay private too.
+        portfolios = [saved for saved in (context.portfolio, context.committed) if saved is not None]
+        names = {value for saved in portfolios for account in saved.snapshot.accounts
+                 for value in (account.id, account.name) if value.upper() not in PUBLIC_ACCOUNT_NAMES}
         if any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", query, re.I) for name in names):
             return True
-        private = {value for position in snapshot.positions for value in (position.shares, position.cash)
-                   if value is not None} | set(context.portfolio.average_costs.values()) | {
-                       value for holding in context.portfolio.unresolved
-                       for value in (holding.shares, holding.average_cost) if value is not None}
+        private = {value for saved in portfolios for value in (
+            *(amount for position in saved.snapshot.positions for amount in (position.shares, position.cash)),
+            *saved.average_costs.values(),
+            *(amount for holding in saved.unresolved for amount in (holding.shares, holding.average_cost)),
+        ) if value is not None}
         for token in re.findall(r"\d[\d,]*(?:\.\d+)?", query):
             try:
                 if Decimal(token.replace(",", "")) in private:

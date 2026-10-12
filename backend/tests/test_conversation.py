@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 from analyst.api import create_app
 from analyst.config import Settings
 from analyst.orchestrator import Orchestrator
-from analyst.persistence import Database, RunConflictError, ThreadNotFoundError
+from analyst.persistence import SCHEMA_VERSION, Database, RunConflictError, ThreadNotFoundError
 from analyst.portfolio import PortfolioStore
 from analyst.providers import ModelTurn, ScriptedModel, ToolCall
 from analyst.schemas import (
@@ -142,7 +142,7 @@ def test_migration_v1_to_v2_with_automated_backup(tmp_path: Path) -> None:
     db.initialize()
 
     # Check that schema version is now 2
-    assert db.get_schema_version() == 2
+    assert db.get_schema_version() == SCHEMA_VERSION
 
     # Verify backup was created
     assert backup_path.exists()

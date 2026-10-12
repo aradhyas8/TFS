@@ -31,6 +31,10 @@ type Props = {
   onDiscardSend: () => void;
   onAskAgain: (text: string) => void;
   onReload: () => void;
+  /** Cancels the running run on the backend. */
+  onStop: () => void;
+  stopping: boolean;
+  stopError: string | null;
   /** The saved portfolio: its holdings are the choices a stock clarification offers. */
   snapshot: Snapshot | null;
   committedRevision: number | null;
@@ -169,7 +173,7 @@ function Artifact({ id, actionable, shared }: { id: string; actionable: boolean;
     );
   const { reference, payload } = loaded.envelope;
   const source = provenance(reference);
-  if (reference.kind === "portfolio_snapshot" || !reference.kind) return <Badge size="sm">{reference.label}</Badge>;
+  if (reference.kind === "portfolio_snapshot" || !reference.kind) return <Badge size="sm">{sentenceCase(reference.label)}</Badge>;
   // A financial capability that could not proceed stores what it needs; that is a request, not a result to read.
   const needed = (payload as { clarification_required?: Record<string, unknown> } | null)?.clarification_required;
   if (needed) {
@@ -430,12 +434,19 @@ function Proposal({ id, shared }: { id: string; shared: Shared }) {
   );
 }
 
-function Message({ message, actionable, shared }: { message: MessageRecord; actionable: boolean; shared: Shared }) {
+/** `hypothetical`: the message belongs to a run that analyzed a stored draft, not the saved portfolio.
+ *  `proposing`: that run also prepared portfolio changes, which always start from the saved portfolio. */
+function Message({ message, actionable, hypothetical, proposing, shared }: { message: MessageRecord; actionable: boolean; hypothetical: boolean; proposing: boolean; shared: Shared }) {
   if (message.role === "user")
     return (
       <li className={styles.user}>
         <span className="sr-only">You asked: </span>
         <p className={styles.bubble}>{message.text}</p>
+        {hypothetical && (
+          <Badge size="sm" tone="warning">
+            Hypothetical draft
+          </Badge>
+        )}
       </li>
     );
   // A tool step is stored as a message; its raw record is never shown as prose.
@@ -486,6 +497,13 @@ function Message({ message, actionable, shared }: { message: MessageRecord; acti
       {message.text.split(/\n{2,}/).map((paragraph, index) => (
         <p key={index}>{paragraph}</p>
       ))}
+      {hypothetical && (
+        <p className={styles.source}>
+          {proposing
+            ? "Asked about your unsaved draft. The proposed changes start from your saved portfolio, and apply only if you confirm them."
+            : "Based on your unsaved draft, not your saved portfolio. Nothing was saved."}
+        </p>
+      )}
       <Citations citations={message.citations} />
       <Revisions ids={message.artifact_ids} />
     </li>
@@ -493,7 +511,7 @@ function Message({ message, actionable, shared }: { message: MessageRecord; acti
 }
 
 /** One durable conversation: persisted messages, results and run states from the backend, plus the one send still in flight. */
-export default function Thread({ thread, pending, sendError, loadError, onRetrySend, onDiscardSend, onAskAgain, onReload, ...shared }: Props) {
+export default function Thread({ thread, pending, sendError, loadError, onRetrySend, onDiscardSend, onAskAgain, onReload, onStop, stopping, stopError, ...shared }: Props) {
   if (loadError)
     return (
       <div className={styles.notice}>
@@ -512,6 +530,16 @@ export default function Thread({ thread, pending, sendError, loadError, onRetryS
   const lastOfRun = new Map<string, string>();
   for (const message of messages) if (message.run_id) lastOfRun.set(message.run_id, message.id);
   const latestRun = thread?.runs.at(-1);
+  // The first ordinary run whose committed revision differs from the ordinary run before it: run ID to that
+  // earlier revision. Read from the stored runs, so the notice is the same after a reload.
+  const revisionChanged = new Map<string, number>();
+  const proposingRuns = new Set(messages.filter(message => message.proposal_ids.length).map(message => message.run_id));
+  let lastRevision: number | null = null;
+  for (const run of thread?.runs ?? []) {
+    if (run.hypothetical_artifact_id || run.bound_revision == null) continue;
+    if (lastRevision !== null && run.bound_revision !== lastRevision) revisionChanged.set(run.id, lastRevision);
+    lastRevision = run.bound_revision;
+  }
   const question = (runId: string) => messages.find(message => message.run_id === runId && message.role === "user")?.text;
   // Once the backend has stored the message, the thread shows it; until then it is only this browser's unsent text.
   const unsent = pending && !thread?.runs.some(run => run.client_request_id === pending.clientRequestId) ? pending : null;
@@ -525,12 +553,32 @@ export default function Thread({ thread, pending, sendError, loadError, onRetryS
         const run = message.run_id && lastOfRun.get(message.run_id) === message.id ? runs.get(message.run_id) : undefined;
         const notice = run && RUN_NOTICE[run.status];
         const asked = run && run.id === latestRun?.id && !unsent ? question(run.id) : undefined;
+        // Every message knows its run; `run` above is set only on the run's last message, where its outcome is shown.
+        const messageRun = message.run_id ? runs.get(message.run_id) : undefined;
+        const earlierRevision = messageRun && message.role === "user" ? revisionChanged.get(messageRun.id) : undefined;
         return [
           // Only the latest run's request for inputs can still be answered; earlier ones are history.
-          <Message key={message.id} message={message} actionable={message.run_id === latestRun?.id && !unsent} shared={shared} />,
+          <Message key={message.id} message={message} actionable={message.run_id === latestRun?.id && !unsent} hypothetical={!!messageRun?.hypothetical_artifact_id} proposing={proposingRuns.has(message.run_id)} shared={shared} />,
+          messageRun && earlierRevision !== undefined && (
+            <li key={`${messageRun.id}-revision`} className={styles.notice} data-testid="revision-notice">
+              <Alert tone="info" title="Your saved portfolio changed">
+                {`This question uses revision ${messageRun.bound_revision}. Earlier questions used revision ${earlierRevision}, and their results are unchanged.`}
+              </Alert>
+            </li>
+          ),
           run?.status === "running" && (
             <li key={`${run.id}-working`} className={styles.working}>
               <TextShimmer>Thinking</TextShimmer>
+              <Button variant="secondary" disabled={stopping} onClick={onStop}>
+                {stopping ? "Stopping answer" : "Stop answer"}
+              </Button>
+            </li>
+          ),
+          run?.status === "running" && stopError && (
+            <li key={`${run.id}-stop-error`} className={styles.notice}>
+              <Alert tone="danger" title="This answer could not be stopped">
+                {`${sentence(stopError)} It is still running. Check that the analyst service is running, then stop it again.`}
+              </Alert>
             </li>
           ),
           run && notice && (

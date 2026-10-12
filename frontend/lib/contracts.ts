@@ -588,6 +588,8 @@ export type RunRecord = {
   error?: string | null;
   message_ids: string[];
   artifact_ids: string[];
+  /** The stored draft this run analyzed instead of the saved portfolio. */
+  hypothetical_artifact_id?: string | null;
 };
 
 export type ThreadDetail = {
