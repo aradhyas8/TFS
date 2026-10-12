@@ -54,7 +54,7 @@ class ReadCapability:
     description: str
     prerequisite: str
     handler: Callable[[RunContext, Any], dict[str, Any] | Awaitable[dict[str, Any]]]
-    effect: Literal["read", "cache_refresh", "workflow"] = "read"
+    effect: Literal["read", "cache_refresh", "workflow", "proposal"] = "read"
 
 
 def read_tools(capabilities: dict[str, ReadCapability] | None = None) -> list[dict[str, Any]]:
