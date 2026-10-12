@@ -19,6 +19,8 @@ from typing import Any, cast
 
 from .config import Settings
 from .context import CHARACTER_LIMIT, READ_CAPABILITIES, RunContext, read_tools
+from .financial_data import FinancialProvider
+from .financial_tools import FinancialTools
 from .persistence import Database, DecimalEncoder
 from .providers import ModelTurn
 from .schemas import RunRecord, ToolOutcome
@@ -37,10 +39,12 @@ class Orchestrator:
         db: Database,
         transport: Any,
         settings: Settings,
+        financial: FinancialProvider | None = None,
     ) -> None:
         self.db = db
         self.transport = transport
         self.settings = settings
+        self.financial = financial
         self._active_tasks: dict[str, asyncio.Task[None]] = {}
 
     def submit_supervised_run(
@@ -89,6 +93,7 @@ class Orchestrator:
 
         try:
             context = RunContext(self.db, run_record)
+            capabilities = {**READ_CAPABILITIES, **FinancialTools(self.financial).capabilities}
             messages = context.messages()
             initial_messages = messages
             exchanges: list[list[dict[str, Any]]] = []
@@ -110,6 +115,7 @@ class Orchestrator:
                     turn = await self._call_transport(
                         messages=messages,
                         timeout=request_timeout,
+                        tools=read_tools(capabilities),
                     )
                 except asyncio.CancelledError:
                     # Cancelled while waiting on transport
@@ -130,7 +136,7 @@ class Orchestrator:
                         self._record_terminal_failure(run_id, "Invalid mixed or parallel model response.")
                         return
                     call = turn.calls[0]
-                    if call.name not in READ_CAPABILITIES:
+                    if call.name not in capabilities:
                         self._record_terminal_failure(run_id, "Unexpected tool call.")
                         return
                     if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", call.call_id) or call.call_id in seen_calls:
@@ -147,7 +153,7 @@ class Orchestrator:
                     try:
                         if len(call.arguments) > CHARACTER_LIMIT:
                             raise ValueError("Arguments exceed budget.")
-                        capability = READ_CAPABILITIES[call.name]
+                        capability = capabilities[call.name]
                         parsed = capability.arguments.model_validate_json(call.arguments)
                     except ValueError:
                         self._record_terminal_failure(run_id, "Invalid application tool arguments.")
@@ -180,8 +186,14 @@ class Orchestrator:
                 call = turn.calls[0]
                 try:
                     result = capability.handler(context, parsed)
+                    if inspect.isawaitable(result):
+                        result = await asyncio.wait_for(result, timeout=min(
+                            self.settings.request_timeout, max(0, deadline - asyncio.get_event_loop().time()),
+                        ))
+                except TimeoutError:
+                    result = {"error": "Financial request timed out; no result is available."}
                 except ValueError:
-                    result = {"error": "Context read is unavailable to this run."}
+                    result = {"error": "Requested data is unavailable to this run."}
                 artifact_ids = list(result.get("artifact_ids", []))
                 for key in ("reference", "before_artifact", "after_artifact"):
                     if isinstance(result.get(key), dict):
@@ -210,7 +222,7 @@ class Orchestrator:
                 outcome_message = self.db.add_message(
                     thread_id, "assistant", json.dumps({"retrieval": {
                         "tool": call.name, "arguments": parsed.model_dump(),
-                    }}), run_id=run_id,
+                    }}, cls=DecimalEncoder), run_id=run_id,
                     tool_outcomes=[outcome], artifact_ids=artifact_ids,
                 )
                 self.db.update_run(run_id, "running", additional_message_ids=[outcome_message.id],
@@ -233,12 +245,13 @@ class Orchestrator:
         self,
         messages: list[dict[str, Any]],
         timeout: float,
+        tools: list[dict[str, Any]],
     ) -> ModelTurn:
         """Call underlying transport, respecting timeout."""
         sig = inspect.signature(self.transport.respond)
         kwargs: dict[str, Any] = {}
         accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-        for name, value in {"timeout": timeout, "tools": read_tools(), "tool_choice": "auto"}.items():
+        for name, value in {"timeout": timeout, "tools": tools, "tool_choice": "auto"}.items():
             if name in sig.parameters or accepts_kwargs:
                 kwargs[name] = value
 
