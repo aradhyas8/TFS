@@ -562,7 +562,7 @@ export default function Thread({ thread, pending, sendError, loadError, onRetryS
           messageRun && earlierRevision !== undefined && (
             <li key={`${messageRun.id}-revision`} className={styles.notice} data-testid="revision-notice">
               <Alert tone="info" title="Your saved portfolio changed">
-                {`This answer uses revision ${messageRun.bound_revision}. Earlier answers used revision ${earlierRevision} and are unchanged.`}
+                {`This question uses revision ${messageRun.bound_revision}. Earlier questions used revision ${earlierRevision}, and their results are unchanged.`}
               </Alert>
             </li>
           ),

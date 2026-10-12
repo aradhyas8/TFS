@@ -139,7 +139,7 @@ test("a portfolio change is announced on the next run, while earlier and in-flig
   await expect(thread(page)).toContainText("Thinking");
   await expect(notices).toHaveCount(1);
   await expect(notices).toContainText("Your saved portfolio changed");
-  await expect(notices).toContainText("This answer uses revision 2. Earlier answers used revision 1 and are unchanged.");
+  await expect(notices).toContainText("This question uses revision 2. Earlier questions used revision 1, and their results are unchanged.");
   // Committed while that run is still going: the run keeps the revision it started with.
   await commit(page, "0.25");
   await expect(revisions).toHaveText(["Portfolio revision 1", "Portfolio revision 2"], { timeout: 15_000 });
@@ -149,7 +149,7 @@ test("a portfolio change is announced on the next run, while earlier and in-flig
   await send(page, "Show my holdings again");
   await expect(revisions).toHaveText(["Portfolio revision 1", "Portfolio revision 2", "Portfolio revision 3"]);
   await expect(notices).toHaveCount(2);
-  await expect(notices.last()).toContainText("This answer uses revision 3. Earlier answers used revision 2 and are unchanged.");
+  await expect(notices.last()).toContainText("This question uses revision 3. Earlier questions used revision 2, and their results are unchanged.");
 
   await page.reload();
   await expect(revisions).toHaveText(["Portfolio revision 1", "Portfolio revision 2", "Portfolio revision 3"]);
