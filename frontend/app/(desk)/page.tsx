@@ -1037,11 +1037,13 @@ export default function DeskPage() {
       average_costs: draftAverageCosts,
       saved_at: null,
     });
+    // Fixed before the draft is stored: the question goes where it was asked, whatever is opened meanwhile.
+    const destination = conversation.destination();
     setCapturing(true);
     try {
       const captured = await storeDraft(portfolio);
       setUseDraft(false);
-      void conversation.send(text, workflowInput, captured.id);
+      void conversation.send(text, workflowInput, captured.id, destination);
     } catch {
       setQuestion(text);
       setNotice("Your draft could not be stored, so the question was not sent. Check that the analyst service is running, then ask again.");

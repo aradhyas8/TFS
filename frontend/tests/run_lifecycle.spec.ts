@@ -205,3 +205,34 @@ test("a question about the unsaved draft runs as a labeled hypothetical, and ord
   await page.setViewportSize({ width: 390, height: 800 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
+
+test("a draft question is sent to the conversation it was asked in, even if another one is opened meanwhile", async ({ page }) => {
+  await open(page);
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
+  await send(page, "First topic");
+  await expect(thread(page)).toContainText("Plain answer to: First topic");
+  await rail.getByRole("button", { name: "New conversation" }).click();
+  await send(page, "Second topic");
+  await expect(thread(page)).toContainText("Plain answer to: Second topic");
+
+  // Storing the draft is slow, and the investor opens the other conversation before it finishes.
+  let release = () => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/portfolio/artifacts", async route => { await held; await route.continue(); });
+  await page.getByRole("complementary", { name: "Details" }).getByLabel("Single-company cap (%)").fill("20");
+  await page.getByRole("checkbox", { name: "Ask about my unsaved draft" }).check();
+  await send(page, "Draft question for the second topic");
+  await rail.getByRole("button", { name: "Conversation: First topic" }).click();
+  await expect(thread(page)).toContainText("Plain answer to: First topic");
+  release();
+
+  const questions = async (title: string) => {
+    const summaries = (await (await page.request.get("/api/threads")).json()) as { id: string; title: string }[];
+    const stored = await (await page.request.get(`/api/threads/${summaries.find(item => item.title === title)!.id}`)).json();
+    return (stored.messages as { role: string; text: string }[]).filter(message => message.role === "user").map(message => message.text);
+  };
+  await expect.poll(() => questions("Second topic")).toEqual(["Second topic", "Draft question for the second topic"]);
+  expect(await questions("First topic")).toEqual(["First topic"]);
+  // The conversation on screen is still the one the investor opened.
+  await expect(thread(page)).not.toContainText("Draft question for the second topic");
+});

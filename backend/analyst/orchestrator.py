@@ -292,7 +292,7 @@ class Orchestrator:
 
         except asyncio.CancelledError:
             logger.info("Supervised task for run %s was cancelled.", run_id)
-            # Database cancel was already handled or will be handled by cancel_run
+            # cancel_run recorded the cancellation in the database before cancelling this task
         except Exception as exc:
             logger.error("Orchestration error in run %s (%s).", run_id, type(exc).__name__)
             self._record_terminal_failure(run_id, "Internal orchestration error.")

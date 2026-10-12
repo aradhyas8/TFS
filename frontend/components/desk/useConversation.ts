@@ -84,7 +84,8 @@ export function useConversation() {
     setLoadError(null);
   }
 
-  async function deliver(send: PendingSend) {
+  /** `follow`: a thread created for this send is opened, unless the user has gone elsewhere since. */
+  async function deliver(send: PendingSend, follow = true) {
     if (delivering.current) return;
     delivering.current = true;
     try {
@@ -107,7 +108,7 @@ export function useConversation() {
               threadId = (await createThread()).id;
               hold({ ...send, threadId });
               // Follow the new thread only if the user is still where they sent from.
-              if (viewing.current === origin) view(threadId);
+              if (follow && viewing.current === origin) view(threadId);
             }
             await submitThreadMessage(threadId, {
               client_request_id: send.clientRequestId, text: send.text, workflow_input: send.workflowInput,
@@ -137,8 +138,18 @@ export function useConversation() {
    *  ponytail: one unacknowledged send at a time; a new send replaces an earlier one that failed and was left behind.
    *  ponytail: two tabs reloaded with the same thread-less send each create a thread; a client-supplied thread ID
    *  on POST /api/threads would make creation idempotent too. */
-  const send = (text: string, workflowInput?: Record<string, unknown>, hypotheticalArtifactId?: string) =>
-    deliver({ threadId: viewing.current, clientRequestId: crypto.randomUUID(), text, workflowInput, hypotheticalArtifactId });
+  const send = (
+    text: string,
+    workflowInput?: Record<string, unknown>,
+    hypotheticalArtifactId?: string,
+    // Where the question was asked. Given when work came between the asking and the sending, so a
+    // conversation opened in the meantime never receives it.
+    threadId: string | null = viewing.current
+  ) =>
+    deliver(
+      { threadId, clientRequestId: crypto.randomUUID(), text, workflowInput, hypotheticalArtifactId },
+      threadId === viewing.current
+    );
 
   const retry = () => (pending ? deliver(pending) : Promise.resolve());
 
@@ -233,6 +244,8 @@ export function useConversation() {
     stopping,
     stopError: stopError && stopError.runId === running?.id ? stopError.message : null,
     stop,
+    /** The thread a question asked now belongs to; null starts a new conversation. */
+    destination: () => viewing.current,
     open,
     close,
     send,

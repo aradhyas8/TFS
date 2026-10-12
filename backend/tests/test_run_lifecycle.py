@@ -185,6 +185,7 @@ def test_stopping_one_run_leaves_other_runs_and_pending_proposals_alone(tmp_path
         # The run that was wrongly named kept working, and its answer is stored exactly once.
         assert texts(client, other) == ["Other question", "Other answer."]
         assert texts(client, first)[-1] == "Slow question"
+        assert len(client.get(f"/api/threads/{other}/runs/{running['id']}").json()["message_ids"]) == 2
         assert len(model.requests) == 4
 
         # Stopping a run that already ended changes nothing, and no proposal is cancelled or applied by a stop.
