@@ -1776,6 +1776,30 @@ class CreateArtifactRequest(Contract):
 RunStatus = Literal["running", "completed", "failed", "cancelled", "interrupted"]
 MessageRole = Literal["user", "assistant", "system"]
 
+WorkflowName = Literal["run_exposure_review", "run_stock_analysis", "run_new_cash_allocation",
+                       "run_portfolio_reunderwriting", "run_theme_exploration"]
+
+
+class WorkflowInput(Contract):
+    """Explicit form inputs; bound portfolio, rules and benchmark are never replaceable."""
+
+    workflow: WorkflowName | None = None
+    analysis_date: date | None = None
+    stock: StockInput | None = None
+    new_cash: NewCashInput | None = None
+    portfolio_review: PortfolioReviewInput | None = None
+    theme: ThemeInput | None = None
+    comparison: ComparisonInput | None = None
+    proposed_changes: ProposedChanges | None = None
+
+
+class WorkflowClarification(Contract):
+    workflow: WorkflowName
+    code: Literal["missing_inputs", "invalid_inputs", "portfolio_required", "unresolved_identity"]
+    fields: list[Identifier]
+    form: Literal["/review", "/stock", "/new-cash", "/rebalance", "/theme", "holdings"]
+    message: Text
+
 
 class ToolOutcome(Contract):
     """Execution outcome of a tool call."""
@@ -1844,6 +1868,13 @@ class SubmitMessageRequest(Contract):
     text: Text
     workflow_input: dict[str, Any] | None = None
     hypothetical_artifact_id: Identifier | None = None
+
+    @field_validator("workflow_input")
+    @classmethod
+    def validate_workflow_input(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None:
+            WorkflowInput.model_validate(value)
+        return value
 
 
 AnalysisRequest.model_rebuild()

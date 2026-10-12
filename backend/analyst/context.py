@@ -17,6 +17,7 @@ from .schemas import (
     Identifier,
     MessageRecord,
     RunRecord,
+    WorkflowName,
     build_artifact_payload,
     model_safe,
 )
@@ -53,7 +54,7 @@ class ReadCapability:
     description: str
     prerequisite: str
     handler: Callable[[RunContext, Any], dict[str, Any] | Awaitable[dict[str, Any]]]
-    effect: Literal["read", "cache_refresh"] = "read"
+    effect: Literal["read", "cache_refresh", "workflow"] = "read"
 
 
 def read_tools(capabilities: dict[str, ReadCapability] | None = None) -> list[dict[str, Any]]:
@@ -195,7 +196,8 @@ class RunContext:
         detail["after_portfolio"] = self.db.get_artifact(proposal.after_artifact.id, projection="model")
         return cast(dict[str, Any], model_safe(detail))
 
-    def messages(self, comparison: ComparisonInput | None = None) -> list[dict[str, Any]]:
+    def messages(self, comparison: ComparisonInput | None = None,
+                 workflow: WorkflowName | None = None) -> list[dict[str, Any]]:
         saved = self.portfolio
         history = self.history()
         context = {
@@ -212,6 +214,8 @@ class RunContext:
         if comparison is not None:
             context["comparison_inputs"] = comparison.model_dump(
                 mode="json", include={"scope_position_ids", "alternatives"})
+        if workflow is not None:
+            context["explicit_workflow"] = workflow
         return [
             {"role": "system", "content": (
                 "You are a personal investment analyst. Answer conceptual questions directly. "
