@@ -976,6 +976,55 @@ class ProposalReview(Contract):
     qualifications: list[str]
 
 
+class PortfolioCalculation(Contract):
+    capability: Literal["review_portfolio"] = "review_portfolio"
+    result: PortfolioReview
+
+
+class ChangeCalculation(Contract):
+    capability: Literal["check_proposed_changes"] = "check_proposed_changes"
+    result: ProposalReview
+
+
+FinancialClarificationCode = Literal["portfolio_required", "select_account", "unknown_instrument", "unresolved_identity", "unavailable"]
+
+
+class FinancialClarification(Contract):
+    code: FinancialClarificationCode
+    message: Text
+    choices: list[Identifier] = Field(default_factory=list)
+
+
+class FinancialClarificationResult(Contract):
+    clarification_required: FinancialClarification
+
+
+class CandidateResolution(Contract):
+    capability: Literal["resolve_candidate"] = "resolve_candidate"
+    result: CandidateResult
+
+
+class DatedFinancialData(Contract):
+    capability: Literal["get_financial_data"] = "get_financial_data"
+    as_of: date
+    result: FinancialEvidence
+    qualifications: list[str]
+
+
+class QuoteRefreshResult(Contract):
+    fetched: list[Identifier]
+    fresh: list[Identifier]
+    skipped: list[Identifier]
+    failed: list[Identifier]
+    remaining: int | None = Field(ge=0)
+    message: str
+
+
+class QuoteRefresh(Contract):
+    capability: Literal["refresh_quotes"] = "refresh_quotes"
+    result: QuoteRefreshResult
+
+
 class ScenarioComponent(Contract):
     position_id: str
     local_currency: str
