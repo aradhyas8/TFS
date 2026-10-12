@@ -1773,6 +1773,41 @@ class CreateArtifactRequest(Contract):
     originating_run_id: Identifier | None = None
 
 
+class WebCitation(Contract):
+    """URL citation annotation; indices address the web research text."""
+
+    type: Literal["url_citation"] = "url_citation"
+    url: str
+    title: str
+    start_index: int = Field(ge=0)
+    end_index: int = Field(ge=0)
+    cited_text: str
+
+
+class WebSource(Contract):
+    url: str
+    title: str | None = None
+
+
+WebSearchUnavailable = Literal[
+    "unsupported", "source_unavailable", "incomplete", "deadline", "no_search", "rejected_query",
+]
+
+
+class WebResearch(Contract):
+    """Hosted web search evidence: untrusted, never a qualified financial fact."""
+
+    capability: Literal["web_search"] = "web_search"
+    status: Literal["completed", "unavailable"]
+    reason: WebSearchUnavailable | None = None
+    query: str | None
+    queries: list[str] = Field(default_factory=list)
+    text: str = ""
+    citations: list[WebCitation] = Field(default_factory=list)
+    sources: list[WebSource] = Field(default_factory=list)
+    qualifications: list[str]
+
+
 RunStatus = Literal["running", "completed", "failed", "cancelled", "interrupted"]
 MessageRole = Literal["user", "assistant", "system"]
 

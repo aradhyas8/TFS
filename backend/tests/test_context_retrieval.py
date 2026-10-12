@@ -79,7 +79,7 @@ def test_followup_gets_compact_bound_context_without_full_holdings(tmp_path: Pat
     assert "positions" not in context and "snapshot" not in context
     assert "80.00" not in json.dumps(request)
     assert {tool["name"] for tool in request["tools"]} == {
-        "get_holdings", "get_artifact", "get_proposal", "get_messages",
+        "get_holdings", "get_artifact", "get_proposal", "get_messages", "web_search",
         "review_portfolio", "get_financial_data", "resolve_candidate", "refresh_quotes", "check_proposed_changes",
         "get_sec_filings", "get_sedar_filings", "get_issuer_material", "calculate_company_cases",
         "calculate_comparison", "scan_opportunities", "get_company_research",

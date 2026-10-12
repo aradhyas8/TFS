@@ -27,6 +27,7 @@ from .providers import DataProvider, ModelTurn, SuppliedDataProvider
 from .research import ResearchProvider
 from .research_tools import ResearchTools
 from .schemas import RunRecord, ToolOutcome
+from .web_search import HOSTED_TOOL, NO_LOOKUP, WebSearchTools
 from .workflow_tools import WorkflowTools
 
 logger = logging.getLogger(__name__)
@@ -105,10 +106,16 @@ class Orchestrator:
             context = RunContext(self.db, run_record)
             financial_tools = FinancialTools(self.financial)
             research_tools = ResearchTools(financial_tools, self.research, workflow_input, self.discovery)
+            web = WebSearchTools(
+                lambda search_messages, timeout: self._call_transport(
+                    search_messages, timeout, [HOSTED_TOOL], tool_choice="required"),
+                self.settings,
+            )
             workflow_tools = WorkflowTools(financial_tools, research_tools, self.data, self.transport,
                                            self.settings, deadline, user_text, workflow_input)
             capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
-                            **research_tools.capabilities, **workflow_tools.capabilities}
+                            **research_tools.capabilities, **workflow_tools.capabilities,
+                            **web.capabilities}
             messages = context.messages(comparison=research_tools.comparison, workflow=workflow_tools.inputs.workflow)
             initial_messages = messages
             exchanges: list[list[dict[str, Any]]] = []
@@ -175,20 +182,27 @@ class Orchestrator:
                         return
                     seen_calls.add(call.call_id)
 
-                # Check if continuation state is returned (server-only)
-                if turn.continuation:
+                # Continuation state is server-only. A tool-call turn is stored after its handler,
+                # so a rejected search query never reaches storage.
+                if turn.continuation and not turn.calls:
                     self.db.store_private_continuation(run_id, turn.continuation)
 
                 # Conceptual / tool-free answer path: model produced text response
                 if turn.text or not turn.calls:
                     assistant_text = turn.text or ""
-                    citations = turn.citations or []
+                    if web.unavailable and not web.completed:
+                        # Never let prose imply a current lookup that did not occur.
+                        assistant_text = (
+                            f"{assistant_text}\n\nHosted web search was unavailable. {NO_LOOKUP}".strip())
+                    citations = [*(turn.citations or []), *web.citations]
                     asst_msg = self.db.add_message(
                         thread_id=thread_id,
                         role="assistant",
                         text=assistant_text,
                         run_id=run_id,
                         citations=citations,
+                        # Keeps cited web research readable by later runs once its outcome leaves context.
+                        artifact_ids=list(dict.fromkeys(c["artifact_id"] for c in web.citations)),
                     )
                     # Complete run
                     self.db.update_run(
@@ -214,13 +228,18 @@ class Orchestrator:
                             or asyncio.get_event_loop().time() >= deadline):
                         self._record_terminal_failure(run_id, "Run deadline of 600 seconds exceeded.")
                         return
-                    result = {"error": "Financial request timed out; no result is available."}
+                    result = (web.unavailable_result(context, "deadline", None) if call.name in web.capabilities
+                              else {"error": "Financial request timed out; no result is available."})
                 except ValueError:
                     result = {"error": "Requested data is unavailable to this run."}
                 artifact_ids = list(result.get("artifact_ids", []))
                 for key in ("reference", "before_artifact", "after_artifact"):
                     if isinstance(result.get(key), dict):
                         artifact_ids.append(result[key]["id"])
+                rejected_query = (isinstance(result.get("payload"), dict)
+                                  and result["payload"].get("reason") == "rejected_query")
+                if turn.continuation and not rejected_query:
+                    self.db.store_private_continuation(run_id, turn.continuation)
                 output = json.dumps(result, cls=DecimalEncoder)
                 exchange = list(turn.continuation)
                 if not continuation_calls:
@@ -244,7 +263,8 @@ class Orchestrator:
                                       error=result.get("error"), artifact_ids=artifact_ids)
                 outcome_message = self.db.add_message(
                     thread_id, "assistant", json.dumps({"retrieval": {
-                        "tool": call.name, "arguments": parsed.model_dump(),
+                        # A rejected search query may hold private details: never persist it.
+                        "tool": call.name, "arguments": {} if rejected_query else parsed.model_dump(),
                     }}, cls=DecimalEncoder), run_id=run_id,
                     tool_outcomes=[outcome], artifact_ids=artifact_ids,
                     clarification_required=result.get("clarification_required"),
@@ -270,12 +290,13 @@ class Orchestrator:
         messages: list[dict[str, Any]],
         timeout: float,
         tools: list[dict[str, Any]],
+        tool_choice: str = "auto",
     ) -> ModelTurn:
         """Call underlying transport, respecting timeout."""
         sig = inspect.signature(self.transport.respond)
         kwargs: dict[str, Any] = {}
         accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-        for name, value in {"timeout": timeout, "tools": tools, "tool_choice": "auto"}.items():
+        for name, value in {"timeout": timeout, "tools": tools, "tool_choice": tool_choice}.items():
             if name in sig.parameters or accepts_kwargs:
                 kwargs[name] = value
 
