@@ -27,6 +27,7 @@ from .providers import ModelTurn
 from .research import ResearchProvider
 from .research_tools import ResearchTools
 from .schemas import RunRecord, ToolOutcome
+from .web_search import HOSTED_TOOL, NO_LOOKUP, WebSearchTools
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +103,13 @@ class Orchestrator:
             context = RunContext(self.db, run_record)
             financial_tools = FinancialTools(self.financial)
             research_tools = ResearchTools(financial_tools, self.research, workflow_input, self.discovery)
+            web = WebSearchTools(
+                lambda search_messages, timeout: self._call_transport(
+                    search_messages, timeout, [HOSTED_TOOL], tool_choice="required"),
+                self.settings,
+            )
             capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
-                            **research_tools.capabilities}
+                            **research_tools.capabilities, **web.capabilities}
             messages = context.messages(comparison=research_tools.comparison)
             initial_messages = messages
             exchanges: list[list[dict[str, Any]]] = []
@@ -177,7 +183,11 @@ class Orchestrator:
                 # Conceptual / tool-free answer path: model produced text response
                 if turn.text or not turn.calls:
                     assistant_text = turn.text or ""
-                    citations = turn.citations or []
+                    if web.unavailable and not web.citations:
+                        # Never let prose imply a current lookup that did not occur.
+                        assistant_text = (
+                            f"{assistant_text}\n\nHosted web search was unavailable. {NO_LOOKUP}".strip())
+                    citations = [*(turn.citations or []), *web.citations]
                     asst_msg = self.db.add_message(
                         thread_id=thread_id,
                         role="assistant",
@@ -201,7 +211,8 @@ class Orchestrator:
                             self.settings.request_timeout, max(0, deadline - asyncio.get_event_loop().time()),
                         ))
                 except TimeoutError:
-                    result = {"error": "Financial request timed out; no result is available."}
+                    result = (web.unavailable_result(context, "deadline", None) if call.name in web.capabilities
+                              else {"error": "Financial request timed out; no result is available."})
                 except ValueError:
                     result = {"error": "Requested data is unavailable to this run."}
                 artifact_ids = list(result.get("artifact_ids", []))
@@ -256,12 +267,13 @@ class Orchestrator:
         messages: list[dict[str, Any]],
         timeout: float,
         tools: list[dict[str, Any]],
+        tool_choice: str = "auto",
     ) -> ModelTurn:
         """Call underlying transport, respecting timeout."""
         sig = inspect.signature(self.transport.respond)
         kwargs: dict[str, Any] = {}
         accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-        for name, value in {"timeout": timeout, "tools": tools, "tool_choice": "auto"}.items():
+        for name, value in {"timeout": timeout, "tools": tools, "tool_choice": tool_choice}.items():
             if name in sig.parameters or accepts_kwargs:
                 kwargs[name] = value
 

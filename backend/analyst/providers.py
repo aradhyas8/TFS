@@ -40,6 +40,7 @@ class ModelTurn:
     answer: dict[str, Any] | None = None
     text: str | None = None
     citations: list[dict[str, Any]] = field(default_factory=list)
+    searches: list[dict[str, Any]] = field(default_factory=list)
     continuation: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -223,7 +224,7 @@ class OpenAIResponseTransport:
         self,
         messages: list[dict[str, Any]],
         *,
-        tools: list[FunctionToolParam] | None = None,
+        tools: list[FunctionToolParam] | list[dict[str, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         output_schema: dict[str, Any] | None = None,
         output_schema_name: str = "portfolio_recommendation",
@@ -256,7 +257,9 @@ class OpenAIResponseTransport:
             text=text_format,
             max_output_tokens=16000,
             store=False,
-            include=["reasoning.encrypted_content"],
+            include=["reasoning.encrypted_content", *(
+                ["web_search_call.action.sources"]
+                if any(tool.get("type") == "web_search" for tool in tools or []) else [])],
             # OpenRouter only: pin the first-party OpenAI endpoint, honour every parameter, never fall back to another host.
             extra_body={"provider": {"only": ["openai"], "allow_fallbacks": False, "require_parameters": True}} if openrouter else None,
         )
@@ -310,6 +313,7 @@ class OpenAIResponseTransport:
 
         continuation = []
         citations: list[dict[str, Any]] = []
+        searches: list[dict[str, Any]] = []
         plain_texts: list[str] = []
 
         for item in response.output:
@@ -319,6 +323,15 @@ class OpenAIResponseTransport:
             dumped.pop("namespace", None)
             continuation.append(dumped)
 
+            if getattr(item, "type", None) == "web_search_call":
+                action = getattr(item, "action", None)
+                queries = getattr(action, "queries", None) or [
+                    query for query in [getattr(action, "query", None)] if query]
+                searches.append({
+                    "status": getattr(item, "status", None), "queries": list(queries),
+                    "sources": [{"url": source.url} for source in getattr(action, "sources", None) or []],
+                })
+
             if getattr(item, "type", None) == "message":
                 for content_part in getattr(item, "content", []):
                     if getattr(content_part, "type", None) == "output_text":
@@ -327,12 +340,15 @@ class OpenAIResponseTransport:
                             plain_texts.append(text_val)
                         for annotation in getattr(content_part, "annotations", []) or []:
                             if getattr(annotation, "type", None) == "url_citation":
+                                start = getattr(annotation, "start_index", 0)
+                                end = getattr(annotation, "end_index", 0)
                                 citations.append({
                                     "type": "url_citation",
                                     "url": getattr(annotation, "url", ""),
                                     "title": getattr(annotation, "title", ""),
-                                    "start_index": getattr(annotation, "start_index", 0),
-                                    "end_index": getattr(annotation, "end_index", 0),
+                                    "start_index": start,
+                                    "end_index": end,
+                                    "cited_text": text_val[start:end],
                                 })
 
         calls = [
@@ -358,6 +374,7 @@ class OpenAIResponseTransport:
             answer=answer,
             text=raw_text,
             citations=citations,
+            searches=searches,
             continuation=continuation,
         )
 
