@@ -526,7 +526,7 @@ def test_confirmation_fault_injection_rolls_back_everything(tmp_path):
             self._target = target
 
         def execute(self, sql, *args, **kwargs):
-            if "proposal_receipts" in sql:
+            if "INSERT INTO proposal_receipts" in sql:
                 raise RuntimeError("Simulated crash midway through transaction")
             return self._target.execute(sql, *args, **kwargs)
 
@@ -617,38 +617,97 @@ def test_database_locking_failure_returns_503(tmp_path):
 
 
 
-def test_concurrent_confirmations_separate_connections(tmp_path):
+@pytest.mark.parametrize("attempt", range(10))
+@pytest.mark.parametrize("base_revision", [None, 1])
+def test_concurrent_confirmations_separate_connections(tmp_path, attempt, base_revision):
     import concurrent.futures
+    from threading import Barrier
+
     api, store = client(tmp_path)
     initial = sample_portfolio()
-    store.save(initial)  # revision 1
+    if base_revision is not None:
+        store.save(initial)
 
     # Prepare proposal 1
     mod1 = initial.model_copy(deep=True)
     mod1.snapshot.positions.append(Position(id="p1", account_id="tfsa", kind="stock", currency="CAD", ticker="SHOP", listing="XTSE", shares=Decimal("1")))
-    res1 = api.put("/api/portfolio", json={"base_revision": 1, "portfolio": mod1.model_dump(mode="json")})
+    res1 = api.put("/api/portfolio", json={"base_revision": base_revision, "portfolio": mod1.model_dump(mode="json")})
+    assert res1.status_code == 200
     prop1_id = res1.json()["proposal"]["id"]
 
     # Prepare proposal 2
     mod2 = initial.model_copy(deep=True)
     mod2.snapshot.positions.append(Position(id="p2", account_id="tfsa", kind="stock", currency="CAD", ticker="BMO", listing="XTSE", shares=Decimal("1")))
-    res2 = api.put("/api/portfolio", json={"base_revision": 1, "portfolio": mod2.model_dump(mode="json")})
+    res2 = api.put("/api/portfolio", json={"base_revision": base_revision, "portfolio": mod2.model_dump(mode="json")})
+    assert res2.status_code == 200
     prop2_id = res2.json()["proposal"]["id"]
 
     # Two separate API clients pointing to the same database
-    c1, _ = client(tmp_path, store=store)
-    c2, _ = client(tmp_path, store=store)
+    c1, _ = client(tmp_path)
+    c2, _ = client(tmp_path)
+    start = Barrier(2, timeout=10)
 
-    results = []
+    def confirm(api_client, proposal_id):
+        start.wait()
+        return api_client.post(f"/api/portfolio/proposals/{proposal_id}/confirm")
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        f1 = executor.submit(lambda: c1.post(f"/api/portfolio/proposals/{prop1_id}/confirm").status_code)
-        f2 = executor.submit(lambda: c2.post(f"/api/portfolio/proposals/{prop2_id}/confirm").status_code)
+        f1 = executor.submit(confirm, c1, prop1_id)
+        f2 = executor.submit(confirm, c2, prop2_id)
         results = [f1.result(), f2.result()]
 
-    # Exactly one must be 200, and the other 409
-    assert sorted(results) == [200, 409]
-    # Current revision must be 2
-    assert api.get("/api/portfolio").json()["revision"] == 2
+    assert sorted(response.status_code for response in results) == [200, 409]
+    winner = next(response.json() for response in results if response.status_code == 200)
+    winner_id = winner["receipt"]["proposal_id"]
+    loser_id = prop2_id if winner_id == prop1_id else prop1_id
+    expected_revision = 1 if base_revision is None else 2
+    assert winner["receipt"]["previous_revision"] == base_revision
+    assert winner["receipt"]["new_revision"] == expected_revision
+    assert api.get("/api/portfolio").json() == winner["portfolio"]
+    winner_detail = api.get(f"/api/portfolio/proposals/{winner_id}").json()
+    assert winner_detail["status"] == "applied"
+    assert winner_detail["receipt"] == winner["receipt"]
+    assert winner_detail["after_portfolio"] == winner["portfolio"]["portfolio"]
+    loser_detail = api.get(f"/api/portfolio/proposals/{loser_id}").json()
+    assert loser_detail["status"] == "stale" and loser_detail["receipt"] is None
+    assert c2.post(f"/api/portfolio/proposals/{winner_id}/confirm").json() == winner
+    assert c1.post(f"/api/portfolio/proposals/{loser_id}/confirm").status_code == 409
+    assert api.get("/api/portfolio").json()["revision"] == expected_revision
+
+
+@pytest.mark.parametrize("attempt", range(10))
+def test_concurrent_retries_return_one_original_confirmation(tmp_path, attempt):
+    import concurrent.futures
+    from threading import Barrier
+
+    api, store = client(tmp_path)
+    prepared = api.put("/api/portfolio", json={
+        "base_revision": None, "portfolio": sample_portfolio().model_dump(mode="json"),
+    })
+    assert prepared.status_code == 200
+    proposal_id = prepared.json()["proposal"]["id"]
+    c1, _ = client(tmp_path)
+    c2, _ = client(tmp_path)
+    start = Barrier(2, timeout=10)
+
+    def confirm(api_client):
+        start.wait()
+        return api_client.post(f"/api/portfolio/proposals/{proposal_id}/confirm")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(confirm, c1)
+        f2 = executor.submit(confirm, c2)
+        first, second = f1.result(), f2.result()
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["receipt"]["previous_revision"] is None
+    assert first.json()["receipt"]["new_revision"] == 1
+    assert api.get("/api/portfolio").json() == first.json()["portfolio"]
+    restarted, _ = client(tmp_path)
+    retry = restarted.post(f"/api/portfolio/proposals/{proposal_id}/confirm")
+    assert retry.status_code == 200 and retry.json() == first.json()
+    assert restarted.get("/api/portfolio").json()["revision"] == 1
 
 
 def test_complete_identity_resolution_and_confirmation(tmp_path):
