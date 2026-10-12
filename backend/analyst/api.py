@@ -591,9 +591,9 @@ def create_app(
     def save_decision(request: SaveDecisionRequest) -> SavedDecision:
         if request.result is not None:
             if request.artifact_id:
-                for existing in decisions.list_decisions():
-                    if existing.artifact_id == request.artifact_id:
-                        return existing
+                existing = decisions.get_by_artifact_id(request.artifact_id)
+                if existing is not None:
+                    return existing
             record = extract_decision(
                 request.result,
                 confirmed_action=request.confirmed_action,
@@ -603,6 +603,10 @@ def create_app(
             )
         elif request.decision is not None:
             record = request.decision
+            if request.artifact_id:
+                existing = decisions.get_by_artifact_id(request.artifact_id)
+                if existing is not None and existing.id != record.id:
+                    return existing
             updates: dict[str, Any] = {}
             if request.confirmed_action is not None:
                 updates["confirmed_action"] = request.confirmed_action

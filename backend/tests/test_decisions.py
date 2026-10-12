@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -485,4 +486,101 @@ def test_saving_decision_with_artifact_id_is_idempotent_and_prevents_duplicates(
 
     # Verify only 1 decision exists in the store
     assert len(store.list_decisions()) == 1
+
+
+def test_concurrent_saving_with_same_artifact_id_is_atomic_and_never_duplicates(tmp_path: Path) -> None:
+    import concurrent.futures
+
+    store = DecisionStore(tmp_path)
+    api = TestClient(create_app(data=FakeDataProvider(), store=store))
+    result = make_sample_result()
+
+    payload = {
+        "result": result.model_dump(mode="json"),
+        "workflow": "review",
+        "artifact_id": "art-concurrent-race-1",
+    }
+
+    def save_once() -> dict[str, Any]:
+        resp = api.post("/api/decisions", json=payload)
+        assert resp.status_code == 200
+        return resp.json()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(save_once) for _ in range(10)]
+        results = [f.result() for f in futures]
+
+    decision_ids = {r["id"] for r in results}
+    assert len(decision_ids) == 1, f"Expected 1 unique decision ID, got {decision_ids}"
+
+    all_stored = store.list_decisions()
+    assert len(all_stored) == 1, f"Expected 1 stored decision, got {len(all_stored)}"
+    assert all_stored[0].id == list(decision_ids)[0]
+    assert all_stored[0].artifact_id == "art-concurrent-race-1"
+
+
+def test_repeated_concurrent_and_restart_after_save_requests_resolve_to_one_decision(
+    tmp_path: Path,
+) -> None:
+    import concurrent.futures
+
+    # --- Phase 1: Repeated sequential saves ---
+    store1 = DecisionStore(tmp_path)
+    client1 = TestClient(create_app(data=FakeDataProvider(), store=store1))
+    result = make_sample_result()
+
+    payload = {
+        "result": result.model_dump(mode="json"),
+        "workflow": "review",
+        "artifact_id": "art-repeat-restart-test-1",
+    }
+
+    res_seq1 = client1.post("/api/decisions", json=payload)
+    assert res_seq1.status_code == 200
+    dec_seq1 = res_seq1.json()
+
+    res_seq2 = client1.post("/api/decisions", json=payload)
+    assert res_seq2.status_code == 200
+    dec_seq2 = res_seq2.json()
+
+    assert dec_seq1["id"] == dec_seq2["id"]
+    assert len(store1.list_decisions()) == 1
+
+    # --- Phase 2: Concurrent saves on top of existing decision ---
+    def save_call() -> dict[str, Any]:
+        resp = client1.post("/api/decisions", json=payload)
+        assert resp.status_code == 200
+        return resp.json()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(save_call) for _ in range(8)]
+        results = [f.result() for f in futures]
+
+    assert all(r["id"] == dec_seq1["id"] for r in results)
+    assert len(store1.list_decisions()) == 1
+    assert len(list(tmp_path.glob("*.json"))) == 1
+
+    # --- Phase 3: Restart-after-save ---
+    # Create completely fresh store and client pointing at the same directory
+    store2 = DecisionStore(tmp_path)
+    client2 = TestClient(create_app(data=FakeDataProvider(), store=store2))
+
+    # A save after restart returns the same logical decision without creating new files
+    res_after_restart = client2.post("/api/decisions", json=payload)
+    assert res_after_restart.status_code == 200
+    dec_after_restart = res_after_restart.json()
+
+    assert dec_after_restart["id"] == dec_seq1["id"]
+    assert dec_after_restart["artifact_id"] == "art-repeat-restart-test-1"
+
+    # Listing decisions shows exactly one decision
+    all_decisions = store2.list_decisions()
+    assert len(all_decisions) == 1
+    assert all_decisions[0].id == dec_seq1["id"]
+
+    # Exactly one json file on disk
+    json_files = list(tmp_path.glob("*.json"))
+    assert len(json_files) == 1
+    assert json_files[0].name == f"{dec_seq1['id']}.json"
+
 

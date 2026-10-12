@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -150,6 +152,11 @@ def extract_evidence_references(result: AnalysisResult) -> list[EvidenceReferenc
     return references
 
 
+def deterministic_decision_id(artifact_id: str) -> str:
+    digest = hashlib.sha256(artifact_id.encode("utf-8")).hexdigest()[:12]
+    return f"dec-{digest}"
+
+
 def extract_decision(
     result: AnalysisResult,
     decision_id: str | None = None,
@@ -162,8 +169,14 @@ def extract_decision(
     ev_refs = extract_evidence_references(result)
     rec = result.recommendation
 
+    if decision_id is None:
+        if artifact_id:
+            decision_id = deterministic_decision_id(artifact_id)
+        else:
+            decision_id = f"dec-{uuid.uuid4().hex[:12]}"
+
     return SavedDecision(
-        id=decision_id or f"dec-{uuid.uuid4().hex[:12]}",
+        id=decision_id,
         saved_at=now,
         as_of=result.portfolio.as_of,
         question=result.question,
@@ -199,53 +212,96 @@ class DecisionStore:
         else:
             self.directory = Path(__file__).resolve().parents[1] / "data" / "decisions"
         self.directory.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
 
     def _file_path(self, decision_id: str) -> Path:
         safe_id = Path(decision_id).name
         return self.directory / f"{safe_id}.json"
 
+    def get_by_artifact_id(self, artifact_id: str) -> SavedDecision | None:
+        if not artifact_id or not self.directory.exists():
+            return None
+        with self._lock:
+            # Check deterministic file path first
+            det_id = deterministic_decision_id(artifact_id)
+            det_file = self._file_path(det_id)
+            if det_file.is_file():
+                try:
+                    dec = SavedDecision.model_validate_json(det_file.read_text(encoding="utf-8"))
+                    if dec.artifact_id == artifact_id:
+                        return dec
+                except Exception:
+                    pass
+            # Scan directory for any legacy/alternate saved files matching artifact_id
+            for file in self.directory.glob("*.json"):
+                if file.name == det_file.name:
+                    continue
+                try:
+                    dec = SavedDecision.model_validate_json(file.read_text(encoding="utf-8"))
+                    if dec.artifact_id == artifact_id:
+                        return dec
+                except Exception:
+                    continue
+            return None
+
     def save(self, decision: SavedDecision) -> SavedDecision:
-        self.directory.mkdir(parents=True, exist_ok=True)
-        file_path = self._file_path(decision.id)
-        # Write JSON to plain local file
-        data = decision.model_dump(mode="json")
-        temp_path = file_path.with_suffix(".tmp")
-        temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        temp_path.replace(file_path)
-        return decision
+        with self._lock:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            if decision.artifact_id:
+                existing = self.get_by_artifact_id(decision.artifact_id)
+                if existing is not None and existing.id != decision.id:
+                    return existing
+            file_path = self._file_path(decision.id)
+            # Write JSON to plain local file atomically using unique temp file
+            data = decision.model_dump(mode="json")
+            temp_path = file_path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+            try:
+                temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                temp_path.replace(file_path)
+            finally:
+                if temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except OSError:
+                        pass
+            return decision
 
     def get(self, decision_id: str) -> SavedDecision | None:
-        file_path = self._file_path(decision_id)
-        if not file_path.exists() or not file_path.is_file():
-            return None
-        raw = file_path.read_text(encoding="utf-8")
-        return SavedDecision.model_validate_json(raw)
+        with self._lock:
+            file_path = self._file_path(decision_id)
+            if not file_path.exists() or not file_path.is_file():
+                return None
+            raw = file_path.read_text(encoding="utf-8")
+            return SavedDecision.model_validate_json(raw)
 
     def list_decisions(self) -> list[SavedDecision]:
-        if not self.directory.exists():
-            return []
-        decisions: list[SavedDecision] = []
-        for file in sorted(self.directory.glob("*.json")):
-            try:
-                decisions.append(SavedDecision.model_validate_json(file.read_text(encoding="utf-8")))
-            except Exception:
-                continue
-        # Sort newest saved first
-        decisions.sort(key=lambda d: d.saved_at, reverse=True)
-        return decisions
+        with self._lock:
+            if not self.directory.exists():
+                return []
+            decisions: list[SavedDecision] = []
+            for file in sorted(self.directory.glob("*.json")):
+                try:
+                    decisions.append(SavedDecision.model_validate_json(file.read_text(encoding="utf-8")))
+                except Exception:
+                    continue
+            # Sort newest saved first
+            decisions.sort(key=lambda d: d.saved_at, reverse=True)
+            return decisions
 
     def delete(self, decision_id: str) -> bool:
-        file_path = self._file_path(decision_id)
-        if not file_path.is_file():
-            return False
-        file_path.unlink()
-        return True
+        with self._lock:
+            file_path = self._file_path(decision_id)
+            if not file_path.is_file():
+                return False
+            file_path.unlink()
+            return True
 
     def clear(self) -> int:
-        files = list(self.directory.glob("*.json")) if self.directory.exists() else []
-        for file in files:
-            file.unlink()
-        return len(files)
+        with self._lock:
+            files = list(self.directory.glob("*.json")) if self.directory.exists() else []
+            for file in files:
+                file.unlink()
+            return len(files)
 
     def confirm_action(
         self,
@@ -254,18 +310,19 @@ class DecisionStore:
         notes: str | None = None,
         confirmed_at: AwareDatetime | None = None,
     ) -> SavedDecision:
-        decision = self.get(decision_id)
-        if decision is None:
-            raise KeyError(f"Decision {decision_id} not found.")
-        now = confirmed_at or datetime.now(timezone.utc)
-        updated = decision.model_copy(
-            update={
-                "confirmed_action": UserConfirmedAction(
-                    action=action,
-                    confirmed_at=now,
-                    notes=notes,
-                )
-            }
-        )
-        self.save(updated)
-        return updated
+        with self._lock:
+            decision = self.get(decision_id)
+            if decision is None:
+                raise KeyError(f"Decision {decision_id} not found.")
+            now = confirmed_at or datetime.now(timezone.utc)
+            updated = decision.model_copy(
+                update={
+                    "confirmed_action": UserConfirmedAction(
+                        action=action,
+                        confirmed_at=now,
+                        notes=notes,
+                    )
+                }
+            )
+            self.save(updated)
+            return updated
