@@ -206,49 +206,96 @@ test("a question about the unsaved draft runs as a labeled hypothetical, and ord
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test("a draft question is sent to the conversation it was asked in, even if another one is opened meanwhile", async ({ page }) => {
+const rail = (page: Page) => page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
+const useDraft = (page: Page) => page.getByRole("checkbox", { name: "Ask about my unsaved draft" });
+const notSent = (page: Page) => page.getByRole("alert").filter({ hasText: "Your question was not sent" });
+const questions = async (page: Page, title: string) => {
+  const summaries = (await (await page.request.get("/api/threads")).json()) as { id: string; title: string }[];
+  const stored = await (await page.request.get(`/api/threads/${summaries.find(item => item.title === title)!.id}`)).json();
+  return (stored.messages as { role: string; text: string }[]).filter(message => message.role === "user").map(message => message.text);
+};
+
+/** Two conversations and an unsaved draft edit; storing the draft waits until the returned function is called. */
+async function twoTopics(page: Page, outcome: "stored" | "fails") {
   await open(page);
-  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   await send(page, "First topic");
   await expect(thread(page)).toContainText("Plain answer to: First topic");
-  await rail.getByRole("button", { name: "New conversation" }).click();
+  await rail(page).getByRole("button", { name: "New conversation" }).click();
   await send(page, "Second topic");
   await expect(thread(page)).toContainText("Plain answer to: Second topic");
-
-  // Storing the draft is slow, and the investor opens the other conversation before it finishes.
-  let release = () => {};
-  const held = new Promise<void>(resolve => { release = resolve; });
-  await page.route("**/api/portfolio/artifacts", async route => { await held; await route.continue(); });
   await page.getByRole("complementary", { name: "Details" }).getByLabel("Single-company cap (%)").fill("20");
-  await page.getByRole("checkbox", { name: "Ask about my unsaved draft" }).check();
+  let settle = () => {};
+  const held = new Promise<void>(resolve => { settle = resolve; });
+  await page.route("**/api/portfolio/artifacts", async route => {
+    await held;
+    await (outcome === "stored" ? route.continue() : route.fulfill({ status: 503, json: { detail: "offline" } }));
+  });
+  return () => settle();
+}
+
+test("a slow draft capture sends its question where it was asked and leaves a newer draft selection alone", async ({ page }) => {
+  const settle = await twoTopics(page, "stored");
+  await useDraft(page).check();
   await send(page, "Draft question for the second topic");
-  await rail.getByRole("button", { name: "Conversation: First topic" }).click();
+  await rail(page).getByRole("button", { name: "Conversation: First topic" }).click();
   await expect(thread(page)).toContainText("Plain answer to: First topic");
-  release();
+  // A new selection, made in the conversation opened meanwhile, belongs to that conversation's next question.
+  await expect(useDraft(page)).not.toBeChecked();
+  await useDraft(page).check();
+  settle();
 
-  const questions = async (title: string) => {
-    const summaries = (await (await page.request.get("/api/threads")).json()) as { id: string; title: string }[];
-    const stored = await (await page.request.get(`/api/threads/${summaries.find(item => item.title === title)!.id}`)).json();
-    return (stored.messages as { role: string; text: string }[]).filter(message => message.role === "user").map(message => message.text);
-  };
-  await expect.poll(() => questions("Second topic")).toEqual(["Second topic", "Draft question for the second topic"]);
-  expect(await questions("First topic")).toEqual(["First topic"]);
-  // The conversation on screen is still the one the investor opened.
+  await expect.poll(() => questions(page, "Second topic")).toEqual(["Second topic", "Draft question for the second topic"]);
+  expect(await questions(page, "First topic")).toEqual(["First topic"]);
+  // The conversation on screen is still the one the investor opened, with the selection made there.
   await expect(thread(page)).not.toContainText("Draft question for the second topic");
+  await expect(useDraft(page)).toBeChecked();
+});
 
-  // A draft that cannot be stored after the investor has moved on does not put its question into the
-  // conversation now on screen, where asking it would send it to the wrong place.
-  await page.unroute("**/api/portfolio/artifacts");
-  let fail = () => {};
-  const failing = new Promise<void>(resolve => { fail = resolve; });
-  await page.route("**/api/portfolio/artifacts", async route => { await failing; await route.fulfill({ status: 503, json: { detail: "offline" } }); });
-  await page.getByRole("checkbox", { name: "Ask about my unsaved draft" }).check();
-  await send(page, "Draft question for the first topic");
-  await rail.getByRole("button", { name: "Conversation: Second topic" }).click();
-  await expect(thread(page)).toContainText("Plain answer to: Second topic");
-  fail();
-  await expect(page.getByText("Your draft could not be stored, so the question was not sent.")).toBeVisible();
+test("a failed draft capture keeps its question and retry in the conversation it was asked in, and nowhere else", async ({ page }) => {
+  const settle = await twoTopics(page, "fails");
+  await useDraft(page).check();
+  await send(page, "Draft question for the second topic");
+  await rail(page).getByRole("button", { name: "Conversation: First topic" }).click();
+  await expect(thread(page)).toContainText("Plain answer to: First topic");
+  const failed = page.waitForResponse(response => response.url().endsWith("/api/portfolio/artifacts") && response.status() === 503);
+  settle();
+  await failed;
+
+  // Nothing about it appears in the conversation now on screen, or in a new one.
+  await expect(notSent(page)).toHaveCount(0);
+  await expect(page.getByText("could not be stored")).toHaveCount(0);
   await expect(ask(page)).toHaveValue("");
-  expect(await questions("First topic")).toEqual(["First topic"]);
-  expect(await questions("Second topic")).toEqual(["Second topic", "Draft question for the second topic"]);
+  await rail(page).getByRole("button", { name: "New conversation" }).click();
+  await expect(notSent(page)).toHaveCount(0);
+  await expect(ask(page)).toHaveValue("");
+
+  // Back where it was asked, the question and its retry are waiting.
+  await rail(page).getByRole("button", { name: "Conversation: Second topic" }).click();
+  await expect(notSent(page)).toContainText("Draft question for the second topic");
+  await page.unroute("**/api/portfolio/artifacts");
+  await notSent(page).locator("..").getByRole("button", { name: "Send question again" }).click();
+  await expect(thread(page).getByText("Hypothetical draft", { exact: true })).toHaveCount(1);
+  await expect(notSent(page)).toHaveCount(0);
+  expect(await questions(page, "Second topic")).toEqual(["Second topic", "Draft question for the second topic"]);
+  expect(await questions(page, "First topic")).toEqual(["First topic"]);
+  expect((await saved(page)).revision).toBe(1);
+});
+
+test("a failed draft capture from one new conversation is not shown in a different new conversation", async ({ page }) => {
+  const settle = await twoTopics(page, "fails");
+  await rail(page).getByRole("button", { name: "New conversation" }).click();
+  await useDraft(page).check();
+  await send(page, "Draft question for a third topic");
+  // The investor leaves that new conversation, then starts another one: also thread-less, but not the same view.
+  await rail(page).getByRole("button", { name: "Conversation: First topic" }).click();
+  await expect(thread(page)).toContainText("Plain answer to: First topic");
+  await rail(page).getByRole("button", { name: "New conversation" }).click();
+  const failed = page.waitForResponse(response => response.url().endsWith("/api/portfolio/artifacts") && response.status() === 503);
+  settle();
+  await failed;
+
+  await expect(notSent(page)).toHaveCount(0);
+  await expect(page.getByText("could not be stored")).toHaveCount(0);
+  await expect(ask(page)).toHaveValue("");
+  expect((await (await page.request.get("/api/threads")).json()).filter((item: { title: string | null }) => item.title)).toHaveLength(2);
 });

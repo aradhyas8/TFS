@@ -56,6 +56,7 @@ import {
 import { isConversation, route, type Route } from "../../components/desk/route";
 import Thread, { type ClarificationForm } from "../../components/desk/Thread";
 import threadStyles from "../../components/desk/Thread.module.css";
+import { Alert } from "@/components/arc/alert/alert";
 import { Button } from "@/components/arc/button/button";
 import { Checkbox } from "@/components/arc/checkbox/checkbox";
 import { useConversation } from "../../components/desk/useConversation";
@@ -63,6 +64,17 @@ import { clock, fullDate, newCashLabel, pct, shortDate } from "../../components/
 
 /** A question and its workflow: new cash with its input, Stock Analysis of one holding (position ID), a rebalance, theme discovery, else a portfolio review.
  *  Each one is a fresh analysis of the saved portfolio; nothing from an earlier answer is carried over. */
+/** A question asked about the unsaved draft: the draft as captured, and where the question was asked. */
+type DraftQuestion = {
+  /** The view it was asked in; its progress and any failure show only there. */
+  view: string;
+  /** The thread it is sent to; null starts a new conversation. */
+  destination: string | null;
+  text: string;
+  workflowInput?: Record<string, unknown>;
+  portfolio: SavedPortfolio;
+};
+
 type Sent = {
   question: string;
   newCash: NewCashInput | null;
@@ -310,7 +322,11 @@ export default function DeskPage() {
   const [resuming, setResuming] = useState(false);
   // Explicit choice, for one question: analyze the unsaved draft as a hypothetical portfolio.
   const [useDraft, setUseDraft] = useState(false);
-  const [capturing, setCapturing] = useState(false);
+  // Storing the draft is a request, and the investor may navigate while it runs. Its progress and its failure
+  // belong to the view the question was asked in, named by that view's key, and show nowhere else.
+  const [capturing, setCapturing] = useState<string | null>(null);
+  // ponytail: one failed draft question is kept; a later one replaces it. Keep one per view if that loses work.
+  const [captureFailed, setCaptureFailed] = useState<DraftQuestion | null>(null);
   const threadEnd = useRef<HTMLDivElement>(null);
   const wasRunning = useRef(false);
 
@@ -1027,7 +1043,7 @@ export default function DeskPage() {
   /** Sends into the conversation. With the draft selected, the draft is first stored as an immutable
    *  hypothetical portfolio and only that stored copy is analyzed: later edits never reach the run, and
    *  without the selection no draft state is sent at all. */
-  async function sendToConversation(text: string, workflowInput?: Record<string, unknown>) {
+  function sendToConversation(text: string, workflowInput?: Record<string, unknown>) {
     if (!askingDraft) return void conversation.send(text, workflowInput);
     const portfolio: SavedPortfolio = structuredClone({
       snapshot: draftSnapshot,
@@ -1037,19 +1053,25 @@ export default function DeskPage() {
       average_costs: draftAverageCosts,
       saved_at: null,
     });
+    // The selection is used up here, where it was made: a selection made later, in whatever view is then
+    // open, is a different one and is left alone when this capture finishes.
+    setUseDraft(false);
     // Fixed before the draft is stored: the question goes where it was asked, whatever is opened meanwhile.
-    const destination = conversation.destination();
-    setCapturing(true);
+    void askAboutDraft({ view: conversation.currentView(), destination: conversation.destination(), text, workflowInput, portfolio });
+  }
+
+  /** Stores the captured draft, then sends the question about it. A failure keeps the whole question, with the
+   *  draft as it was captured, so it can be sent again from the view it was asked in. */
+  async function askAboutDraft(asked: DraftQuestion) {
+    setCaptureFailed(null);
+    setCapturing(asked.view);
     try {
-      const captured = await storeDraft(portfolio);
-      setUseDraft(false);
-      void conversation.send(text, workflowInput, captured.id, destination);
+      const captured = await storeDraft(asked.portfolio);
+      void conversation.send(asked.text, asked.workflowInput, captured.id, asked.destination);
     } catch {
-      // The question returns to the composer only where it was asked; elsewhere it would be re-sent to the wrong conversation.
-      if (conversation.destination() === destination) setQuestion(text);
-      setNotice("Your draft could not be stored, so the question was not sent. Check that the analyst service is running, then ask again.");
+      setCaptureFailed(asked);
     } finally {
-      setCapturing(false);
+      setCapturing(current => (current === asked.view ? null : current));
     }
   }
 
@@ -1510,18 +1532,39 @@ export default function DeskPage() {
 
   const activeSnapshot = answer?.snapshot || committedSnapshot;
   // Shown wherever a question can be asked, so the draft is only ever analyzed by explicit choice.
-  const draftBasis = isDirty && (
-    <div ref={draftNote} data-testid="draft-note" className={threadStyles.draft}>
-      <p className="cap">
-        Answers use your saved portfolio. Unsaved draft edits are not included until you review and confirm them.
-      </p>
-      <Checkbox
-        label="Ask about my unsaved draft"
-        description="Your next question uses the draft as a hypothetical portfolio. Your saved portfolio stays as it is, and slash workflows still use it."
-        checked={useDraft}
-        disabled={conversation.busy || capturing}
-        onCheckedChange={next => setUseDraft(next === true)}
-      />
+  const capturingHere = capturing === conversation.viewKey;
+  const captureFailedHere = captureFailed?.view === conversation.viewKey ? captureFailed : null;
+  const draftBasis = (captureFailedHere || isDirty) && (
+    <div className={threadStyles.draft}>
+      {captureFailedHere && (
+        <div className={threadStyles.notice}>
+          <Alert tone="danger" title="Your question was not sent">
+            {`"${captureFailedHere.text}" was asked about your unsaved draft, and the draft could not be stored. Check that the analyst service is running, then send the question again.`}
+          </Alert>
+          <div className={threadStyles.actions}>
+            <Button variant="secondary" disabled={capturingHere || conversation.busy} onClick={() => void askAboutDraft(captureFailedHere)}>
+              Send question again
+            </Button>
+            <Button variant="ghost" onClick={() => setCaptureFailed(null)}>
+              Discard question
+            </Button>
+          </div>
+        </div>
+      )}
+      {isDirty && (
+        <div ref={draftNote} data-testid="draft-note" className={threadStyles.draftNote}>
+          <p className="cap">
+            Answers use your saved portfolio. Unsaved draft edits are not included until you review and confirm them.
+          </p>
+          <Checkbox
+            label="Ask about my unsaved draft"
+            description="Your next question uses the draft as a hypothetical portfolio. Your saved portfolio stays as it is, and slash workflows still use it."
+            checked={useDraft}
+            disabled={conversation.busy || capturingHere}
+            onCheckedChange={next => setUseDraft(next === true)}
+          />
+        </div>
+      )}
     </div>
   );
   let center;
@@ -2075,7 +2118,7 @@ export default function DeskPage() {
             themeCandidates={themeCandidates}
             onAddCandidate={addThemeCandidate}
             onRemoveCandidate={removeThemeCandidate}
-            running={!!run || conversation.busy || capturing}
+            running={!!run || conversation.busy || capturingHere}
             inThread={showThread}
             collapsed={collapsed && !!(answer || failure || run)}
             onExpand={() => setCollapsed(false)}

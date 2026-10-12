@@ -52,8 +52,17 @@ export function useConversation() {
       })
       .catch(() => setThreadsError(true));
 
+  // Which view is on screen: a thread, or one particular new conversation. A thread ID cannot tell two new
+  // conversations apart, so each one entered from a thread gets its own number.
+  const newViews = useRef(0);
+  const viewKeyNow = useRef("new:0");
+  const [viewKey, setViewKey] = useState("new:0");
+
   function view(id: string | null) {
+    if (id === null && viewing.current !== null) newViews.current++;
     viewing.current = id;
+    viewKeyNow.current = id ? `thread:${id}` : `new:${newViews.current}`;
+    setViewKey(viewKeyNow.current);
     setOpenId(id);
     setStopError(null);
     remember(THREAD_KEY, id);
@@ -246,6 +255,10 @@ export function useConversation() {
     stop,
     /** The thread a question asked now belongs to; null starts a new conversation. */
     destination: () => viewing.current,
+    /** Identity of the view on screen, for work that must report back only where it was started. */
+    viewKey,
+    /** The same identity read at call time, for use right after a navigation in the same handler. */
+    currentView: () => viewKeyNow.current,
     open,
     close,
     send,
