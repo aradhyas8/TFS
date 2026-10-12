@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 from typing import Annotated, Any, Literal, Self
@@ -1641,36 +1642,38 @@ class PreparationResult(Contract):
         return self
 
 
+def model_safe(value: Any) -> Any:
+    """Remove private costs/state at every nesting level, including historical JSON text."""
+    if isinstance(value, dict):
+        if value.get("type") == "reasoning":
+            return {}
+        if "average_cost" in str(value.get("path", "")):
+            return {"description": "Private portfolio field omitted."}
+        return {
+            key: ({} if key == "average_costs" else None if key == "average_cost" else model_safe(item))
+            for key, item in value.items()
+            if key not in {"private_continuation", "continuation", "encrypted_content"}
+        }
+    if isinstance(value, list):
+        return [model_safe(item) for item in value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, RecursionError):
+            return value
+        if isinstance(parsed, (dict, list)):
+            return json.dumps(model_safe(parsed), ensure_ascii=False)
+    return value
+
+
 def build_artifact_payload(
     artifact: SavedPortfolio | Any,
     kind: ArtifactKind = "portfolio_snapshot",
     projection: Literal["human", "model"] = "human",
 ) -> Any:
-    """Serialize artifact into a payload, excluding average costs for model projections on portfolio snapshots."""
-    if kind == "portfolio_snapshot" or isinstance(artifact, SavedPortfolio):
-        if hasattr(artifact, "model_dump"):
-            data = artifact.model_dump(mode="python")
-        elif isinstance(artifact, dict):
-            data = dict(artifact)
-        else:
-            data = artifact
-        if isinstance(data, dict) and projection == "model":
-            data = dict(data)
-            data["average_costs"] = {}
-            if "unresolved" in data and isinstance(data["unresolved"], list):
-                unresolved_clean = []
-                for item in data["unresolved"]:
-                    if isinstance(item, dict):
-                        item_copy = dict(item)
-                        item_copy["average_cost"] = None
-                        unresolved_clean.append(item_copy)
-                    else:
-                        unresolved_clean.append(item)
-                data["unresolved"] = unresolved_clean
-        return data
-    elif hasattr(artifact, "model_dump"):
-        return artifact.model_dump(mode="python")
-    return artifact
+    """Serialize typed artifacts; human payloads retain costs for exact review."""
+    data = artifact.model_dump(mode="python") if hasattr(artifact, "model_dump") else artifact
+    return model_safe(data) if projection == "model" else data
 
 
 class PortfolioProposalDetail(PortfolioProposal):

@@ -12,13 +12,16 @@ Enforces:
 
 import asyncio
 import inspect
+import json
 import logging
+import re
 from typing import Any, cast
 
 from .config import Settings
-from .persistence import Database
+from .context import CHARACTER_LIMIT, READ_CAPABILITIES, RunContext, read_tools
+from .persistence import Database, DecimalEncoder
 from .providers import ModelTurn
-from .schemas import RunRecord
+from .schemas import RunRecord, ToolOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -85,23 +88,11 @@ class Orchestrator:
         deadline = start_time + MAX_DEADLINE_SECONDS
 
         try:
-            # Build initial context messages for model
-            thread_detail = self.db.get_thread(thread_id)
-            messages: list[dict[str, Any]] = []
-
-            # System prompt providing instructions for investment analyst
-            system_prompt = (
-                "You are an expert personal investment analyst. Answer conceptual questions directly, "
-                "accurately, and concisely without using any financial or research tools."
-            )
-            messages.append({"role": "system", "content": system_prompt})
-
-            if thread_detail:
-                # Include existing thread messages (last 20)
-                for msg in thread_detail.messages[-20:]:
-                    messages.append({"role": msg.role, "content": msg.text})
-            else:
-                messages.append({"role": "user", "content": user_text})
+            context = RunContext(self.db, run_record)
+            messages = context.messages()
+            initial_messages = messages
+            exchanges: list[list[dict[str, Any]]] = []
+            seen_calls: set[str] = set()
 
             turns_count = 0
             while turns_count < MAX_TURNS:
@@ -132,6 +123,37 @@ class Orchestrator:
                     self._record_terminal_failure(run_id, f"Model service error: {exc}")
                     return
 
+                if turn.calls:
+                    if (len(turn.calls) != 1 or turn.text or turn.answer is not None
+                            or any(item.get("type") not in {"reasoning", "function_call"}
+                                   for item in turn.continuation)):
+                        self._record_terminal_failure(run_id, "Invalid mixed or parallel model response.")
+                        return
+                    call = turn.calls[0]
+                    if call.name not in READ_CAPABILITIES:
+                        self._record_terminal_failure(run_id, "Unexpected tool call.")
+                        return
+                    if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", call.call_id) or call.call_id in seen_calls:
+                        self._record_terminal_failure(run_id, "Invalid or repeated application call ID.")
+                        return
+                    continuation_calls = [item for item in turn.continuation if item.get("type") == "function_call"]
+                    if continuation_calls and (len(continuation_calls) != 1 or any(
+                        continuation_calls[0].get(key) != value for key, value in {
+                            "call_id": call.call_id, "name": call.name, "arguments": call.arguments,
+                        }.items()
+                    )):
+                        self._record_terminal_failure(run_id, "Invalid application continuation.")
+                        return
+                    try:
+                        if len(call.arguments) > CHARACTER_LIMIT:
+                            raise ValueError("Arguments exceed budget.")
+                        capability = READ_CAPABILITIES[call.name]
+                        parsed = capability.arguments.model_validate_json(call.arguments)
+                    except ValueError:
+                        self._record_terminal_failure(run_id, "Invalid application tool arguments.")
+                        return
+                    seen_calls.add(call.call_id)
+
                 # Check if continuation state is returned (server-only)
                 if turn.continuation:
                     self.db.store_private_continuation(run_id, turn.continuation)
@@ -155,14 +177,44 @@ class Orchestrator:
                     )
                     return
 
-                # If tools were called, in Ticket 03 tool execution for tools is not yet wired
-                # Ticket 03 focuses on tool-free conceptual questions.
-                # If tool calls occur unexpectedly, we record them and complete/fail safely.
-                self._record_terminal_failure(
-                    run_id,
-                    f"Unexpected tool call '{turn.calls[0].name}' invoked during tool-free conversation.",
+                call = turn.calls[0]
+                try:
+                    result = capability.handler(context, parsed)
+                except ValueError:
+                    result = {"error": "Context read is unavailable to this run."}
+                artifact_ids = list(result.get("artifact_ids", []))
+                for key in ("reference", "before_artifact", "after_artifact"):
+                    if isinstance(result.get(key), dict):
+                        artifact_ids.append(result[key]["id"])
+                output = json.dumps(result, cls=DecimalEncoder)
+                exchange = list(turn.continuation)
+                if not continuation_calls:
+                    exchange.append({
+                        "type": "function_call", "call_id": call.call_id,
+                        "name": call.name, "arguments": call.arguments,
+                    })
+                output_item = {"type": "function_call_output", "call_id": call.call_id, "output": output}
+                required_size = len(initial_messages[-1]["content"]) + sum(len(json.dumps(item)) for item in exchange)
+                if required_size + len(json.dumps(output_item)) > CHARACTER_LIMIT:
+                    result = {"error": "Result exceeds retrieval budget. Request a smaller slice.",
+                              "artifact_ids": artifact_ids}
+                    if call.name == "get_artifact":
+                        result["artifact_id"] = parsed.model_dump()["artifact_id"]
+                    output_item["output"] = json.dumps(result)
+                exchange.append(output_item)
+                exchanges.append(exchange)
+                messages = context.with_exchanges(initial_messages, exchanges)
+                outcome = ToolOutcome(id=call.call_id, name=call.name,
+                                      status="error" if "error" in result else "success",
+                                      error=result.get("error"), artifact_ids=artifact_ids)
+                outcome_message = self.db.add_message(
+                    thread_id, "assistant", json.dumps({"retrieval": {
+                        "tool": call.name, "arguments": parsed.model_dump(),
+                    }}), run_id=run_id,
+                    tool_outcomes=[outcome], artifact_ids=artifact_ids,
                 )
-                return
+                self.db.update_run(run_id, "running", additional_message_ids=[outcome_message.id],
+                                   additional_artifact_ids=artifact_ids)
 
             # Exceeded MAX_TURNS
             self._record_terminal_failure(
@@ -174,8 +226,8 @@ class Orchestrator:
             logger.info("Supervised task for run %s was cancelled.", run_id)
             # Database cancel was already handled or will be handled by cancel_run
         except Exception as exc:
-            logger.error("Unhandled exception in run %s: %s", run_id, exc, exc_info=True)
-            self._record_terminal_failure(run_id, f"Internal orchestration error: {exc}")
+            logger.error("Orchestration error in run %s (%s).", run_id, type(exc).__name__)
+            self._record_terminal_failure(run_id, "Internal orchestration error.")
 
     async def _call_transport(
         self,
@@ -185,8 +237,10 @@ class Orchestrator:
         """Call underlying transport, respecting timeout."""
         sig = inspect.signature(self.transport.respond)
         kwargs: dict[str, Any] = {}
-        if "timeout" in sig.parameters:
-            kwargs["timeout"] = timeout
+        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        for name, value in {"timeout": timeout, "tools": read_tools(), "tool_choice": "auto"}.items():
+            if name in sig.parameters or accepts_kwargs:
+                kwargs[name] = value
 
         coro = self.transport.respond(messages, **kwargs)
         return cast(ModelTurn, await asyncio.wait_for(coro, timeout=timeout))
