@@ -126,6 +126,12 @@ class ResearchTools:
             return await self.primary(context, parsed, name)
         return retrieve
 
+    @property
+    def provider(self) -> ResearchProvider:
+        if self._research is None:
+            self._research = IssuerResearchProvider.from_environment(SecResearchProvider.from_environment())
+        return self._research
+
     def target(self, context: RunContext, id: str) -> Position | None:
         positions = self.financial.select(context, [id])
         if not positions:
@@ -155,10 +161,8 @@ class ResearchTools:
             screened = self.screened(target)
             if screened and len(self.screen_researched) >= 2:
                 return self.financial.clarification(context, "unavailable", "The screen's two-candidate primary research budget is exhausted.")
-            if self._research is None:
-                self._research = IssuerResearchProvider.from_environment(SecResearchProvider.from_environment())
             try:
-                record = CompanyResearch.model_validate(await self._research.company(target, as_of)).model_copy(deep=True)
+                record = CompanyResearch.model_validate(await self.provider.company(target, as_of)).model_copy(deep=True)
             except SOURCE_ERRORS:
                 return self.financial.clarification(context, "unavailable", "Primary issuer research is unavailable.")
             if record.company_id != target.company_id:

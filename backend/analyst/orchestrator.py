@@ -23,10 +23,11 @@ from .context import CHARACTER_LIMIT, READ_CAPABILITIES, RunContext, read_tools
 from .financial_data import FinancialProvider
 from .financial_tools import FinancialTools
 from .persistence import Database, DecimalEncoder
-from .providers import ModelTurn
+from .providers import DataProvider, ModelTurn, SuppliedDataProvider
 from .research import ResearchProvider
 from .research_tools import ResearchTools
 from .schemas import RunRecord, ToolOutcome
+from .workflow_tools import WorkflowTools
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class Orchestrator:
         financial: FinancialProvider | None = None,
         research: ResearchProvider | None = None,
         discovery: DiscoveryProvider | None = None,
+        data: DataProvider | None = None,
     ) -> None:
         self.db = db
         self.transport = transport
@@ -52,6 +54,7 @@ class Orchestrator:
         self.financial = financial
         self.research = research
         self.discovery = discovery
+        self.data = data or SuppliedDataProvider()
         self._active_tasks: dict[str, asyncio.Task[None]] = {}
 
     def submit_supervised_run(
@@ -102,9 +105,11 @@ class Orchestrator:
             context = RunContext(self.db, run_record)
             financial_tools = FinancialTools(self.financial)
             research_tools = ResearchTools(financial_tools, self.research, workflow_input, self.discovery)
+            workflow_tools = WorkflowTools(financial_tools, research_tools, self.data, self.transport,
+                                           self.settings, deadline, user_text, workflow_input)
             capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
-                            **research_tools.capabilities}
-            messages = context.messages(comparison=research_tools.comparison)
+                            **research_tools.capabilities, **workflow_tools.capabilities}
+            messages = context.messages(comparison=research_tools.comparison, workflow=workflow_tools.inputs.workflow)
             initial_messages = messages
             exchanges: list[list[dict[str, Any]]] = []
             seen_calls: set[str] = set()
@@ -194,13 +199,21 @@ class Orchestrator:
                     return
 
                 call = turn.calls[0]
+                tool_remaining = max(0, deadline - asyncio.get_event_loop().time())
                 try:
-                    result = capability.handler(context, parsed)
-                    if inspect.isawaitable(result):
-                        result = await asyncio.wait_for(result, timeout=min(
-                            self.settings.request_timeout, max(0, deadline - asyncio.get_event_loop().time()),
+                    pending_result = capability.handler(context, parsed)
+                    if inspect.isawaitable(pending_result):
+                        result = await asyncio.wait_for(pending_result, timeout=min(
+                            MAX_DEADLINE_SECONDS if capability.effect == "workflow" else self.settings.request_timeout,
+                            tool_remaining,
                         ))
+                    else:
+                        result = cast(dict[str, Any], pending_result)
                 except TimeoutError:
+                    if (capability.effect == "workflow" and tool_remaining <= self.settings.request_timeout
+                            or asyncio.get_event_loop().time() >= deadline):
+                        self._record_terminal_failure(run_id, "Run deadline of 600 seconds exceeded.")
+                        return
                     result = {"error": "Financial request timed out; no result is available."}
                 except ValueError:
                     result = {"error": "Requested data is unavailable to this run."}
@@ -234,6 +247,7 @@ class Orchestrator:
                         "tool": call.name, "arguments": parsed.model_dump(),
                     }}, cls=DecimalEncoder), run_id=run_id,
                     tool_outcomes=[outcome], artifact_ids=artifact_ids,
+                    clarification_required=result.get("clarification_required"),
                 )
                 self.db.update_run(run_id, "running", additional_message_ids=[outcome_message.id],
                                    additional_artifact_ids=artifact_ids)
