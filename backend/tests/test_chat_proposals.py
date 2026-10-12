@@ -347,7 +347,10 @@ def test_screened_candidates_cannot_be_added_without_verified_resolution(tmp_pat
     store.save(portfolio())
     model = Scripted([call({}, "scan", "scan_opportunities"),
                       call({"edits": [edit("add_position", "screened", "5")]}),
-                      ModelTurn(text="Which listing and account?")])
+                      call({"ticker": "NEWCO", "listing": "XTSE", "account_id": None}, "resolve", "resolve_candidate"),
+                      lambda messages: call({"edits": [edit("add_position", json.loads(
+                          messages[-1]["output"])["payload"]["result"]["position"]["id"], "5")]}, "resolved"),
+                      ModelTurn(text="Preview ready.")])
     with TestClient(create_app(model=model, data=NoWorkflowData(), financial=FakeFinancialProvider(facts()),
                               discovery=Screen(), portfolio_store=store,
                               settings=Settings(api_key="sk-test", model="test-model", request_timeout=5))) as client:
@@ -358,5 +361,11 @@ def test_screened_candidates_cannot_be_added_without_verified_resolution(tmp_pat
         assert messages[1]["tool_outcomes"][0]["status"] == "success"  # the screen itself ran
         clarification = messages[2]["clarification_required"]
         assert (clarification["code"], clarification["fields"]) == ("unknown_position", ["edits.0.position_id"])
-        assert client.get("/api/portfolio/proposals").json() == []
+        assert messages[2]["proposal_ids"] == []
+        # The same instrument resolved by the backend is accepted, without the screen's mark.
+        [proposal] = pending(client)
+        assert messages[4]["proposal_ids"] == [proposal["id"]]
+        detail = client.get(f"/api/portfolio/proposals/{proposal['id']}").json()
+        added = {row["id"]: row for row in detail["after_portfolio"]["snapshot"]["positions"]}["tfsa-newco-to"]
+        assert (added["shares"], added["company_id"], added["mark"]) == ("5", "newco", None)
         assert client.get("/api/portfolio").json()["revision"] == 1

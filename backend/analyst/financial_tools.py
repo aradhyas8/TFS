@@ -70,7 +70,8 @@ class FinancialTools:
     def __init__(self, provider: FinancialProvider | None) -> None:
         self._provider = provider
         self.candidates: dict[str, Position] = {}
-        # Only rows verified by resolve_candidate; opportunity screens also fill `candidates`.
+        # Only rows resolve_candidate accepted (verified or supplied identity, no mark);
+        # opportunity screens also fill `candidates`.
         self.resolved: dict[str, Position] = {}
         self.capabilities = {
             "review_portfolio": ReadCapability(ReadArguments,
