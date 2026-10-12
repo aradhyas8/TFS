@@ -572,6 +572,8 @@ export type ThreadSummary = {
   created_at: string;
   updated_at: string;
   last_message_preview?: string | null;
+  /** The thread's first question. */
+  title?: string | null;
 };
 
 export type RunRecord = {

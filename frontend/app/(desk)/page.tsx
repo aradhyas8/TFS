@@ -53,7 +53,9 @@ import {
   Waiting,
   type Tab,
 } from "../../components/desk/Memo";
-import { route, type Route } from "../../components/desk/route";
+import { isConversation, route, type Route } from "../../components/desk/route";
+import Thread from "../../components/desk/Thread";
+import { useConversation } from "../../components/desk/useConversation";
 import { clock, fullDate, newCashLabel, pct, shortDate } from "../../components/desk/format";
 
 /** A question and its workflow: new cash with its input, Stock Analysis of one holding (position ID), a rebalance, theme discovery, else a portfolio review.
@@ -268,6 +270,21 @@ export default function DeskPage() {
   const [prices, setPrices] = useState<PriceRefresh | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const runId = useRef(0);
+  // Durable conversation: threads, messages and runs live in the backend, never in the cached last answer.
+  const conversation = useConversation();
+  const threadEnd = useRef<HTMLDivElement>(null);
+  const wasRunning = useRef(false);
+
+  // A finished conversation run may have prepared a portfolio proposal; it is confirmed through the existing preview.
+  useEffect(() => {
+    if (wasRunning.current && !conversation.running) refreshProposals();
+    wasRunning.current = conversation.running;
+  }, [conversation.running]);
+
+  const threadLength = (conversation.thread?.messages.length ?? 0) + (conversation.pending ? 1 : 0);
+  useEffect(() => {
+    if (threadLength) threadEnd.current?.scrollIntoView({ block: "end" });
+  }, [threadLength, conversation.openId]);
 
   useEffect(() => {
     try {
@@ -542,6 +559,7 @@ export default function DeskPage() {
     if (!committedSnapshot) return;
     const id = ++runId.current;
     const startedAt = Date.now();
+    conversation.close();
     setRun({ ...sent, id, startedAt });
     setNow(startedAt);
     setPast(pastDurations(sent));
@@ -657,6 +675,7 @@ export default function DeskPage() {
       isHypothetical: true,
       snapshot: capturedSnapshot,
     };
+    conversation.close();
     setRun({ ...sent, id, startedAt });
     setNow(startedAt);
     setPast(pastDurations(sent));
@@ -902,7 +921,35 @@ export default function DeskPage() {
     });
   }
 
+  /** Leaves any workflow view so the thread is what the centre shows. */
+  function showConversation() {
+    runId.current++;
+    setRun(null);
+    setFailure(null);
+    setClarify(null);
+    setReopened(null);
+    setRegisterOpen(false);
+    setWorkflow(null);
+    setCollapsed(false);
+    setNotice("");
+    setRailOpen(false);
+  }
+
+  function openThread(id: string) {
+    showConversation();
+    conversation.open(id);
+  }
+
+  function chat(text: string) {
+    showConversation();
+    void conversation.send(text.trim());
+  }
+
   function ask(text: string) {
+    if (isConversation(text, committedSnapshot)) {
+      chat(text);
+      return;
+    }
     const next = route(text, committedSnapshot);
     if (next.kind === "clarify") {
       setClarify(next);
@@ -1048,6 +1095,7 @@ export default function DeskPage() {
     setSaved(null);
     setReopened(null);
     setRegisterOpen(false);
+    conversation.close();
     try {
       localStorage.removeItem(ANSWER_KEY);
     } catch {
@@ -1136,11 +1184,15 @@ export default function DeskPage() {
       : null;
   const sentStock = tickerOf(sent?.stock, sent?.candidate);
   const sentLabel = sent?.newCash && newCashLabel(sent.newCash, committedSnapshot);
+  const showThread =
+    !registerOpen && !reopened && !run && !clarify && !failure && (!!conversation.openId || !!conversation.pending);
   const ctxLabel = registerOpen
     ? "Decisions Register"
     : reopened
       ? `Decision · ${shortDate(reopened.saved_at)}`
-      : sentLabel
+      : showThread
+        ? "Conversation"
+        : sentLabel
         ? `New cash · ${sentLabel}`
         : sent
           ? sent.newCash
@@ -1156,7 +1208,7 @@ export default function DeskPage() {
             ? "Theme discovery"
             : workflow
               ? "New cash"
-              : "New analysis";
+              : "New conversation";
   const holdingsCount =
     committedSnapshot?.positions.filter(row => row.kind !== "cash").length ?? 0;
   const hasFund =
@@ -1311,6 +1363,27 @@ export default function DeskPage() {
         <Failure message={failure.message} onRetry={() => analyze(failure)} />
       </>
     );
+  else if (showThread)
+    center = (
+      <>
+        <Thread
+          thread={conversation.thread}
+          pending={conversation.pending}
+          sendError={conversation.sendError}
+          loadError={conversation.loadError}
+          onRetrySend={() => void conversation.retry()}
+          onDiscardSend={conversation.discardPending}
+          onAskAgain={chat}
+          onReload={() => void conversation.reload()}
+        />
+        {isDirty && (
+          <p className="cap" data-testid="draft-note" style={{ marginTop: 24 }}>
+            Answers use your saved portfolio. Unsaved draft edits are not included until you review and confirm them.
+          </p>
+        )}
+        <div ref={threadEnd} />
+      </>
+    );
   else if (answer?.analysis.reunderwriting)
       center = (
         <RebalanceAnswer
@@ -1391,7 +1464,8 @@ export default function DeskPage() {
         <h1>Start with what you own.</h1>
         <p className="body" style={{ maxWidth: 520 }}>
           Import your holdings once. They&apos;re saved on this computer and loaded every time.
-          Prices, values and weights come from the analysis, not from your cost.
+          Prices, values and weights come from the analysis, not from your cost. You can ask a general
+          question below before importing anything.
         </p>
         <ImportCsv
           snapshot={null}
@@ -1510,6 +1584,9 @@ export default function DeskPage() {
         result={result}
         decisions={decisions}
         currentId={reopened?.id ?? saved?.id ?? null}
+        threads={conversation.threads}
+        threadId={showThread ? conversation.openId : null}
+        onThread={openThread}
         running={
           run
             ? run.newCash
@@ -1584,6 +1661,7 @@ export default function DeskPage() {
               !run &&
               !reopened &&
               !failure &&
+              !showThread &&
               (saved ? (
                 <span className="cap" style={{ display: "flex", gap: 6, alignItems: "center" }}>
                   <svg
@@ -1795,7 +1873,8 @@ export default function DeskPage() {
             themeCandidates={themeCandidates}
             onAddCandidate={addThemeCandidate}
             onRemoveCandidate={removeThemeCandidate}
-            running={!!run}
+            running={!!run || conversation.busy}
+            inThread={showThread}
             collapsed={collapsed && !!(answer || failure || run)}
             onExpand={() => setCollapsed(false)}
             onSubmit={() => {

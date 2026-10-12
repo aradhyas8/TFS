@@ -1,15 +1,16 @@
-import { BENCHMARK_FUND, isSupportedStock, NEW_CASH_DESTINATION, type Analysis, type PortfolioSettings, type Position, type SavedDecision, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { BENCHMARK_FUND, isSupportedStock, NEW_CASH_DESTINATION, type Analysis, type PortfolioSettings, type Position, type SavedDecision, type Snapshot, type ThreadSummary, type UnresolvedHolding } from "../../lib/contracts";
 import { decisionLabel, doneLabel, fullDate, money, pct, shortDate } from "./format";
 
 type Props = {
   snapshot: Snapshot | null; unresolved: UnresolvedHolding[]; settings: PortfolioSettings; result: Analysis | null;
   decisions: SavedDecision[]; currentId: string | null; running: string | null;
+  threads: ThreadSummary[]; threadId: string | null; onThread: (id: string) => void;
   onNew: () => void; onHoldings: () => void; onOpen: (decision: SavedDecision) => void; onAllDecisions: () => void; onStock: (position: Position) => void;
   onDelete: (decision: SavedDecision) => void; onClearAll: () => void;
 };
 
 /** Left rail: which portfolio and which decisions am I working with? */
-export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, onNew, onHoldings, onOpen, onAllDecisions, onStock, onDelete, onClearAll }: Props) {
+export default function Rail({ snapshot, unresolved, settings, result, decisions, currentId, running, threads, threadId, onThread, onNew, onHoldings, onOpen, onAllDecisions, onStock, onDelete, onClearAll }: Props) {
   const review = result?.portfolio;
   // A supported stock row offers Stock Analysis; funds and cash are listed only.
   const holding = (row: Position, figure: string) => {
@@ -21,7 +22,7 @@ export default function Rail({ snapshot, unresolved, settings, result, decisions
   return <nav className="rail" aria-label="Portfolio and decisions" id="rail">
     <div className="rail-head">
       <span className="wordmark">Analyst</span>
-      <button type="button" className="icon-btn" aria-label="New analysis" onClick={onNew}>
+      <button type="button" className="icon-btn" aria-label="New conversation" title="New conversation" onClick={onNew}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
       </button>
     </div>
@@ -43,6 +44,17 @@ export default function Rail({ snapshot, unresolved, settings, result, decisions
       {!review && <span className="cap">Values and weights appear after the first analysis.</span>}
       <span className="cap n rules-line">{rules.length ? `Rules · ${rules.join(" · ")}` : "No rules set"}</span>
     </div> : <div className="portfolio"><span className="lbl">Portfolio</span><span className="cap">No saved portfolio yet. Import a CSV to start.</span></div>}
+
+    {/* Only threads the backend stores are listed; none is made up from a cached answer or a saved decision. */}
+    <div className="decisions">
+      <span className="lbl dhead"><span>Conversations</span></span>
+      {threads.length === 0 && <span className="cap" style={{ padding: "0 12px" }}>No conversations yet. Ask a question to start one.</span>}
+      {threads.map(thread => <button type="button" className="ditem" key={thread.id} data-testid="thread-item" aria-label={`Conversation: ${thread.title}`}
+        aria-current={thread.id === threadId} onClick={() => onThread(thread.id)} title={thread.title || undefined}>
+        <span className="title"><span>{thread.title}</span></span>
+        <span className="cap">{shortDate(thread.updated_at)}</span>
+      </button>)}
+    </div>
 
     <div className="decisions">
       <span className="lbl dhead"><span>Decisions</span>

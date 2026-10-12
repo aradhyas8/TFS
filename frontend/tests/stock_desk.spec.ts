@@ -133,15 +133,15 @@ test("clicking a holding in the rail offers its Stock Analysis", async ({ page }
   expect(sent.map(body => body.stock?.position_id)).toEqual(["tfsa-acme"]);
 });
 
-test("review questions and /review still run a Portfolio Review", async ({ page }) => {
+test("/review, typed or chosen from the menu, still runs a Portfolio Review", async ({ page }) => {
   const sent = await open(page);
-  await send(page, "Review my portfolio");
+  await send(page, "/review Review my portfolio");
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo.getByRole("heading", { level: 2 })).toHaveText("Your portfolio breaks 2 of your rules.");
   await expect(page.locator(".ctx")).toContainText("Portfolio review");
   await ask(page).fill("/review");
   await ask(page).press("Enter");
-  await expect(ask(page)).toHaveValue("Review my portfolio");
+  await expect(ask(page)).toHaveValue("/review ");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   await expect(memo.getByRole("heading", { level: 2 })).toHaveText("Your portfolio breaks 2 of your rules.");
   expect(sent.map(body => [body.question, body.stock ?? null])).toEqual([["Review my portfolio", null], ["Review my portfolio", null]]);

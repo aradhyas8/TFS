@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { route, parseMoney, parseTheme } from "../components/desk/route";
+import { isConversation, route, parseMoney, parseTheme } from "../components/desk/route";
 import type { Snapshot, Position } from "../lib/contracts";
 
 const ACME: Position = {
@@ -309,5 +309,23 @@ test.describe("route precedence step 6: review fallback", () => {
       kind: "review",
       question: "How is the market?",
     });
+  });
+});
+
+test.describe("conversation is the default for free-form input", () => {
+  test("ordinary questions go to the conversation, with or without a portfolio", () => {
+    expect(isConversation("What is an ETF?", null)).toBe(true);
+    expect(isConversation("What do you think about ACME?", null)).toBe(true);
+    expect(isConversation("How concentrated am I across accounts?", SNAPSHOT)).toBe(true);
+    expect(isConversation("Review my portfolio", SNAPSHOT)).toBe(true);
+  });
+
+  test("slash commands and specific workflow phrasing stay explicit shortcuts", () => {
+    expect(isConversation("/review", SNAPSHOT)).toBe(false);
+    expect(isConversation("/review How concentrated am I?", SNAPSHOT)).toBe(false);
+    expect(isConversation("/stock ACME", null)).toBe(false);
+    expect(isConversation("What do you think about ACME?", SNAPSHOT)).toBe(false);
+    expect(isConversation("Should I rebalance my portfolio?", SNAPSHOT)).toBe(false);
+    expect(isConversation("I have C$2,000 to invest", SNAPSHOT)).toBe(false);
   });
 });

@@ -74,7 +74,7 @@ async function open(page: Page, portfolio: object) {
 const ask = (page: Page) => page.getByRole("textbox", { name: /type \/ for workflows/ });
 
 async function runReview(page: Page, question = "Review my portfolio") {
-  await ask(page).fill(question);
+  await ask(page).fill(`/review ${question}`);
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();

@@ -285,3 +285,10 @@ export function route(raw: string, snapshot: Snapshot | null): Route {
   if (intent && subject) return resolved(question, [], subject, stocks);
   return { kind: "review", question };
 }
+
+/** Free-form input belongs to the conversation unless it is an explicit shortcut: a slash command, or phrasing
+ *  the router resolves to a specific workflow. The router's default review no longer claims ordinary questions. */
+export function isConversation(raw: string, snapshot: Snapshot | null): boolean {
+  if (raw.trim().startsWith("/")) return false;
+  return !snapshot || route(raw, snapshot).kind === "review";
+}

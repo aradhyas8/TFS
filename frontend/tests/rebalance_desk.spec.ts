@@ -144,11 +144,11 @@ test("a directional reduction shows why no exact size is given", async ({ page }
 
 test("descriptive or company questions are not routed to rebalance", async ({ page }) => {
   const sent = await open(page);
+  // A descriptive question is ordinary conversation: no rebalance, and no workflow at all.
   await send(page, "How concentrated is my portfolio?");
-  await expect(page.getByRole("region", { name: "Analyst memo" }).getByRole("heading", { level: 2 })).toHaveText("Your portfolio breaks 2 of your rules.");
-  await expect(page.locator(".ctx")).toContainText("Portfolio review");
+  await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Plain answer to: How concentrated is my portfolio?");
+  await expect(page.locator(".ctx")).toContainText("Conversation");
   await send(page, "Should I trim ACME?");
   await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
-  expect(sent.map(body => [body.question, !!body.portfolio_review, !!body.stock])).toEqual([
-    ["How concentrated is my portfolio?", false, false], ["Should I trim ACME?", false, true]]);
+  expect(sent.map(body => [body.question, !!body.portfolio_review, !!body.stock])).toEqual([["Should I trim ACME?", false, true]]);
 });

@@ -187,7 +187,7 @@ test.describe("Ticket 08: Immutable hypothetical draft analysis", () => {
     // 9. Ordinary analysis continues using committed state
     // Ask ordinary question from composer
     const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-    await ask.fill("Review my portfolio");
+    await ask.fill("/review Review my portfolio");
     await page.getByRole("button", { name: "Ask", exact: true }).click();
 
     // Wait for ordinary analysis

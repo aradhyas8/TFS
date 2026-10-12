@@ -162,8 +162,8 @@ test("rebalance, owned stock, and portfolio review routes maintain precedence an
   expect(sent.length).toBe(2);
   expect(sent[1].portfolio_review).toBeTruthy();
 
-  // Portfolio review query
-  await page.getByRole("textbox", { name: /Ask about your portfolio or a holding/ }).fill("Review my portfolio");
+  // Portfolio review, by its explicit shortcut
+  await page.getByRole("textbox", { name: /Ask about your portfolio or a holding/ }).fill("/review Review my portfolio");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   await expect(page.locator(".ctx")).toContainText("Portfolio review");
   expect(sent.length).toBe(3);
