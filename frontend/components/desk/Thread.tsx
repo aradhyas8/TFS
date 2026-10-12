@@ -63,6 +63,8 @@ const STEP: Record<string, [done: string, failed: string]> = {
 };
 const toolLabel = (name: string) => name.replace(/^(get|run)_/, "").replace(/_/g, " ");
 const revisionOf = (id: string) => id.match(/^art-rev-(\d+)$/)?.[1];
+// Stored labels arrive in title case ("Stock Analysis"); the desk writes in sentence case.
+const sentenceCase = (label: string) => label.charAt(0) + label.slice(1).toLowerCase();
 const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const list = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
@@ -138,10 +140,16 @@ function Artifact({ id, shared }: { id: string; shared: Shared }) {
   const { reference, payload } = loaded.envelope;
   const source = provenance(reference, shared.committedRevision);
   if (reference.kind === "portfolio_snapshot" || !reference.kind) return <Badge size="sm">{reference.label}</Badge>;
+  // A financial capability that could not proceed stores what it needs; that is a request, not a result to read.
+  const needed = (payload as { clarification_required?: Record<string, unknown> } | null)?.clarification_required;
+  if (needed) {
+    const form = ["portfolio_required", "unresolved_identity"].includes(text(needed.code)) ? "holdings" : "";
+    return <Clarification clarification={{ ...needed, form }} actionable shared={shared} />;
+  }
   if (reference.kind === "analysis_result")
     return (
-      <article className={styles.result} aria-label={`${reference.label} result`}>
-        <p className={styles.source}>{`${reference.label} · ${source}`}</p>
+      <article className={styles.result} aria-label={`${sentenceCase(reference.label)} result`}>
+        <p className={styles.source}>{`${sentenceCase(reference.label)} · ${source}`}</p>
         {shared.renderResult(payload as Analysis, reference)}
       </article>
     );
@@ -257,7 +265,10 @@ function Clarification({ clarification, actionable, shared }: { clarification: R
   return (
     <div className={styles.notice} data-testid="clarification">
       <Alert tone="info" title="The analyst needs more from you">
-        {sentence(text(clarification.message) || "Some inputs are missing")}
+        {/* The stored note for missing inputs is written for the model; the list below says what is needed. */}
+        {text(clarification.code) === "missing_inputs" || !text(clarification.message)
+          ? "It cannot run this until you give the inputs below."
+          : sentence(text(clarification.message))}
       </Alert>
       {fields.length > 0 && (
         <ul className={styles.fields} aria-label="Missing inputs">

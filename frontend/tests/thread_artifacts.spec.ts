@@ -334,3 +334,98 @@ test("a proposal prepared before the portfolio changed is shown as out of date a
   await expect(page.getByRole("complementary", { name: "Details" }).getByRole("tab", { name: "Holdings" })).toHaveAttribute("aria-selected", "true");
   expect((await holdings(page)).revision).toBe(2);
 });
+
+test("a stored result is saved as a decision with its workflow and subject, journaled, reopened and re-run", async ({ page }) => {
+  await open(page);
+  const commits: string[] = [];
+  const analyses: { stock?: { position_id: string } }[] = [];
+  page.on("request", request => {
+    if (/\/api\/portfolio\/proposals\/[^/]+\/confirm$/.test(request.url())) commits.push(request.url());
+    if (request.url().endsWith("/api/analyze")) analyses.push(request.postDataJSON());
+  });
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
+
+  await send(page, "Analyze a stock in chat");
+  await thread(page).getByTestId("clarification").getByRole("button", { name: "Analyze ACME" }).click();
+  const result = thread(page).getByRole("article", { name: "Stock Analysis result" });
+  await expect(result.getByRole("region", { name: "Stock analysis" })).toBeVisible();
+
+  await result.getByRole("button", { name: "Save decision" }).click();
+  await expect(result).toContainText(/Saved to Decisions \d\d?:\d\d/);
+  await expect(result.getByRole("button", { name: "Save decision" })).toHaveCount(0);
+  await expect(rail.getByTestId("decision-item").filter({ hasText: "Stock analysis · ACME" })).toBeVisible();
+  const [decision] = await (await page.request.get("/api/decisions")).json();
+  expect(decision.workflow).toBe("stock");
+  expect(decision.subject).toMatchObject({ label: "ACME", ticker: "ACME", listing: "XNAS" });
+  expect(decision.question).toBe("Analyze ACME");
+
+  // The journal entry records what the investor did. It is not a portfolio change.
+  await result.getByRole("radio", { name: "Kept it as it is" }).check();
+  await result.getByRole("button", { name: "Record action" }).click();
+  await expect(result).toContainText("Saved and recorded");
+  expect((await (await page.request.get(`/api/decisions/${decision.id}`)).json()).confirmed_action.action).toBe("hold");
+  expect((await holdings(page)).revision).toBe(1);
+  expect(commits).toHaveLength(0);
+
+  // The register still filters by workflow, and the saved decision reopens read-only.
+  await rail.getByRole("button", { name: "All decisions" }).click();
+  const register = page.getByRole("region", { name: "Decisions register" });
+  await register.getByLabel("Filter by workflow").selectOption("stock");
+  await expect(register.getByTestId("decision-row")).toHaveCount(1);
+  await register.getByLabel("Filter by workflow").selectOption("review");
+  await expect(register.getByTestId("decision-row")).toHaveCount(0);
+  await register.getByLabel("Filter by workflow").selectOption("stock");
+  await register.getByTestId("decision-row").click();
+  await expect(page.locator(".ctx")).toContainText("Read-only");
+
+  // Re-running is a fresh analysis of today's saved portfolio for the same subject.
+  expect(analyses).toHaveLength(0);
+  await page.getByRole("button", { name: "Re-run with today's portfolio" }).click();
+  await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
+  expect(analyses.map(body => body.stock?.position_id)).toEqual(["tfsa-acme"]);
+
+  // The conversation and its stored result are still there, untouched by the re-run.
+  await rail.getByTestId("thread-item").first().click();
+  await expect(result.getByRole("region", { name: "Stock analysis" })).toBeVisible();
+  expect((await detail(page)).runs).toHaveLength(2);
+});
+
+test("a calculation that needs a saved portfolio asks for it instead of showing an empty result", async ({ page }) => {
+  await open(page, null);
+  await send(page, "Show my exposure numbers");
+
+  const request = thread(page).getByTestId("clarification");
+  await expect(request).toContainText("Save a portfolio before calculating its exposure.");
+  await expect(request.getByRole("button", { name: "Open holdings" })).toBeVisible();
+  await expect(thread(page).getByRole("tree")).toHaveCount(0);
+});
+
+for (const [name, width, height] of [["phone", 390, 844], ["tablet", 768, 1024], ["desktop", 1440, 900]] as const)
+  test(`results, sources, requests and proposals fit a ${name} without sideways scrolling`, async ({ page }) => {
+    await page.setViewportSize({ width, height });
+    await open(page);
+    await send(page, "What is the latest news on Acme?");
+    await expect(thread(page).getByRole("list", { name: "Sources for this answer" })).toBeVisible();
+    await send(page, "Show my exposure numbers");
+    const card = thread(page).getByRole("article").filter({ hasText: "Portfolio exposure and guardrails" });
+    await card.getByRole("button", { name: /Portfolio exposure and guardrails/ }).click();
+    await expect(card.getByRole("tree")).toBeVisible();
+    await send(page, "Set my ACME shares to 12");
+    const proposal = thread(page).getByRole("article", { name: "Proposed portfolio changes" });
+    await expect(proposal).toContainText("Waiting for your review");
+    await send(page, "Analyze a stock in chat");
+    const choice = thread(page).getByTestId("clarification").getByRole("button", { name: "Analyze ACME" });
+    await expect(choice).toBeVisible();
+
+    const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+    expect(await fits()).toBe(true);
+    // Controls a finger has to hit are at least 44px tall.
+    for (const control of [choice, proposal.getByRole("button", { name: "Review changes" })])
+      expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/thread-${name}.png`, fullPage: false });
+
+    await choice.click();
+    await expect(thread(page).getByRole("region", { name: "Stock analysis" })).toBeVisible();
+    expect(await fits()).toBe(true);
+    if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/memo-${name}.png`, fullPage: false });
+  });
