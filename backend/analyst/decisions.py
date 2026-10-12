@@ -156,6 +156,7 @@ def extract_decision(
     confirmed_action: UserConfirmedAction | None = None,
     workflow: DecisionWorkflow | None = None,
     subject: DecisionSubject | None = None,
+    artifact_id: str | None = None,
 ) -> SavedDecision:
     now = datetime.now(timezone.utc)
     ev_refs = extract_evidence_references(result)
@@ -185,6 +186,7 @@ def extract_decision(
         confirmed_action=confirmed_action,
         workflow=workflow,
         subject=subject,
+        artifact_id=artifact_id,
     )
 
 

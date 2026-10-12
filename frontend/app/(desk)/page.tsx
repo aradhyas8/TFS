@@ -402,7 +402,16 @@ export default function DeskPage() {
         /* non-fatal */
       });
     get<SavedDecision[]>("/api/decisions")
-      .then(setDecisions)
+      .then(loaded => {
+        setDecisions(loaded);
+        const map: Record<string, string> = {};
+        for (const d of loaded) {
+          if (d.artifact_id) {
+            map[d.artifact_id] = d.id;
+          }
+        }
+        setSavedResults(prev => ({ ...prev, ...map }));
+      })
       .catch(() => setNotice("Saved decisions couldn't be loaded."));
     refreshProposals();
   }, []);
@@ -938,6 +947,13 @@ export default function DeskPage() {
     try {
       await del(`/api/decisions/${encodeURIComponent(decision.id)}`);
       setDecisions(list => list.filter(d => d.id !== decision.id));
+      setSavedResults(map => {
+        const next = { ...map };
+        for (const [k, v] of Object.entries(next)) {
+          if (v === decision.id) delete next[k];
+        }
+        return next;
+      });
       if (reopened?.id === decision.id) setReopened(null);
       if (saved?.id === decision.id) setSaved(null);
     } catch (error) {
@@ -951,6 +967,7 @@ export default function DeskPage() {
     try {
       await del("/api/decisions");
       setDecisions([]);
+      setSavedResults({});
       setReopened(null);
       setSaved(null);
     } catch (error) {
@@ -1237,7 +1254,11 @@ export default function DeskPage() {
     setSavingResult(artifactId);
     setSaveFailed(null);
     try {
-      const record = await post<SavedDecision>("/api/decisions", { result: analysis, ...decisionFor(analysis, null, source) });
+      const record = await post<SavedDecision>("/api/decisions", {
+        result: analysis,
+        artifact_id: artifactId,
+        ...decisionFor(analysis, null, source),
+      });
       setSavedResults(map => ({ ...map, [artifactId]: record.id }));
       setDecisions(list => [record, ...list.filter(d => d.id !== record.id)]);
     } catch {

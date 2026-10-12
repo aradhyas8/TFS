@@ -277,6 +277,7 @@ def test_spec_2_compatibility_fixture(tmp_path: Path):
     assert hypo_ref["basis"] == "hypothetical"
 
     # Proposal preparation via existing Spec 2 actions
+    draft.snapshot.positions[0].shares = Decimal("150")
     prepare_res = api.put(
         "/api/portfolio",
         json={
@@ -305,3 +306,11 @@ def test_spec_2_compatibility_fixture(tmp_path: Path):
     assert rev1_env.status_code == 200
     assert rev1_env.json()["reference"]["revision"] == 1
     assert rev1_env.json()["reference"]["kind"] == "portfolio_snapshot"
+
+    # Ensure artifacts table retrieves rev 2 artifact envelope created by proposal confirmation
+    rev2_art_id = "art-rev-2"
+    rev2_env = api.get(f"/api/artifacts/{rev2_art_id}")
+    assert rev2_env.status_code == 200
+    assert rev2_env.json()["reference"]["revision"] == 2
+    assert rev2_env.json()["reference"]["kind"] == "portfolio_snapshot"
+    assert rev2_env.json()["reference"]["basis"] == "committed"

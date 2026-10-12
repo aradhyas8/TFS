@@ -459,3 +459,30 @@ def test_decisions_backwards_compatibility_legacy_file(tmp_path: Path) -> None:
     assert data["workflow"] is None
     assert data["subject"] is None
 
+
+def test_saving_decision_with_artifact_id_is_idempotent_and_prevents_duplicates(tmp_path: Path) -> None:
+    store = DecisionStore(tmp_path)
+    api = TestClient(create_app(data=FakeDataProvider(), store=store))
+    result = make_sample_result()
+
+    # First save with artifact_id
+    payload1 = {
+        "result": result.model_dump(mode="json"),
+        "workflow": "review",
+        "artifact_id": "art-workflow-test-123",
+    }
+    res1 = api.post("/api/decisions", json=payload1)
+    assert res1.status_code == 200
+    dec1 = res1.json()
+    assert dec1["artifact_id"] == "art-workflow-test-123"
+
+    # Second save with same artifact_id returns the existing decision without duplicating
+    res2 = api.post("/api/decisions", json=payload1)
+    assert res2.status_code == 200
+    dec2 = res2.json()
+    assert dec2["id"] == dec1["id"]
+    assert dec2["artifact_id"] == "art-workflow-test-123"
+
+    # Verify only 1 decision exists in the store
+    assert len(store.list_decisions()) == 1
+

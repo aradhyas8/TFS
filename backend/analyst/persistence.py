@@ -101,7 +101,7 @@ class Database:
             conn = sqlite3.connect(self.path, timeout=30.0)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON;")
-            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("PRAGMA busy_timeout = 30000;")
             try:
                 yield conn
                 conn.commit()
@@ -132,24 +132,80 @@ class Database:
     def initialize(self) -> None:
         """Initialize database schema idempotently with forward migrations and automated backup."""
         with self.connect() as conn:
+            # Set WAL journal mode safely once outside transaction if not already WAL
+            row = conn.execute("PRAGMA journal_mode;").fetchone()
+            if not row or str(row[0]).lower() != "wal":
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL;")
+                except sqlite3.OperationalError:
+                    pass
+
             cursor = conn.execute("PRAGMA user_version;")
             current_version = int(cursor.fetchone()[0])
             if current_version > SCHEMA_VERSION:
                 raise SchemaMigrationError(
                     f"Database schema version {current_version} is higher than supported {SCHEMA_VERSION}."
                 )
-            if current_version == SCHEMA_VERSION:
-                return
+            if 0 < current_version < SCHEMA_VERSION:
+                # Backup database before forward migration (must run outside write transaction)
+                self._backup_database(conn)
+
+            conn.execute("BEGIN IMMEDIATE;")
+            # Re-read version under lock in case another process already completed migration
+            cursor = conn.execute("PRAGMA user_version;")
+            current_version = int(cursor.fetchone()[0])
             if current_version == 0:
                 self._apply_initial_schema(conn)
-            else:
-                # Backup database before forward migration
-                self._backup_database(conn)
             if current_version < 2:
                 self._apply_migration_v2(conn)
             if current_version < 3:
                 self._apply_migration_v3(conn)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
+
+            # Backfill any missing art-rev-N artifacts for committed revisions
+            self._backfill_committed_artifacts(conn)
+
+    def _backfill_committed_artifacts(self, conn: sqlite3.Connection) -> None:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='portfolio_revisions';"
+        ).fetchone()
+        if not has_table:
+            return
+        rows = conn.execute("""
+            SELECT r.revision, r.committed_at, r.payload
+            FROM portfolio_revisions r
+            WHERE NOT EXISTS (
+                SELECT 1 FROM artifacts a
+                WHERE a.id = ('art-rev-' || r.revision)
+            );
+        """).fetchall()
+        for r in rows:
+            rev_num = int(r["revision"])
+            committed_iso = r["committed_at"]
+            try:
+                rev_port = SavedPortfolio.model_validate(json.loads(r["payload"]))
+                payload_json = json.dumps(build_artifact_payload(rev_port, projection="human"), cls=DecimalEncoder)
+            except Exception:
+                payload_json = r["payload"]
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO artifacts (
+                    id, kind, label, created_at, revision, basis,
+                    source_artifact_id, originating_run_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    f"art-rev-{rev_num}",
+                    "portfolio_snapshot",
+                    f"Committed Portfolio (rev {rev_num})",
+                    committed_iso,
+                    rev_num,
+                    "committed",
+                    None,
+                    None,
+                    payload_json,
+                ),
+            )
 
     def _backup_database(self, source_conn: sqlite3.Connection) -> Path:
         """Create an atomic backup using SQLite backup API before forward migration."""
@@ -458,6 +514,7 @@ class Database:
         """Import legacy current.json into revision 1 without enrichment, atomically."""
         path = Path(legacy_json_path) if legacy_json_path else None
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE;")
             # Check if migration has already been recorded
             cursor = conn.execute(
                 "SELECT value FROM metadata WHERE key = 'legacy_migration';"
@@ -497,6 +554,26 @@ class Database:
                 ON CONFLICT(id) DO UPDATE SET current_revision = 1, updated_at = excluded.updated_at;
                 """,
                 (now_iso,),
+            )
+            art_id = "art-rev-1"
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO artifacts (
+                    id, kind, label, created_at, revision, basis,
+                    source_artifact_id, originating_run_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    art_id,
+                    "portfolio_snapshot",
+                    "Committed Portfolio (rev 1)",
+                    committed_at,
+                    1,
+                    "committed",
+                    None,
+                    None,
+                    json.dumps(build_artifact_payload(portfolio, projection="human"), cls=DecimalEncoder),
+                ),
             )
             conn.execute(
                 "INSERT OR IGNORE INTO metadata (key, value, updated_at) VALUES ('legacy_migration', 'completed', ?);",
@@ -945,6 +1022,27 @@ class Database:
                 (next_rev, now_iso),
             )
 
+            art_id = f"art-rev-{next_rev}"
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO artifacts (
+                    id, kind, label, created_at, revision, basis,
+                    source_artifact_id, originating_run_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    art_id,
+                    "portfolio_snapshot",
+                    f"Committed Portfolio (rev {next_rev})",
+                    now_iso,
+                    next_rev,
+                    "committed",
+                    row["after_artifact_id"],
+                    None,
+                    json.dumps(build_artifact_payload(candidate_portfolio, projection="human"), cls=DecimalEncoder),
+                ),
+            )
+
             conn.execute(
                 "UPDATE proposals SET status = 'applied' WHERE id = ?;",
                 (proposal_id,),
@@ -1006,19 +1104,27 @@ class Database:
     # =========================================================================
 
     def create_thread(self, thread_id: str | None = None) -> ThreadSummary:
-        """Create a new conversation thread."""
+        """Create a new conversation thread idempotently."""
         tid = thread_id or f"th-{uuid.uuid4().hex[:12]}"
         now = datetime.now(UTC)
         now_iso = now.isoformat()
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO threads (id, created_at, updated_at) VALUES (?, ?, ?);",
+                "INSERT OR IGNORE INTO threads (id, created_at, updated_at) VALUES (?, ?, ?);",
                 (tid, now_iso, now_iso),
             )
+            cursor = conn.execute("SELECT created_at, updated_at FROM threads WHERE id = ?;", (tid,))
+            row = cursor.fetchone()
+            if row:
+                created = datetime.fromisoformat(row["created_at"])
+                updated = datetime.fromisoformat(row["updated_at"])
+            else:
+                created = now
+                updated = now
         return ThreadSummary(
             id=tid,
-            created_at=now,
-            updated_at=now,
+            created_at=created,
+            updated_at=updated,
             last_message_preview=None,
         )
 

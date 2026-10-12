@@ -144,6 +144,12 @@ def test_api_get_returns_committed_revision_without_enrichment_or_writes(tmp_pat
     assert response2.status_code == 200
     assert response2.json()["revision"] == 1
 
+    # Stored artifact art-rev-1 is created by legacy migration
+    art_response = client2.get("/api/artifacts/art-rev-1")
+    assert art_response.status_code == 200
+    assert art_response.json()["reference"]["revision"] == 1
+    assert art_response.json()["reference"]["basis"] == "committed"
+
 
 def test_concurrent_initialization_does_not_create_duplicate_initial_revisions(tmp_path: Path):
     import concurrent.futures

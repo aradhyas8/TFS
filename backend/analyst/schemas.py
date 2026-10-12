@@ -1512,6 +1512,7 @@ class SavedDecision(Contract):
     confirmed_action: UserConfirmedAction | None = None
     workflow: DecisionWorkflow | None = None
     subject: DecisionSubject | None = None
+    artifact_id: Identifier | None = None
 
 
 class SaveDecisionRequest(Contract):
@@ -1520,6 +1521,7 @@ class SaveDecisionRequest(Contract):
     confirmed_action: UserConfirmedAction | None = None
     workflow: DecisionWorkflow | None = None
     subject: DecisionSubject | None = None
+    artifact_id: Identifier | None = None
 
     @model_validator(mode="after")
     def validate_payload(self) -> Self:
@@ -1878,6 +1880,12 @@ class ThreadSummary(Contract):
     last_message_preview: str | None = None
     # The thread's first question; a thread is never titled from a cached answer or a decision.
     title: str | None = None
+
+
+class CreateThreadRequest(Contract):
+    """Request payload to create a new thread with an optional client-supplied thread ID."""
+
+    id: Identifier | None = None
 
 
 class RunRecord(Contract):
