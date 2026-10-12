@@ -1016,7 +1016,9 @@ class Database:
         with self.connect() as conn:
             cursor = conn.execute("""
                 SELECT t.id, t.created_at, t.updated_at,
-                       (SELECT m.text FROM messages m WHERE m.thread_id = t.id ORDER BY m.created_at DESC LIMIT 1) as last_msg
+                       (SELECT m.text FROM messages m WHERE m.thread_id = t.id ORDER BY m.created_at DESC LIMIT 1) as last_msg,
+                       (SELECT m.text FROM messages m WHERE m.thread_id = t.id AND m.role = 'user'
+                        ORDER BY m.created_at ASC LIMIT 1) as title
                 FROM threads t
                 ORDER BY t.updated_at DESC;
             """)
@@ -1026,12 +1028,16 @@ class Database:
                 preview = r["last_msg"]
                 if preview and len(preview) > 120:
                     preview = preview[:117] + "..."
+                title = r["title"]
+                if title and len(title) > 120:
+                    title = title[:117] + "..."
                 summaries.append(
                     ThreadSummary(
                         id=r["id"],
                         created_at=datetime.fromisoformat(r["created_at"]),
                         updated_at=datetime.fromisoformat(r["updated_at"]),
                         last_message_preview=preview,
+                        title=title,
                     )
                 )
             return summaries

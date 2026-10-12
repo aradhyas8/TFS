@@ -501,3 +501,23 @@ def test_fastapi_no_portfolio_conceptual_question(tmp_path: Path) -> None:
     messages = resp_detail.json()["messages"]
     assert len(messages) == 2
     assert "exchange-traded fund" in messages[1]["text"]
+
+
+def test_thread_list_titles_each_thread_by_its_first_question(tmp_path: Path) -> None:
+    settings = Settings(api_key="sk-test", model="gpt-4o", request_timeout=5.0)
+    portfolio_store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    model = ScriptedModel([ModelTurn(text="An ETF is an exchange-traded fund.")])
+    app = create_app(model=model, settings=settings, portfolio_store=portfolio_store,
+                     orchestrator=Orchestrator(db=portfolio_store.db, transport=model, settings=settings))
+    client = TestClient(app)
+
+    thread_id = client.post("/api/threads").json()["id"]
+    assert client.get("/api/threads").json()[0]["title"] is None
+
+    client.post(f"/api/threads/{thread_id}/messages",
+                json={"client_request_id": "req-title", "text": "What is an ETF?"})
+    time.sleep(0.3)
+
+    summary = client.get("/api/threads").json()[0]
+    assert summary["title"] == "What is an ETF?"
+    assert summary["last_message_preview"] == "An ETF is an exchange-traded fund."
