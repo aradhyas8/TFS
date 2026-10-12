@@ -85,6 +85,7 @@ def test_followup_gets_compact_bound_context_without_full_holdings(tmp_path: Pat
         "calculate_comparison", "scan_opportunities", "get_company_research",
         "run_exposure_review", "run_stock_analysis", "run_new_cash_allocation",
         "run_portfolio_reunderwriting", "run_theme_exploration",
+        "prepare_portfolio_proposal",
     }
 
 

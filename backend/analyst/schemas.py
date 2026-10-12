@@ -1836,6 +1836,13 @@ class WorkflowClarification(Contract):
     message: Text
 
 
+class ProposalClarification(Contract):
+    code: Literal["portfolio_required", "unknown_position", "invalid_edit"]
+    fields: list[Identifier]
+    form: Literal["holdings"] = "holdings"
+    message: Text
+
+
 class ToolOutcome(Contract):
     """Execution outcome of a tool call."""
 

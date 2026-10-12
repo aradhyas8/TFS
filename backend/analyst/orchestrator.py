@@ -23,6 +23,7 @@ from .context import CHARACTER_LIMIT, READ_CAPABILITIES, RunContext, read_tools
 from .financial_data import FinancialProvider
 from .financial_tools import FinancialTools
 from .persistence import Database, DecimalEncoder
+from .proposal_tools import ProposalTools
 from .providers import DataProvider, ModelTurn, SuppliedDataProvider
 from .research import ResearchProvider
 from .research_tools import ResearchTools
@@ -115,7 +116,7 @@ class Orchestrator:
                                            self.settings, deadline, user_text, workflow_input)
             capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
                             **research_tools.capabilities, **workflow_tools.capabilities,
-                            **web.capabilities}
+                            **web.capabilities, **ProposalTools(financial_tools).capabilities}
             messages = context.messages(comparison=research_tools.comparison, workflow=workflow_tools.inputs.workflow)
             initial_messages = messages
             exchanges: list[list[dict[str, Any]]] = []
@@ -233,6 +234,7 @@ class Orchestrator:
                 except ValueError:
                     result = {"error": "Requested data is unavailable to this run."}
                 artifact_ids = list(result.get("artifact_ids", []))
+                proposal_ids = list(result.get("proposal_ids", []))
                 for key in ("reference", "before_artifact", "after_artifact"):
                     if isinstance(result.get(key), dict):
                         artifact_ids.append(result[key]["id"])
@@ -251,7 +253,7 @@ class Orchestrator:
                 required_size = len(initial_messages[-1]["content"]) + sum(len(json.dumps(item)) for item in exchange)
                 if required_size + len(json.dumps(output_item)) > CHARACTER_LIMIT:
                     result = {"error": "Result exceeds retrieval budget. Request a smaller slice.",
-                              "artifact_ids": artifact_ids}
+                              "artifact_ids": artifact_ids, "proposal_ids": proposal_ids}
                     if call.name == "get_artifact":
                         result["artifact_id"] = parsed.model_dump()["artifact_id"]
                     output_item["output"] = json.dumps(result)
@@ -268,6 +270,7 @@ class Orchestrator:
                     }}, cls=DecimalEncoder), run_id=run_id,
                     tool_outcomes=[outcome], artifact_ids=artifact_ids,
                     clarification_required=result.get("clarification_required"),
+                    proposal_ids=proposal_ids,
                 )
                 self.db.update_run(run_id, "running", additional_message_ids=[outcome_message.id],
                                    additional_artifact_ids=artifact_ids)
