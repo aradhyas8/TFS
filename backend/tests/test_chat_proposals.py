@@ -1,17 +1,20 @@
 """Ticket 09 chat-origin portfolio proposals at the FastAPI request/result and fake transport seams."""
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
+from fastapi.testclient import TestClient
 
+from analyst.api import create_app
+from analyst.config import Settings
 from analyst.financial_data import MARKET_TIME, FakeFinancialProvider
 from analyst.portfolio import PortfolioStore
 from analyst.providers import ModelTurn, ToolCall
-from analyst.schemas import SavedPortfolio
+from analyst.schemas import DiscoveryScan, SavedPortfolio
 from tests.test_context_retrieval import CapturingTransport, submit
-from tests.test_financial_tools import api, evidence, portfolio
+from tests.test_financial_tools import NoWorkflowData, api, evidence, portfolio
 
 TOOL = "prepare_portfolio_proposal"
 
@@ -327,3 +330,33 @@ def test_instructions_inside_retrieved_holdings_cannot_commit_or_expose_costs(tm
         assert [(p["status"], p["origin"]) for p in client.get("/api/portfolio/proposals").json()] == [
             ("pending", "chat")]
     assert "12.34" not in json.dumps(model.requests)
+
+
+def test_screened_candidates_cannot_be_added_without_verified_resolution(tmp_path):
+    class Screen:
+        async def scan(self, snapshot):
+            return DiscoveryScan.model_validate({
+                "scanned_at": datetime.now(UTC), "as_of": snapshot.as_of, "source": "Fixture",
+                "candidates": [{"as_of": snapshot.as_of, "source": "Fixture", "signal": "Unverified screen row.",
+                                "position": {"id": "screened", "account_id": "tfsa", "kind": "stock",
+                                             "currency": "CAD", "ticker": "NEWCO", "listing": "XTSE", "shares": "0",
+                                             "mark": {"value": "99", "as_of": snapshot.as_of, "source": "Screen"}}}],
+            })
+
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(portfolio())
+    model = Scripted([call({}, "scan", "scan_opportunities"),
+                      call({"edits": [edit("add_position", "screened", "5")]}),
+                      ModelTurn(text="Which listing and account?")])
+    with TestClient(create_app(model=model, data=NoWorkflowData(), financial=FakeFinancialProvider(facts()),
+                              discovery=Screen(), portfolio_store=store,
+                              settings=Settings(api_key="sk-test", model="test-model", request_timeout=5))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Find opportunities, then record 5 NewCo shares.")
+        assert run["status"] == "completed", run
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+        assert messages[1]["tool_outcomes"][0]["status"] == "success"  # the screen itself ran
+        clarification = messages[2]["clarification_required"]
+        assert (clarification["code"], clarification["fields"]) == ("unknown_position", ["edits.0.position_id"])
+        assert client.get("/api/portfolio/proposals").json() == []
+        assert client.get("/api/portfolio").json()["revision"] == 1

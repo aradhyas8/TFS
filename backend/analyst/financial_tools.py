@@ -70,6 +70,8 @@ class FinancialTools:
     def __init__(self, provider: FinancialProvider | None) -> None:
         self._provider = provider
         self.candidates: dict[str, Position] = {}
+        # Only rows verified by resolve_candidate; opportunity screens also fill `candidates`.
+        self.resolved: dict[str, Position] = {}
         self.capabilities = {
             "review_portfolio": ReadCapability(ReadArguments,
                 "Calculate cash, exposure, ETF look-through and saved guardrails from bound holdings.",
@@ -199,6 +201,7 @@ class FinancialTools:
                                 ticker=ticker, listing=row.listing, currency=row.currency,
                                 company_id=row.company_id, company_name=row.company_name, shares=Decimal(0))
             self.candidates[position.id] = position
+            self.resolved[position.id] = position.model_copy(deep=True)
             result = CandidateResult(position=position, is_fund=row.kind == "etf")
         return self.store(context, CandidateResolution(result=result), "financial_evidence", "Candidate identity", "hypothetical")
 

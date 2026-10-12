@@ -54,7 +54,7 @@ class ProposalTools:
                 return clarify("invalid_edit", f"edits.{index}.quantity",
                                "State the exact quantity to record; a removal takes none.")
             if edit.action == "add_position":
-                found = self.financial.candidates.get(edit.position_id)
+                found = self.financial.resolved.get(edit.position_id)
                 if found is None:
                     return clarify("unknown_position", target,
                                    "Resolve the instrument and its account before adding it.")
