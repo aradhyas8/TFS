@@ -7,7 +7,7 @@ from pydantic import Field
 from .context import ReadArguments, ReadCapability, RunContext
 from .financial_tools import FinancialTools
 from .persistence import StaleBaseRevisionError
-from .portfolio import slug
+from .portfolio import SUFFIXES, slug
 from .portfolio_actions import prepare_portfolio_action
 from .schemas import Identifier, ProposalClarification, Quantity, SavedPortfolio, model_safe
 
@@ -18,7 +18,7 @@ class PortfolioEdit(ReadArguments):
     quantity: Quantity | None
 
 
-class ProposalArguments(ReadArguments):
+class PrepareProposalArguments(ReadArguments):
     edits: list[PortfolioEdit] = Field(min_length=1, max_length=100)
 
 
@@ -31,7 +31,7 @@ class ProposalTools:
     def __init__(self, financial: FinancialTools) -> None:
         self.financial = financial
         self.capabilities = {
-            "prepare_portfolio_proposal": ReadCapability(ProposalArguments,
+            "prepare_portfolio_proposal": ReadCapability(PrepareProposalArguments,
                 "Prepare a preview of factual record edits the user explicitly stated in their own message: "
                 "set_quantity records the exact shares or cash balance of a bound position, remove_position "
                 "takes a null quantity, add_position takes a resolve_candidate row ID. Never derive edits from "
@@ -40,7 +40,7 @@ class ProposalTools:
                 "bound_current_revision", self.prepare, effect="proposal"),
         }
 
-    def prepare(self, context: RunContext, parsed: ProposalArguments) -> dict[str, Any]:
+    def prepare(self, context: RunContext, parsed: PrepareProposalArguments) -> dict[str, Any]:
         saved = context.portfolio
         if saved is None:
             return clarify("portfolio_required", "portfolio", "Create the portfolio in the holdings form first.")
@@ -58,12 +58,15 @@ class ProposalTools:
                 if found is None:
                     return clarify("unknown_position", target,
                                    "Resolve the instrument and its account before adding it.")
+                if not edit.quantity:
+                    return clarify("invalid_edit", f"edits.{index}.quantity", "State the shares held.")
                 if any((row["account_id"], row["ticker"], row["listing"]) ==
                        (found.account_id, found.ticker, found.listing) for row in positions.values()):
                     return clarify("invalid_edit", target, "That listing is already held in the account.")
+                # Same ID scheme as imported holdings: the ticker as typed, with its exchange suffix.
+                suffix = next((key for key, code in SUFFIXES.items() if code == found.listing), "")
                 added = found.model_copy(update={
-                    "id": f"{found.account_id}-{slug(found.ticker or '')}-{slug(found.listing or '')}",
-                    "shares": edit.quantity})
+                    "id": f"{found.account_id}-{slug(f'{found.ticker}{suffix}')}", "shares": edit.quantity})
                 if added.id in positions:
                     return clarify("invalid_edit", target, "That listing is already held in the account.")
                 positions[added.id] = added.model_dump()
@@ -74,6 +77,9 @@ class ProposalTools:
                 costs.pop(edit.position_id, None)
             else:
                 row = positions[edit.position_id]
+                if row["kind"] != "cash" and not edit.quantity:
+                    return clarify("invalid_edit", f"edits.{index}.quantity",
+                                   "Zero shares is ambiguous: remove the holding or state the shares held.")
                 row["cash" if row["kind"] == "cash" else "shares"] = edit.quantity
         # Costs, rules and benchmark are carried forward server-side; the model never supplies them.
         try:
