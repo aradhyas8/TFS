@@ -421,7 +421,7 @@ function Proposal({ id, shared }: { id: string; shared: Shared }) {
               ? `Prepared from revision ${proposal.base_revision}, which is no longer current. Your saved portfolio was not changed. Ask again for a fresh preview.`
               : `Prepared from revision ${proposal.base_revision ?? "none"}. Your saved portfolio stays as it is unless you confirm the changes in the review.`}
       </p>
-      {proposal.status === "pending" && (
+      {proposal.status === "pending" && !outdated && (
         <Button variant="secondary" onClick={() => shared.onReviewProposal(proposal)}>
           Review changes
         </Button>

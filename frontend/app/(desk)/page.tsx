@@ -288,10 +288,11 @@ export default function DeskPage() {
   const conversation = useConversation();
   // The stored result the Details panel reads while a conversation is on screen: the one the investor last opened.
   const [threadResult, setThreadResult] = useState<{ id: string; analysis: Analysis } | null>(null);
-  // Decisions saved from stored results in this session, by artifact ID.
+  // Which decision each stored result was saved as in this session: artifact ID to decision ID. The decision
+  // itself is always read from the decisions list, so a deleted decision is no longer shown as saved.
   // ponytail: kept in memory, so after a reload a result can be saved a second time. Record the artifact ID
   // on the decision if duplicate register entries become a problem.
-  const [savedResults, setSavedResults] = useState<Record<string, SavedDecision>>({});
+  const [savedResults, setSavedResults] = useState<Record<string, string>>({});
   const [savingResult, setSavingResult] = useState<string | null>(null);
   const [saveFailed, setSaveFailed] = useState<string | null>(null);
   // A workflow form opened from a clarification: its submission is a new run in this conversation.
@@ -1076,9 +1077,11 @@ export default function DeskPage() {
     if (workflow === "stock") {
       const id = from?.stock || result.stock?.position_id;
       const held = result.portfolio.positions.find(row => row.supplied.id === id)?.supplied;
+      // A stored result is saved as the holding it analyzed. Today's portfolio may hold that position ID
+      // under another listing, and is only consulted for a desk answer computed from it just now.
+      const current = from ? committedSnapshot?.positions.find(row => row.id === id) : undefined;
       const ticker = (from === sent ? sentStock : null) || held?.ticker || tickerOf(id) || "Stock";
-      const listing =
-        from?.candidate?.listing || committedSnapshot?.positions.find(row => row.id === id)?.listing || held?.listing || null;
+      const listing = from?.candidate?.listing || current?.listing || held?.listing || null;
       return { workflow, subject: { label: ticker, ticker, listing } };
     }
     if (workflow === "new_cash") {
@@ -1130,7 +1133,7 @@ export default function DeskPage() {
     setSaveFailed(null);
     try {
       const record = await post<SavedDecision>("/api/decisions", { result: analysis, ...decisionFor(analysis, null) });
-      setSavedResults(map => ({ ...map, [artifactId]: record }));
+      setSavedResults(map => ({ ...map, [artifactId]: record.id }));
       setDecisions(list => [record, ...list.filter(d => d.id !== record.id)]);
     } catch {
       setSaveFailed(artifactId);
@@ -1147,7 +1150,6 @@ export default function DeskPage() {
     setDecisions(list => list.map(d => (d.id === updated.id ? updated : d)));
     if (saved?.id === updated.id) setSaved(updated);
     if (reopened?.id === updated.id) setReopened(updated);
-    setSavedResults(map => Object.fromEntries(Object.entries(map).map(([id, d]) => [id, d.id === updated.id ? updated : d])));
   }
 
   function startOver() {
@@ -1188,11 +1190,20 @@ export default function DeskPage() {
       setWorkflow(null);
       const ticker = decision.subject?.ticker || decision.subject?.label;
       const listing = decision.subject?.listing ?? undefined;
-      const held = ticker
-        ? committedSnapshot?.positions.find(
-            row => isSupportedStock(row) && row.ticker?.toUpperCase() === ticker.toUpperCase()
-          )
-        : null;
+      const sameTicker = (committedSnapshot?.positions ?? []).filter(
+        row => isSupportedStock(row) && !!ticker && row.ticker?.toUpperCase() === ticker.toUpperCase()
+      );
+      // A decision that recorded its listing is only re-run on that listing.
+      const held = sameTicker.find(row => !listing || row.listing === listing);
+      if (!held && sameTicker.length) {
+        setReopened(decision);
+        setNotice(
+          `This decision was about ${ticker} on ${listing}. Your portfolio now holds ${ticker} on ${sameTicker
+            .map(row => row.listing || "an unknown listing")
+            .join(", ")}, so it was not re-run. Ask about the listing you want to analyze.`
+        );
+        return;
+      }
       if (held) {
         void analyze({ question: decision.question, newCash: null, stock: held.id });
       } else if (ticker) {
@@ -1382,7 +1393,7 @@ export default function DeskPage() {
   /** A stored analysis inside the conversation: the same memo, reading the stored values, with its own save control. */
   function storedResult(analysis: Analysis, reference: ArtifactReference, source: Snapshot) {
     const open = () => setThreadResult({ id: reference.id, analysis });
-    const savedHere = savedResults[reference.id] ?? null;
+    const savedHere = decisions.find(decision => decision.id === savedResults[reference.id]) ?? null;
     return (
       <>
         {memo(analysis, {
@@ -1544,7 +1555,7 @@ export default function DeskPage() {
           onReload={() => void conversation.reload()}
           snapshot={committedSnapshot}
           committedRevision={committedRevision}
-          proposals={proposalsLoaded ? proposals : null}
+          proposals={proposalsLoaded && !proposalsFailed ? proposals : null}
           proposalsFailed={proposalsFailed}
           onReloadProposals={refreshProposals}
           theme={theme}
