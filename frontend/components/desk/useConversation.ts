@@ -10,7 +10,7 @@ const PENDING_KEY = "desk.pendingSend";
 const POLL_MS = 1000;
 
 /** A message this browser has sent but the backend has not acknowledged. No thread ID yet means a new conversation. */
-export type PendingSend = { threadId: string | null; clientRequestId: string; text: string };
+export type PendingSend = { threadId: string | null; clientRequestId: string; text: string; workflowInput?: Record<string, unknown> };
 
 const remember = (key: string, value: string | null) => {
   try {
@@ -105,7 +105,7 @@ export function useConversation() {
               // Follow the new thread only if the user is still where they sent from.
               if (viewing.current === origin) view(threadId);
             }
-            await submitThreadMessage(threadId, { client_request_id: send.clientRequestId, text: send.text });
+            await submitThreadMessage(threadId, { client_request_id: send.clientRequestId, text: send.text, workflow_input: send.workflowInput });
             break;
           } catch (error) {
             if (attempt > 0 || !unacknowledged(error)) throw error;
@@ -124,11 +124,14 @@ export function useConversation() {
     }
   }
 
-  /** Sends one message into the open thread, or into a new thread when none is open.
+  /** Sends one message into the open thread, or into a new thread when none is open. Explicit form inputs
+   *  (a chosen stock, a confirmed new-cash or theme form) travel with it and start a new run; they are
+   *  never inferred from the text.
    *  ponytail: one unacknowledged send at a time; a new send replaces an earlier one that failed and was left behind.
    *  ponytail: two tabs reloaded with the same thread-less send each create a thread; a client-supplied thread ID
    *  on POST /api/threads would make creation idempotent too. */
-  const send = (text: string) => deliver({ threadId: viewing.current, clientRequestId: crypto.randomUUID(), text });
+  const send = (text: string, workflowInput?: Record<string, unknown>) =>
+    deliver({ threadId: viewing.current, clientRequestId: crypto.randomUUID(), text, workflowInput });
 
   const retry = () => (pending ? deliver(pending) : Promise.resolve());
 

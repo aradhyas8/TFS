@@ -266,7 +266,8 @@ export async function get<T>(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Prom
   });
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(typeof data.detail === "string" ? data.detail : "The request could not be completed.");
+    // The status lets a caller tell a record that no longer exists from a request that merely failed.
+    throw Object.assign(new Error(typeof data.detail === "string" ? data.detail : "The request could not be completed."), { status: response.status });
   }
   return data as T;
 }

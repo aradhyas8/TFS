@@ -1,9 +1,25 @@
+import { useEffect, useState, type ReactNode } from "react";
 import { Alert } from "@/components/arc/alert/alert";
 import { Badge } from "@/components/arc/badge/badge";
 import { Button } from "@/components/arc/button/button";
+import { ExpandableCard } from "@/components/arc/expandable-card/expandable-card";
+import { JsonViewer } from "@/components/arc/json-viewer/json-viewer";
 import { Skeleton } from "@/components/arc/skeleton/skeleton";
 import { TextShimmer } from "@/components/arc/text-shimmer/text-shimmer";
-import type { MessageRecord, RunRecord, ThreadDetail } from "../../lib/contracts";
+import {
+  getArtifact,
+  isSupportedStock,
+  type Analysis,
+  type ArtifactEnvelope,
+  type ArtifactReference,
+  type MessageRecord,
+  type PortfolioProposal,
+  type RunRecord,
+  type Snapshot,
+  type ThemeInput,
+  type ThreadDetail,
+} from "../../lib/contracts";
+import { fullDate } from "./format";
 import type { PendingSend } from "./useConversation";
 import styles from "./Thread.module.css";
 
@@ -16,7 +32,24 @@ type Props = {
   onDiscardSend: () => void;
   onAskAgain: (text: string) => void;
   onReload: () => void;
+  /** The saved portfolio: its holdings are the choices a stock clarification offers. */
+  snapshot: Snapshot | null;
+  committedRevision: number | null;
+  /** Proposal records from the backend; null until the first list has arrived. */
+  proposals: PortfolioProposal[] | null;
+  /** The theme form as filled in this session, shown again when only the agreement is missing. */
+  theme: ThemeInput;
+  busy: boolean;
+  /** Draws a stored analysis with the desk's existing result memo. */
+  renderResult: (result: Analysis, reference: ArtifactReference) => ReactNode;
+  onReviewProposal: (proposal: PortfolioProposal) => void;
+  /** Opens an existing form (a workflow form or the holdings editor) so the missing inputs can be given. */
+  onOpenForm: (form: string) => void;
+  /** An explicit submission: a new message with typed workflow input, which starts a new run. */
+  onSubmitWorkflow: (text: string, workflowInput: Record<string, unknown>) => void;
 };
+
+type Shared = Pick<Props, "snapshot" | "committedRevision" | "proposals" | "theme" | "busy" | "renderResult" | "onReviewProposal" | "onOpenForm" | "onSubmitWorkflow">;
 
 const RUN_NOTICE: Partial<Record<RunRecord["status"], string>> = {
   failed: "This answer did not finish",
@@ -24,28 +57,320 @@ const RUN_NOTICE: Partial<Record<RunRecord["status"], string>> = {
   interrupted: "The analyst restarted before answering",
 };
 
-const toolLabel = (name: string) => name.replace(/^(get|run)_/, "").replace(/_/g, " ");
-// A stored result the answer drew on. Its contents open with the result views that follow this ticket.
-const artifactLabel = (id: string) => {
-  const revision = id.match(/^art-rev-(\d+)$/);
-  return revision ? `Portfolio revision ${revision[1]}` : `Saved result ${id}`;
+const STEP: Record<string, [done: string, failed: string]> = {
+  web_search: ["Searched the web", "Could not search the web"],
+  prepare_portfolio_proposal: ["Prepared portfolio changes for your review", "Could not prepare portfolio changes"],
 };
+const toolLabel = (name: string) => name.replace(/^(get|run)_/, "").replace(/_/g, " ");
+const revisionOf = (id: string) => id.match(/^art-rev-(\d+)$/)?.[1];
 const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
+const text = (value: unknown) => (typeof value === "string" ? value : "");
+const list = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
 
-function References({ ids }: { ids: string[] }) {
-  if (!ids.length) return null;
+/** A link is drawn only for a web address; anything else a source supplied stays plain text. */
+function webAddress(value: unknown): URL | null {
+  try {
+    const url = new URL(text(value));
+    return url.protocol === "https:" || url.protocol === "http:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+// Artifacts are immutable, so one request per ID serves every message and every reopening in this session.
+const envelopes = new Map<string, Promise<ArtifactEnvelope>>();
+type Loaded = { state: "loading" } | { state: "ready"; envelope: ArtifactEnvelope } | { state: "missing" } | { state: "failed" };
+
+function useArtifact(id: string): [Loaded, () => void] {
+  const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let current = true;
+    setLoaded({ state: "loading" });
+    let request = envelopes.get(id);
+    if (!request) envelopes.set(id, (request = getArtifact(id)));
+    request.then(
+      envelope => current && setLoaded({ state: "ready", envelope }),
+      error => {
+        envelopes.delete(id);
+        if (current) setLoaded({ state: (error as { status?: number }).status === 404 ? "missing" : "failed" });
+      }
+    );
+    return () => {
+      current = false;
+    };
+  }, [id, attempt]);
+  return [loaded, () => setAttempt(count => count + 1)];
+}
+
+/** What a stored result was computed from. It is fixed when the result is stored and never follows the current portfolio. */
+function provenance(reference: ArtifactReference, committedRevision: number | null): string {
+  const basis = reference.basis === "hypothetical"
+    ? "Hypothetical, not your saved portfolio"
+    : reference.revision
+      ? `Portfolio revision ${reference.revision}${committedRevision && committedRevision !== reference.revision ? `, before the current revision ${committedRevision}` : ""}`
+      : "No portfolio used";
+  return `${basis} · stored ${fullDate(reference.created_at)}`;
+}
+
+type WebResearch = { status?: string; query?: string | null; sources?: { url?: string; title?: string | null }[]; qualifications?: string[] };
+
+function Artifact({ id, shared }: { id: string; shared: Shared }) {
+  const [loaded, retry] = useArtifact(id);
+  if (loaded.state === "loading") return <Skeleton label="Loading stored result" lines={2} />;
+  if (loaded.state === "missing")
+    return (
+      <Alert tone="warning" title="This stored result is no longer available">
+        The conversation still refers to it, but its values could not be found. Ask again to compute a new result.
+      </Alert>
+    );
+  if (loaded.state === "failed")
+    return (
+      <div className={styles.notice}>
+        <Alert tone="danger" title="This stored result could not be loaded">
+          Check that the analyst service is running, then load it again.
+        </Alert>
+        <Button variant="secondary" onClick={retry}>
+          Load result again
+        </Button>
+      </div>
+    );
+  const { reference, payload } = loaded.envelope;
+  const source = provenance(reference, shared.committedRevision);
+  if (reference.kind === "portfolio_snapshot" || !reference.kind) return <Badge size="sm">{reference.label}</Badge>;
+  if (reference.kind === "analysis_result")
+    return (
+      <article className={styles.result} aria-label={`${reference.label} result`}>
+        <p className={styles.source}>{`${reference.label} · ${source}`}</p>
+        {shared.renderResult(payload as Analysis, reference)}
+      </article>
+    );
+  if (reference.kind === "web_research") {
+    const research = payload as WebResearch;
+    const sources = (research.sources ?? []).flatMap(item => {
+      const url = webAddress(item.url);
+      return url ? [{ url, title: item.title || url.hostname }] : [];
+    });
+    return (
+      <article className={styles.result} aria-label={reference.label}>
+        <p className={styles.source}>{`${reference.label}${research.query ? ` for "${research.query}"` : ""} · stored ${fullDate(reference.created_at)}`}</p>
+        {research.status === "unavailable" ? (
+          <Alert tone="warning" title="Web search was unavailable">
+            {list(research.qualifications).map(sentence).join(" ") || "No current lookup took place."}
+          </Alert>
+        ) : (
+          <>
+            <ul className={styles.sources} aria-label="Sources consulted">
+              {sources.map(item => (
+                <li key={item.url.href}>
+                  <a href={item.url.href} target="_blank" rel="noopener noreferrer">
+                    {item.title}
+                  </a>
+                  <span className={styles.host}>{item.url.hostname}</span>
+                </li>
+              ))}
+            </ul>
+            {list(research.qualifications).map(note => (
+              <p key={note} className={styles.source}>
+                {sentence(note)}
+              </p>
+            ))}
+          </>
+        )}
+      </article>
+    );
+  }
+  // ponytail: research, evidence and calculation records show their stored values as a tree, never as prose.
+  // Give a kind its own view when its values need more than reading.
+  return (
+    <ExpandableCard title={reference.label} description={source}>
+      <JsonViewer data={payload} rootName="result" label={`${reference.label} values`} defaultExpandDepth={2} searchable={false} showPath={false} maxHeight={320} />
+    </ExpandableCard>
+  );
+}
+
+function Revisions({ ids }: { ids: string[] }) {
+  const revisions = [...new Set(ids.map(revisionOf).filter(Boolean))];
+  if (!revisions.length) return null;
   return (
     <ul className={styles.refs} aria-label="Referenced results">
-      {[...new Set(ids)].map(id => (
-        <li key={id}>
-          <Badge size="sm">{artifactLabel(id)}</Badge>
+      {revisions.map(revision => (
+        <li key={revision}>
+          <Badge size="sm">{`Portfolio revision ${revision}`}</Badge>
         </li>
       ))}
     </ul>
   );
 }
 
-function Message({ message }: { message: MessageRecord }) {
+/** The sources a stored answer cited, kept with that answer. */
+function Citations({ citations }: { citations: MessageRecord["citations"] }) {
+  const seen = new Set<string>();
+  const cited = citations.flatMap(citation => {
+    const url = webAddress(citation.url);
+    const quote = text(citation.cited_text);
+    if (!url || seen.has(`${url.href}|${quote}`)) return [];
+    seen.add(`${url.href}|${quote}`);
+    return [{ url, quote, title: text(citation.title) || url.hostname }];
+  });
+  if (!cited.length) return null;
+  return (
+    <ol className={styles.sources} aria-label="Sources for this answer">
+      {cited.map(item => (
+        <li key={`${item.url.href}|${item.quote}`}>
+          <a href={item.url.href} target="_blank" rel="noopener noreferrer">
+            {item.title}
+          </a>
+          <span className={styles.host}>{item.url.hostname}</span>
+          {item.quote && <q className={styles.quote}>{item.quote}</q>}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+const FIELD: Record<string, string> = {
+  portfolio: "A saved portfolio",
+  "holdings.identity": "Every holding identified",
+  "stock.position_id": "The stock to analyze",
+  "new_cash.amount": "The amount of new cash",
+  "new_cash.account_id": "The account it arrives in",
+  "new_cash.risk_context": "Your loss tolerance or withdrawal plans",
+  "new_cash.confirmed": "Your confirmation that this is new money",
+  "theme.name": "A theme name",
+  "theme.mechanism": "The economic mechanism",
+  "theme.shortlist": "A shortlist of one to four candidates",
+  "theme.confirmed": "Your agreement to the theme and shortlist",
+};
+const fieldLabel = (field: string) => FIELD[field] ?? sentence(field.replace(/[._]/g, " ")).slice(0, -1);
+
+/** What a run could not go on without. The inputs are given through the desk's own forms and sent as a new run;
+ *  nothing typed in the conversation counts as an agreement. */
+function Clarification({ clarification, actionable, shared }: { clarification: Record<string, unknown>; actionable: boolean; shared: Shared }) {
+  const fields = list(clarification.fields);
+  const form = text(clarification.form);
+  const { theme, snapshot, busy } = shared;
+  const stocks = (snapshot?.positions ?? []).filter(isSupportedStock);
+  const themeReady = !!theme.name?.trim() && !!theme.mechanism?.trim() && theme.shortlist.length > 0;
+  const onlyAgreement = form === "/theme" && fields.length === 1 && fields[0] === "theme.confirmed" && themeReady;
+  const ticker = (id: string) => snapshot?.positions.find(row => row.id === id)?.ticker || id;
+  return (
+    <div className={styles.notice} data-testid="clarification">
+      <Alert tone="info" title="The analyst needs more from you">
+        {sentence(text(clarification.message) || "Some inputs are missing")}
+      </Alert>
+      {fields.length > 0 && (
+        <ul className={styles.fields} aria-label="Missing inputs">
+          {fields.map(field => (
+            <li key={field}>{fieldLabel(field)}</li>
+          ))}
+        </ul>
+      )}
+      {list(clarification.choices).length > 0 && <p className={styles.source}>{`Choices: ${list(clarification.choices).join(", ")}`}</p>}
+      {actionable && onlyAgreement && (
+        <dl className={styles.agreement} aria-label="Theme to agree">
+          <dt>Theme</dt>
+          <dd>{theme.name}</dd>
+          <dt>Economic mechanism</dt>
+          <dd>{theme.mechanism}</dd>
+          <dt>Shortlist</dt>
+          <dd>{theme.shortlist.map(ticker).join(", ")}</dd>
+        </dl>
+      )}
+      {actionable && (
+        <div className={styles.actions}>
+          {onlyAgreement && (
+            <Button
+              disabled={busy}
+              onClick={() =>
+                shared.onSubmitWorkflow(`Explore theme: ${theme.name}`, { workflow: "run_theme_exploration", theme: { ...theme, confirmed: true } })
+              }
+            >
+              Agree and research
+            </Button>
+          )}
+          {form === "/theme" && (
+            <Button variant="secondary" disabled={busy} onClick={() => shared.onOpenForm(form)}>
+              {onlyAgreement ? "Edit theme form" : "Open theme form"}
+            </Button>
+          )}
+          {form === "/new-cash" && (
+            <Button variant="secondary" disabled={busy} onClick={() => shared.onOpenForm(form)}>
+              Open new-cash form
+            </Button>
+          )}
+          {form === "holdings" && (
+            <Button variant="secondary" onClick={() => shared.onOpenForm(form)}>
+              Open holdings
+            </Button>
+          )}
+          {form === "/stock" &&
+            stocks.map(position => (
+              <Button
+                key={position.id}
+                variant="secondary"
+                disabled={busy}
+                onClick={() =>
+                  shared.onSubmitWorkflow(`Analyze ${position.ticker}`, { workflow: "run_stock_analysis", stock: { position_id: position.id } })
+                }
+              >
+                {`Analyze ${position.ticker}`}
+              </Button>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const PROPOSAL_STATE: Record<PortfolioProposal["status"], [label: string, tone: "warning" | "success" | "neutral"]> = {
+  pending: ["Waiting for your review", "warning"],
+  applied: ["Applied", "success"],
+  cancelled: ["Cancelled", "neutral"],
+  stale: ["Out of date", "neutral"],
+};
+
+/** A prepared change to the saved portfolio. It only opens the existing review: nothing here confirms or applies it. */
+function Proposal({ id, shared }: { id: string; shared: Shared }) {
+  const { proposals, committedRevision } = shared;
+  if (!proposals) return <Skeleton label="Loading proposed changes" lines={2} />;
+  const proposal = proposals.find(item => item.id === id);
+  if (!proposal)
+    return (
+      <Alert tone="warning" title="These proposed changes are no longer available">
+        Ask again to prepare a new preview from your saved portfolio.
+      </Alert>
+    );
+  const outdated = proposal.status === "stale" || (proposal.status === "pending" && committedRevision != null && proposal.base_revision != null && proposal.base_revision !== committedRevision);
+  const [label, tone] = PROPOSAL_STATE[outdated ? "stale" : proposal.status];
+  const changes = proposal.differences.length;
+  return (
+    <article className={styles.proposal} aria-label="Proposed portfolio changes">
+      <div className={styles.proposalHead}>
+        <span>{`${changes} proposed change${changes === 1 ? "" : "s"}`}</span>
+        <Badge size="sm" tone={tone}>
+          {label}
+        </Badge>
+      </div>
+      <p className={styles.source}>
+        {proposal.status === "applied" && proposal.receipt
+          ? `Confirmed by you. Your portfolio moved from revision ${proposal.receipt.previous_revision ?? "none"} to revision ${proposal.receipt.new_revision}.`
+          : proposal.status === "cancelled"
+            ? "Cancelled. Your saved portfolio was not changed."
+            : outdated
+              ? `Prepared from revision ${proposal.base_revision}, which is no longer current. Your saved portfolio was not changed. Ask again for a fresh preview.`
+              : `Prepared from revision ${proposal.base_revision ?? "none"}. Your saved portfolio stays as it is unless you confirm the changes in the review.`}
+      </p>
+      {proposal.status === "pending" && (
+        <Button variant="secondary" onClick={() => shared.onReviewProposal(proposal)}>
+          Review changes
+        </Button>
+      )}
+    </article>
+  );
+}
+
+function Message({ message, actionable, shared }: { message: MessageRecord; actionable: boolean; shared: Shared }) {
   if (message.role === "user")
     return (
       <li className={styles.user}>
@@ -54,17 +379,40 @@ function Message({ message }: { message: MessageRecord }) {
       </li>
     );
   // A tool step is stored as a message; its raw record is never shown as prose.
-  if (message.tool_outcomes.length)
+  if (message.tool_outcomes.length) {
+    const clarification = message.clarification_required;
+    // A proposal's before and after portfolios are read through its review, not as separate results.
+    const results = message.proposal_ids.length ? [] : [...new Set(message.artifact_ids)].filter(id => !revisionOf(id));
     return (
-      <li className={styles.step}>
-        {message.tool_outcomes.map(outcome => (
-          <span key={outcome.id}>
-            {outcome.status === "error" ? `Could not check ${toolLabel(outcome.name)}` : `Checked ${toolLabel(outcome.name)}`}
-          </span>
+      <li className={styles.stepGroup}>
+        <div className={styles.step}>
+          {message.tool_outcomes.map(outcome => {
+            const [done, failed] = STEP[outcome.name] ?? [`Checked ${toolLabel(outcome.name)}`, `Could not check ${toolLabel(outcome.name)}`];
+            return (
+              <span key={outcome.id}>
+                {clarification
+                  ? `Paused ${toolLabel(outcome.name)}`
+                  : outcome.status !== "error"
+                    ? done
+                    : // A step that stored a result is shown by that result below; its error is about reading it back.
+                      outcome.artifact_ids.length
+                      ? outcome.name === "web_search" ? failed : done
+                      : `${failed}. ${sentence(outcome.error || "No result is available")}`}
+              </span>
+            );
+          })}
+          <Revisions ids={message.artifact_ids} />
+        </div>
+        {clarification && <Clarification clarification={clarification} actionable={actionable} shared={shared} />}
+        {results.map(id => (
+          <Artifact key={id} id={id} shared={shared} />
         ))}
-        <References ids={message.artifact_ids} />
+        {message.proposal_ids.map(id => (
+          <Proposal key={id} id={id} shared={shared} />
+        ))}
       </li>
     );
+  }
   return (
     <li className={styles.assistant}>
       <span className="sr-only">Analyst answered: </span>
@@ -72,13 +420,14 @@ function Message({ message }: { message: MessageRecord }) {
       {message.text.split(/\n{2,}/).map((paragraph, index) => (
         <p key={index}>{paragraph}</p>
       ))}
-      <References ids={message.artifact_ids} />
+      <Citations citations={message.citations} />
+      <Revisions ids={message.artifact_ids} />
     </li>
   );
 }
 
-/** One durable conversation: persisted messages and run states from the backend, plus the one send still in flight. */
-export default function Thread({ thread, pending, sendError, loadError, onRetrySend, onDiscardSend, onAskAgain, onReload }: Props) {
+/** One durable conversation: persisted messages, results and run states from the backend, plus the one send still in flight. */
+export default function Thread({ thread, pending, sendError, loadError, onRetrySend, onDiscardSend, onAskAgain, onReload, ...shared }: Props) {
   if (loadError)
     return (
       <div className={styles.notice}>
@@ -111,7 +460,8 @@ export default function Thread({ thread, pending, sendError, loadError, onRetryS
         const notice = run && RUN_NOTICE[run.status];
         const asked = run && run.id === latestRun?.id && !unsent ? question(run.id) : undefined;
         return [
-          <Message key={message.id} message={message} />,
+          // Only the latest run's request for inputs can still be answered; earlier ones are history.
+          <Message key={message.id} message={message} actionable={message.run_id === latestRun?.id && !unsent} shared={shared} />,
           run?.status === "running" && (
             <li key={`${run.id}-working`} className={styles.working}>
               <TextShimmer>Thinking</TextShimmer>

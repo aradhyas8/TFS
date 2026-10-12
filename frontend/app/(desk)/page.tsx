@@ -55,6 +55,8 @@ import {
 } from "../../components/desk/Memo";
 import { isConversation, route, type Route } from "../../components/desk/route";
 import Thread from "../../components/desk/Thread";
+import threadStyles from "../../components/desk/Thread.module.css";
+import { Button } from "@/components/arc/button/button";
 import { useConversation } from "../../components/desk/useConversation";
 import { clock, fullDate, newCashLabel, pct, shortDate } from "../../components/desk/format";
 
@@ -218,6 +220,7 @@ export default function DeskPage() {
 
   // Proposal review and confirmation state
   const [proposals, setProposals] = useState<PortfolioProposal[]>([]);
+  const [proposalsLoaded, setProposalsLoaded] = useState(false);
   const [activeProposal, setActiveProposal] = useState<PortfolioProposal | null>(null);
   const [pendingProposals, setPendingProposals] = useState<PortfolioProposal[]>([]);
   const [reviewing, setReviewing] = useState(false);
@@ -230,6 +233,7 @@ export default function DeskPage() {
     listProposals()
       .then(res => {
         setProposals(res);
+        setProposalsLoaded(true);
         setPendingProposals(res.filter(p => p.status === "pending"));
       })
       .catch(() => {});
@@ -272,6 +276,15 @@ export default function DeskPage() {
   const runId = useRef(0);
   // Durable conversation: threads, messages and runs live in the backend, never in the cached last answer.
   const conversation = useConversation();
+  // The stored result the Details panel reads while a conversation is on screen: the one the investor last opened.
+  const [threadResult, setThreadResult] = useState<{ id: string; analysis: Analysis } | null>(null);
+  // Decisions saved from stored results in this session, by artifact ID.
+  // ponytail: kept in memory, so after a reload a result can be saved a second time. Record the artifact ID
+  // on the decision if duplicate register entries become a problem.
+  const [savedResults, setSavedResults] = useState<Record<string, SavedDecision>>({});
+  const [savingResult, setSavingResult] = useState<string | null>(null);
+  // A workflow form opened from a clarification: its submission is a new run in this conversation.
+  const [resuming, setResuming] = useState(false);
   const threadEnd = useRef<HTMLDivElement>(null);
   const wasRunning = useRef(false);
 
@@ -280,6 +293,16 @@ export default function DeskPage() {
     if (wasRunning.current && !conversation.running) refreshProposals();
     wasRunning.current = conversation.running;
   }, [conversation.running]);
+
+  useEffect(() => setThreadResult(null), [conversation.openId]);
+  useEffect(() => {
+    if (!workflow) setResuming(false);
+  }, [workflow]);
+  // A proposal prepared mid-run is listed as soon as its message arrives, so its review can be opened.
+  const proposalCount = conversation.thread?.messages.reduce((count, item) => count + item.proposal_ids.length, 0) ?? 0;
+  useEffect(() => {
+    if (proposalCount) refreshProposals();
+  }, [proposalCount]);
 
   // Anything new at the end of the thread (a message, a run outcome, a send that failed) is brought into view.
   const threadTail = [
@@ -552,7 +575,9 @@ export default function DeskPage() {
     setNotice("");
   }
 
-  const result = answer?.analysis ?? null;
+  const showThread =
+    !registerOpen && !reopened && !run && !clarify && !failure && (!!conversation.openId || !!conversation.pending);
+  const result = (showThread ? threadResult?.analysis : answer?.analysis) ?? null;
   const evidence = evidenceFor(reopened ? null : result, reopened);
   const cite = {
     numbers: evidence.numbers,
@@ -1023,73 +1048,86 @@ export default function DeskPage() {
     setCollapsed(false);
   }
 
-  async function save() {
-    if (!result) return;
-    setSaving(true);
-    setNotice("");
-    try {
-      let decisionWorkflow: DecisionWorkflow = "review";
-      let decisionSubject: DecisionSubject = { label: "Portfolio review" };
-
-      if (sent?.stock || result.stock) {
-        decisionWorkflow = "stock";
-        const ticker =
-          sentStock ||
-          (result.stock?.position_id ? tickerOf(result.stock.position_id) : null) ||
-          "Stock";
-        const pos = committedSnapshot?.positions.find(
-          row => row.id === (sent?.stock || result.stock?.position_id)
-        );
-        const listing = sent?.candidate?.listing || pos?.listing || null;
-        decisionSubject = { label: ticker, ticker, listing };
-      } else if (sent?.newCash || result.allocation) {
-        decisionWorkflow = "new_cash";
-        const cashInput =
-          sent?.newCash ||
-          (result.allocation
-            ? { ...EMPTY_CASH, amount: result.recommendation.amount?.maximum || null }
-            : EMPTY_CASH);
-        const label = newCashLabel(cashInput, committedSnapshot) || "New cash";
-        decisionSubject = {
-          label,
+  /** The register entry for a result: its workflow and subject, from what was sent when known, else from the stored result itself. */
+  function decisionFor(result: Analysis, from: Sent | null): { workflow: DecisionWorkflow; subject: DecisionSubject } {
+    const workflow: DecisionWorkflow = from?.stock
+      ? "stock"
+      : from?.newCash
+        ? "new_cash"
+        : from?.theme
+          ? "theme"
+          : from?.rebalance || result.reunderwriting
+            ? "rebalance"
+            : result.stock && !result.allocation
+              ? "stock"
+              : result.theme
+                ? "theme"
+                : result.allocation
+                  ? "new_cash"
+                  : "review";
+    if (workflow === "stock") {
+      const id = from?.stock || result.stock?.position_id;
+      const held = result.portfolio.positions.find(row => row.supplied.id === id)?.supplied;
+      const ticker = (from === sent ? sentStock : null) || held?.ticker || tickerOf(id) || "Stock";
+      const listing =
+        from?.candidate?.listing || committedSnapshot?.positions.find(row => row.id === id)?.listing || held?.listing || null;
+      return { workflow, subject: { label: ticker, ticker, listing } };
+    }
+    if (workflow === "new_cash") {
+      const cashInput = from?.newCash || result.allocation?.context || EMPTY_CASH;
+      return {
+        workflow,
+        subject: {
+          label: newCashLabel(cashInput, committedSnapshot) || "New cash",
           new_cash: {
             amount: cashInput.amount ?? null,
             account_id: cashInput.account_id ?? null,
             currency: cashInput.currency ?? null,
             cash_position_id: cashInput.cash_position_id ?? null,
           },
-        };
-      } else if (sent?.theme || result.theme) {
-        decisionWorkflow = "theme";
-        const th = sent?.theme || result.theme?.context || EMPTY_THEME;
-        const label = th.name || "Theme discovery";
-        decisionSubject = {
-          label,
-          theme: {
-            name: th.name || null,
-            mechanism: th.mechanism || null,
-            shortlist: th.shortlist || [],
-          },
-        };
-      } else if (sent?.rebalance || result.reunderwriting) {
-        decisionWorkflow = "rebalance";
-        decisionSubject = { label: "Rebalance" };
-      } else {
-        decisionWorkflow = "review";
-        decisionSubject = { label: "Portfolio review" };
-      }
+        },
+      };
+    }
+    if (workflow === "theme") {
+      const th = from?.theme || result.theme?.context || EMPTY_THEME;
+      return {
+        workflow,
+        subject: {
+          label: th.name || "Theme discovery",
+          theme: { name: th.name || null, mechanism: th.mechanism || null, shortlist: th.shortlist || [] },
+        },
+      };
+    }
+    return { workflow, subject: { label: workflow === "rebalance" ? "Rebalance" : "Portfolio review" } };
+  }
 
-      const record = await post<SavedDecision>("/api/decisions", {
-        result,
-        workflow: decisionWorkflow,
-        subject: decisionSubject,
-      });
+  async function save() {
+    if (!result) return;
+    setSaving(true);
+    setNotice("");
+    try {
+      const record = await post<SavedDecision>("/api/decisions", { result, ...decisionFor(result, sent) });
       setSaved(record);
       setDecisions(list => [record, ...list.filter(d => d.id !== record.id)]);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "The decision couldn't be saved.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  /** Saves a decision from a result stored in the conversation. The stored values are saved as they are. */
+  async function saveResult(artifactId: string, analysis: Analysis) {
+    setSavingResult(artifactId);
+    setNotice("");
+    try {
+      const record = await post<SavedDecision>("/api/decisions", { result: analysis, ...decisionFor(analysis, null) });
+      setSavedResults(map => ({ ...map, [artifactId]: record }));
+      setDecisions(list => [record, ...list.filter(d => d.id !== record.id)]);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "The decision couldn't be saved.");
+    } finally {
+      setSavingResult(null);
     }
   }
 
@@ -1101,6 +1139,7 @@ export default function DeskPage() {
     setDecisions(list => list.map(d => (d.id === updated.id ? updated : d)));
     if (saved?.id === updated.id) setSaved(updated);
     if (reopened?.id === updated.id) setReopened(updated);
+    setSavedResults(map => Object.fromEntries(Object.entries(map).map(([id, d]) => [id, d.id === updated.id ? updated : d])));
   }
 
   function startOver() {
@@ -1201,8 +1240,6 @@ export default function DeskPage() {
       : null;
   const sentStock = tickerOf(sent?.stock, sent?.candidate);
   const sentLabel = sent?.newCash && newCashLabel(sent.newCash, committedSnapshot);
-  const showThread =
-    !registerOpen && !reopened && !run && !clarify && !failure && (!!conversation.openId || !!conversation.pending);
   const ctxLabel = registerOpen
     ? "Decisions Register"
     : reopened
@@ -1293,6 +1330,100 @@ export default function DeskPage() {
                 rulesLine,
               ];
   const review = (question: string) => void analyze({ question, newCash: null, stock: null });
+
+  /** The result memo for one analysis, by what the backend computed. The desk's answer view and a stored
+   *  result in a conversation draw the same memo. */
+  function memo(
+    analysis: Analysis,
+    o: {
+      cite: typeof cite;
+      saved: SavedDecision | null;
+      onTab: (next: Tab) => void;
+      snapshot: Snapshot | null;
+      cash?: NewCashInput | null;
+      onAgree?: () => void;
+      onRerun: (next: NewCashInput) => void;
+    }
+  ) {
+    const key = analysis.portfolio.reviewed_at;
+    const shared = {
+      result: analysis,
+      snapshot: o.snapshot,
+      cite: o.cite,
+      saved: o.saved,
+      onTab: o.onTab,
+      onConfirm: (action: DecisionAction, notes: string | undefined) =>
+        o.saved ? confirm(o.saved, action, notes) : Promise.resolve(),
+    };
+    if (analysis.reunderwriting) return <RebalanceAnswer key={key} {...shared} />;
+    if (analysis.stock && !analysis.allocation) return <StockAnswer key={key} {...shared} />;
+    if (analysis.theme) return <ThemeAnswer key={key} {...shared} onAgree={o.onAgree} />;
+    if (!analysis.allocation) return <ReviewAnswer key={key} {...shared} />;
+    const cash = o.cash ?? analysis.allocation.context;
+    return (
+      <Answer
+        key={key}
+        {...shared}
+        sent={{ question: analysis.question, newCash: cash }}
+        onRerun={risk => o.onRerun({ ...cash, risk_context: risk })}
+      />
+    );
+  }
+
+  /** A stored analysis inside the conversation: the same memo, reading the stored values, with its own save control. */
+  function storedResult(analysis: Analysis, reference: ArtifactReference) {
+    const open = () => setThreadResult({ id: reference.id, analysis });
+    const savedHere = savedResults[reference.id] ?? null;
+    return (
+      <>
+        {memo(analysis, {
+          cite: {
+            numbers: evidenceFor(analysis, null).numbers,
+            onCite: id => {
+              open();
+              cite.onCite(id);
+            },
+          },
+          saved: savedHere,
+          onTab: next => {
+            open();
+            openTab(next);
+          },
+          snapshot: committedSnapshot,
+          onRerun: next =>
+            submitWorkflow(analysis.question, { workflow: "run_new_cash_allocation", new_cash: next }),
+        })}
+        <div className={threadStyles.save}>
+          {savedHere ? (
+            <span>Saved to Decisions {clock(savedHere.saved_at)}</span>
+          ) : (
+            <Button
+              variant="secondary"
+              loading={savingResult === reference.id}
+              onClick={() => void saveResult(reference.id, analysis)}
+            >
+              Save decision
+            </Button>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  /** An explicit form submission into the open conversation. It starts a new run; it never edits an earlier one. */
+  function submitWorkflow(text: string, workflowInput: Record<string, unknown>) {
+    setWorkflow(null);
+    void conversation.send(text.trim(), workflowInput);
+  }
+
+  function openClarificationForm(form: string) {
+    if (form === "holdings") return openTab("holdings");
+    setResuming(true);
+    setWorkflow(form === "/theme" ? "theme" : "new-cash");
+    if (form === "/new-cash") setQuestion(current => current || "Where should this new cash go?");
+    setCollapsed(false);
+    setTimeout(() => document.getElementById("ask")?.focus(), 0);
+  }
 
   const activeSnapshot = answer?.snapshot || committedSnapshot;
   let center;
@@ -1395,6 +1526,15 @@ export default function DeskPage() {
           }}
           onAskAgain={chat}
           onReload={() => void conversation.reload()}
+          snapshot={committedSnapshot}
+          committedRevision={committedRevision}
+          proposals={proposalsLoaded ? proposals : null}
+          theme={theme}
+          busy={conversation.busy}
+          renderResult={storedResult}
+          onReviewProposal={openProposal}
+          onOpenForm={openClarificationForm}
+          onSubmitWorkflow={submitWorkflow}
         />
         {isDirty && (
           <p className="cap" data-testid="draft-note" style={{ marginTop: 24 }}>
@@ -1404,75 +1544,20 @@ export default function DeskPage() {
         <div ref={threadEnd} />
       </>
     );
-  else if (answer?.analysis.reunderwriting)
-      center = (
-        <RebalanceAnswer
-          key={answer.analysis.portfolio.reviewed_at}
-          result={answer.analysis}
-          snapshot={activeSnapshot}
-          cite={cite}
-          saved={saved}
-          onTab={openTab}
-          onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
-        />
-      );
-    else if (answer?.analysis.stock && !answer.analysis.allocation)
-      center = (
-        <StockAnswer
-          key={answer.analysis.portfolio.reviewed_at}
-          result={answer.analysis}
-          snapshot={activeSnapshot}
-          cite={cite}
-          saved={saved}
-          onTab={openTab}
-          onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
-        />
-      );
-    else if (answer?.analysis.theme)
-      center = (
-        <ThemeAnswer
-          key={answer.analysis.portfolio.reviewed_at}
-          result={answer.analysis}
-          snapshot={activeSnapshot}
-          cite={cite}
-          saved={saved}
-          onTab={openTab}
-          onAgree={agreeTheme}
-          onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
-        />
-      );
-    else if (answer && !answer.analysis.allocation)
-      center = (
-        <ReviewAnswer
-          key={answer.analysis.portfolio.reviewed_at}
-          result={answer.analysis}
-          snapshot={activeSnapshot}
-          cite={cite}
-          saved={saved}
-          onTab={openTab}
-          onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
-        />
-      );
-    else if (answer) {
-      const cash = answer.newCash ?? answer.analysis.allocation!.context;
-      center = (
-        <Answer
-          key={answer.analysis.portfolio.reviewed_at}
-          result={answer.analysis}
-          sent={{ question: answer.question, newCash: cash }}
-          snapshot={activeSnapshot}
-          cite={cite}
-          saved={saved}
-          onTab={openTab}
-          onConfirm={(action, notes) => (saved ? confirm(saved, action, notes) : Promise.resolve())}
-        onRerun={risk => {
-          const next = { ...cash, risk_context: risk };
-          setNewCash(next);
-          void analyze({ question: answer.question, newCash: next });
-        }}
-      />
-    );
-  } else if (restoring)
+  else if (answer)
+    center = memo(answer.analysis, {
+      cite,
+      saved,
+      onTab: openTab,
+      snapshot: activeSnapshot,
+      cash: answer.newCash,
+      onAgree: agreeTheme,
+      onRerun: next => {
+        setNewCash(next);
+        void analyze({ question: answer.question, newCash: next });
+      },
+    });
+  else if (restoring)
     center = (
       <p className="cap" role="status">
         Loading your saved portfolio…
@@ -1899,7 +1984,19 @@ export default function DeskPage() {
             collapsed={collapsed && !!(answer || failure || run)}
             onExpand={() => setCollapsed(false)}
             onSubmit={() => {
-              if (workflow === "new-cash") void analyze({ question, newCash, stock: null });
+              if (resuming && showThread && workflow) {
+                // Opened from a clarification: the explicit form inputs go to the conversation as a new run.
+                // The theme is agreed in a second step, once the analyst has the complete form.
+                if (workflow === "new-cash")
+                  submitWorkflow(question, { workflow: "run_new_cash_allocation", new_cash: newCash });
+                else
+                  submitWorkflow(question.trim() || `Explore theme: ${theme.name}`, {
+                    workflow: "run_theme_exploration",
+                    theme: { ...theme, confirmed: false },
+                  });
+                setQuestion("");
+                setNewCash(current => ({ ...current, confirmed: false }));
+              } else if (workflow === "new-cash") void analyze({ question, newCash, stock: null });
               else if (workflow === "theme")
                 void analyze({
                   question: question.trim() || `Explore theme: ${theme.name}`,

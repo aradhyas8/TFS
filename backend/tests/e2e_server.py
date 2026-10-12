@@ -52,17 +52,57 @@ def local_connect(sock: socket.socket, address: Any) -> None:
 socket.socket.connect = local_connect  # type: ignore[method-assign]
 
 
+# One capability call per scripted phrase; the capability itself runs for real against the fake providers.
+CONVERSATION_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
+    ("holdings", "get_holdings", {"offset": 0, "limit": 100}),
+    ("exposure in chat", "run_exposure_review", {}),
+    ("stock in chat", "run_stock_analysis", {}),
+    ("deposit in chat", "run_new_cash_allocation", {}),
+    ("idea in chat", "run_theme_exploration", {}),
+    ("exposure numbers", "review_portfolio", {}),
+    ("latest news", "web_search", {"query": "Acme guidance news"}),
+    ("search outage", "web_search", {"query": "Acme outage"}),
+    ("Set my ACME shares to 12", "prepare_portfolio_proposal",
+     {"edits": [{"action": "set_quantity", "position_id": "tfsa-acme", "quantity": "12"}]}),
+    ("Set my GHOST shares", "prepare_portfolio_proposal",
+     {"edits": [{"action": "set_quantity", "position_id": "ghost", "quantity": "5"}]}),
+]
+
+
 class ConversationTestTransport:
     """Scripted conversation turns for the desk thread journeys, keyed by the latest question."""
 
-    async def respond(self, messages: list[dict[str, Any]], **_kwargs: Any) -> ModelTurn:
+    async def respond(self, messages: list[dict[str, Any]], **kwargs: Any) -> ModelTurn:
+        if kwargs.get("output_schema_name") == "portfolio_recommendation":
+            # A workflow run from the thread reaches the same scripted workflow model as the desk forms.
+            choice = kwargs.get("tool_choice")
+            name = choice.get("name") if isinstance(choice, dict) else None
+            return await BrowserTestModel().respond(
+                messages, require_tool=name == "review_portfolio",
+                forced_tool=name if name != "review_portfolio" else None)
+        if kwargs.get("tool_choice") == "required":
+            # The hosted search request: a completed search with cited text, or an outage.
+            if "outage" in messages[-1]["content"]:
+                raise ValueError("the hosted search returned nothing usable")
+            return ModelTurn(
+                text="Acme raised guidance this week.",
+                citations=[{"type": "url_citation", "url": "https://news.example/acme", "title": "Acme lifts guidance",
+                            "start_index": 0, "end_index": 20, "cited_text": "Acme raised guidance"}],
+                searches=[{"status": "completed", "queries": ["Acme guidance"],
+                           "sources": [{"url": "https://news.example/acme"}, {"url": "https://other.example/acme"}]}])
         question = json.loads(next(m["content"] for m in reversed(messages) if m.get("role") == "user"))["text"]
         if "Fail" in question:
             raise RuntimeError("the fake model is unavailable")
         if "Slow" in question:
             await asyncio.sleep(3)
-        if "holdings" in question and not any(m.get("type") == "function_call_output" for m in messages):
-            return ModelTurn(calls=[ToolCall("thread_holdings", "get_holdings", json.dumps({"offset": 0, "limit": 100}))])
+        if not any(m.get("type") == "function_call_output" for m in messages):
+            # An explicit form submission names its workflow; the stock choice arrives as explicit input.
+            explicit = json.loads(messages[1]["content"]).get("explicit_workflow")
+            if explicit:
+                return ModelTurn(calls=[ToolCall("thread_workflow", explicit, "{}")])
+            for phrase, tool, arguments in CONVERSATION_TOOLS:
+                if phrase in question:
+                    return ModelTurn(calls=[ToolCall("thread_tool", tool, json.dumps(arguments))])
         return ModelTurn(text=f"Plain answer to: {question}\n\nNo portfolio research was needed.")
 
 
