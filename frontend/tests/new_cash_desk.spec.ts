@@ -146,7 +146,7 @@ test("portfolio: simple import asks only what's unknown, then holdings and rules
   await start(page);
   await importCsv(page, SIMPLE_CSV);
   await checkPortfolio(page, async view => {
-    await expect(view.getByRole("status").filter({ hasText: "holding needs you" })).toContainText("BROAD needs an exchange");
+    await expect(view.getByRole("note").filter({ hasText: "holding needs you" })).toContainText("BROAD needs an exchange");
     await expect(view.getByRole("row", { name: /Cash/ })).toHaveCount(0);
   });
   await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
@@ -167,7 +167,7 @@ test("portfolio: simple import asks only what's unknown, then holdings and rules
   await expect(preview).toHaveCount(0);
   await expect(needs).toHaveCount(0);
   await checkPortfolio(page, async view => {
-    await expect(view.getByRole("status").filter({ hasText: "holding needs you" })).toHaveCount(0);
+    await expect(view.getByRole("note").filter({ hasText: "holding needs you" })).toHaveCount(0);
   });
   await openDetails(page);
   await details(page).getByRole("tab", { name: "Holdings" }).click();

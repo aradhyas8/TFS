@@ -2,13 +2,16 @@ import { Bookmark, ChartPie, Leaf, Plus, X } from "lucide-react";
 import type { Snapshot, ThreadSummary } from "../../lib/contracts";
 import { fullDate, shortDate } from "./format";
 
+/** What the centre of the desk shows: the conversation, or the portfolio or decisions in its place. */
+export type DeskView = "chat" | "portfolio" | "decisions";
+
 type Props = {
   snapshot: Snapshot | null;
   /** The committed portfolio revision, and how much waits on the investor: holdings to identify and prepared changes. */
   revision: number | null; waiting: number;
   /** Saved decisions with no recorded action. */
-  open: number;
-  view: "chat" | "portfolio" | "decisions"; running: string | null;
+  unconfirmed: number;
+  view: DeskView; running: string | null;
   threads: ThreadSummary[] | null; threadsError: boolean; threadId: string | null; onThread: (id: string) => void;
   /** Questions that were not sent from a new conversation since left: each one reopens that conversation. */
   unsent: { key: string; text: string }[]; onUnsent: (key: string) => void;
@@ -19,7 +22,7 @@ type Props = {
 
 /** Left rail: start a conversation, open the portfolio or the decisions, or go back to a conversation.
  *  Holdings and saved decisions have their own views, so they are not listed here again. */
-export default function Rail({ snapshot, revision, waiting, open, view, running, threads, threadsError, threadId, onThread, unsent, onUnsent, onNew, onPortfolio, onDecisions, onClose, inert }: Props) {
+export default function Rail({ snapshot, revision, waiting, unconfirmed, view, running, threads, threadsError, threadId, onThread, unsent, onUnsent, onNew, onPortfolio, onDecisions, onClose, inert }: Props) {
   return <nav className="rail" aria-label="Portfolio, conversations and decisions" id="rail" inert={inert}>
     <div className="rail-head">
       <span className="wordmark"><span className="mark" aria-hidden="true"><Leaf size={14} /></span>Analyst</span>
@@ -35,7 +38,7 @@ export default function Rail({ snapshot, revision, waiting, open, view, running,
       </button>
       <button type="button" className="nav-item" onClick={onDecisions} aria-current={view === "decisions" ? "page" : undefined} data-testid="all-decisions-link">
         <Bookmark size={17} aria-hidden="true" /><span>Decisions</span>
-        {open > 0 && <span className="count quiet">{open} open<span className="sr-only">, not confirmed</span></span>}
+        {unconfirmed > 0 && <span className="count quiet">{unconfirmed} open<span className="sr-only">, not confirmed</span></span>}
       </button>
     </div>
 

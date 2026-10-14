@@ -109,13 +109,14 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
   type is edited in its row. Below 768 each holding is a two-line row; nothing scrolls sideways.
 - Values, weights, allocation and the rule checks come only from an analysis of exactly the committed revision: a
   stored result that names this revision, or the last desk answer when it valued exactly these holdings. A
-  hypothetical draft analysis never counts. Without one, the total says "Not valued yet" and points to a review, the
+  hypothetical draft analysis never counts, whether the result or its stored reference says so. Rule checks made
+  against another cap or budget than the committed one are dropped and read "Not checked yet". Without one, the total says "Not valued yet" and points to a review, the
   allocation is a count by kind, and the rules say "Not checked yet". A holding the analysis could not value says
   "Not valued"; cash before a valuation is its own amount in its own currency, so a zero balance reads C$0.
 - The freshness line under the table says when it was valued, the holdings date, the quote dates, the exchange rates
   and how many delayed quotes are cached. Nothing is called live.
-- Draft edits (fund types, rules, benchmark) are tinted green in their row and named in the white draft bar that
-  floats at the foot of the page: Discard, Analyze this draft, Review changes. Review opens the existing review
+- Draft edits (fund types, rules, benchmark) are named in the white draft bar that floats at the foot of the page,
+  and a fund type edit also tints its row green: Discard, Analyze this draft, Review changes. Review opens the existing review
   dialog; nothing is saved until it is confirmed. Import and identify also go through that dialog.
 - Changes lists prepared changes waiting for review, each with Review and Discard; a change prepared from an older
   revision says so.
@@ -147,7 +148,14 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
 - The mockup's draft edits a share count. The app edits shares only through an import or an identity correction, so
   the draft bar names fund type, rule and benchmark edits instead.
 - The mockup shows "Funds" in the allocation. The app splits stocks, ETFs and cash, the kinds a holding has.
-- The holdings table has an eighth column for Analyze, and the status column holds a fund's type as a select.
+- The holdings table has an eighth column for Analyze. The mockup's "Against cap" column is headed Status, because
+  it also holds a fund's type, as a select, where the mockup writes "Fund".
+- The header has Back to chat, which the mockup does not show. Below 768 the revision chip and Refresh prices leave
+  the header; the revision is written at the top of the page instead.
+- Sizes taken from the mockup outside the 15, 14 and 12 scale: the view title 17, the portfolio total 38 (32 on a
+  phone), the not-valued total 26, 13.5 in the table, notices and the draft bar, 12.5 in summary captions, legends
+  and chips, 10.5 in holding initials. The empty states use 17 for their heading.
+- Buttons in the portfolio and decisions views are Arc buttons at their small size, which is fully round at 36px.
 - The summary strip shows holdings and accounts, the rules as set, and what is waiting. A portfolio value and a count of
   companies over the cap need a valuation, which exists only after an analysis.
 

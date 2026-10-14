@@ -648,11 +648,11 @@ export function ImportCsv({ snapshot, baseRevision, onProposal, onImported, onEr
   </div>;
 }
 
+const baselineSum = (settings: PortfolioSettings) =>
+  (["stocks", "diversified_etfs", "sector_theme_etfs", "cash"] as const).reduce((total, key) => total + Number(settings.baseline?.[key] ?? 0), 0);
+
 /** True when the target mix adds up to more than 100%, which can't be reviewed. */
-export function baselineOver(settings: PortfolioSettings): boolean {
-  const sum = (["stocks", "diversified_etfs", "sector_theme_etfs", "cash"] as const).reduce((total, key) => total + Number(settings.baseline?.[key] ?? 0), 0);
-  return sum > 1.00001;
-}
+export const baselineOver = (settings: PortfolioSettings) => baselineSum(settings) > 1.00001;
 
 /** The investor's rules and benchmark, edited in the draft. Nothing here is saved until the draft is reviewed and confirmed. */
 export function RulesEditor({ settings, setSettings, benchmark, setBenchmark, editable, onError, actions }: {
@@ -670,7 +670,6 @@ export function RulesEditor({ settings, setSettings, benchmark, setBenchmark, ed
     });
   }
   const over = baselineOver(settings);
-  const baselineSum = (["stocks", "diversified_etfs", "sector_theme_etfs", "cash"] as const).reduce((total, key) => total + Number(settings.baseline?.[key] ?? 0), 0);
   return <fieldset className="pgroup pnote" disabled={!editable} style={{ border: 0, padding: "12px 0 0" }}>
       <legend className="lbl" style={{ padding: 0, marginBottom: 12 }}>Your rules</legend>
       <div className="rules">
@@ -691,7 +690,7 @@ export function RulesEditor({ settings, setSettings, benchmark, setBenchmark, ed
         <PercentInput label="Sector/theme ETFs (%)" value={settings.baseline?.sector_theme_etfs} onChange={sector_theme_etfs => updateBaseline("sector_theme_etfs", sector_theme_etfs)} />
         <PercentInput label="Cash (%)" value={settings.baseline?.cash} onChange={cash => updateBaseline("cash", cash)} />
       </div>
-      {over && <span className="cap amber" role="alert">Target mix cannot exceed 100% (currently {Number((baselineSum * 100).toFixed(2))}%)</span>}
+      {over && <span className="cap amber" role="alert">Target mix cannot exceed 100% (currently {Number((baselineSum(settings) * 100).toFixed(2))}%)</span>}
       <BenchmarkInput benchmark={benchmark} onChange={setBenchmark} disabled={!editable} onError={onError} />
       {actions && (
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>

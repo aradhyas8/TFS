@@ -2,6 +2,9 @@ import { ArrowLeft, Banknote, Bookmark, ChartPie, Check, Lightbulb, Scale, Trend
 import { useState, type ReactNode } from "react";
 import { actionLabel, type DecisionWorkflow, type SavedDecision } from "../../lib/contracts";
 import { decisionLabel, doneLabel, fullDate, shortDate } from "./format";
+import { Alert } from "@/components/arc/alert/alert";
+import { Button } from "@/components/arc/button/button";
+import { Skeleton } from "@/components/arc/skeleton/skeleton";
 
 type Props = {
   /** The menu button, so the rail drawer opens from this view too. */
@@ -42,21 +45,21 @@ export default function Register({ menu, decisions, state, onOpen, onDelete, onC
           {decisions.length > 0 && <span className="chip hide-sm n">{decisions.length} saved{open ? ` · ${open} not confirmed` : ""}</span>}
         </div>
         <div className="ctx-right">
-          <button type="button" className="btn ghost small" onClick={onBack}><ArrowLeft size={15} aria-hidden="true" />Back to chat</button>
+          <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft size={15} aria-hidden="true" />Back to chat</Button>
         </div>
       </header>
       <div className="pview-body dview" role="region" aria-label="Decisions register">
         <p className="cap dintro">Each decision is kept as it was saved, with the portfolio and evidence of that day. It does not change when your holdings do; your holdings today are on Portfolio.</p>
-        {state === "loading" ? <p className="cap" role="status">Loading saved decisions…</p>
-          : state === "failed" ? <p className="amber" role="alert">Saved decisions couldn&apos;t be loaded. Check that the analyst service is running, then reload the page.</p>
+        {state === "loading" ? <Skeleton label="Loading saved decisions" lines={4} />
+          : state === "failed" ? <Alert tone="danger" title="Saved decisions couldn't be loaded">Check that the analyst service is running, then reload the page.</Alert>
           : decisions.length === 0 ? <div className="pempty">
             <h2>No saved decisions yet.</h2>
             <p className="cap">Save a decision from any analysis result. It is kept here with its evidence, and you can record what you did later.</p>
-            <span><button type="button" className="btn secondary small" onClick={onBack}>Ask a question</button></span>
+            <span><Button variant="secondary" size="sm" onClick={onBack}>Ask a question</Button></span>
           </div>
           : <>
             <div className="dfilters">
-              <label className="field dfield"><span className="sr-only">Workflow</span>
+              <label className="field dfield">
                 <select className="in pill-select" aria-label="Filter by workflow" value={workflowFilter} onChange={e => setWorkflowFilter(e.target.value)}>
                   <option value="all">All workflows</option>
                   <option value="review">Portfolio review</option>
@@ -76,7 +79,7 @@ export default function Register({ menu, decisions, state, onOpen, onDelete, onC
             </div>
             {filtered.length === 0 ? <div className="pempty">
               <p className="cap">No decisions match these filters.</p>
-              <span><button type="button" className="btn ghost small" onClick={() => { setWorkflowFilter("all"); setStatusFilter("all"); }}>Clear filters</button></span>
+              <span><Button variant="ghost" size="sm" onClick={() => { setWorkflowFilter("all"); setStatusFilter("all"); }}>Clear filters</Button></span>
             </div>
               : <ul className="dlist" aria-label="Saved decisions">
                 {filtered.map(decision => {
@@ -84,7 +87,7 @@ export default function Register({ menu, decisions, state, onOpen, onDelete, onC
                   const [icon, tint] = decision.workflow ? ICON[decision.workflow] : [<Bookmark key="i" size={16} />, "plain"];
                   const sources = decision.evidence_references.length;
                   return <li className="dcard" key={decision.id}>
-                    <button type="button" className="dopen" data-testid="decision-row" onClick={() => onOpen(decision)} aria-label={`Open ${label}: ${decision.question}`}>
+                    <button type="button" className="dopen" data-testid="decision-row" onClick={() => onOpen(decision)}>
                       <span className={`ico ${tint}`} aria-hidden="true">{icon}</span>
                       <span className="dmain">
                         <b className="dtitle">{label}</b>

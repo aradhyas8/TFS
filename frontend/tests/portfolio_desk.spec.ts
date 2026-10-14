@@ -50,7 +50,7 @@ test("the portfolio opens as its own view with holdings, cash and what is not va
   const view = portfolio(page);
   await expect(rail(page).getByRole("button", { name: /^Portfolio/ })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { name: "Portfolio", level: 1 })).toBeVisible();
-  await expect(view.getByText(/^Revision \d+ · holdings as of Sep 30, 2026$/)).toBeVisible();
+  await expect(view.getByText(/^Revision \d+ · holdings as of Sep 30, 2026$/).filter({ visible: true })).toBeVisible();
   // Details and the composer belong to the conversation, not to this view.
   await expect(ask(page)).toBeHidden();
 
@@ -71,8 +71,11 @@ test("the portfolio opens as its own view with holdings, cash and what is not va
   await expect(table.getByRole("row", { name: /Cash CAD/ })).toContainText("C$0");
   await expect(table.getByRole("row", { name: /Cash CAD/ })).not.toContainText("Not valued");
 
+  // Where the figures come from: the holdings date and the exchange rate on file. Nothing is called live.
+  await expect(view.getByText(/^Holdings as of Sep 30, 2026\. No analysis of this revision yet/)).toContainText("USD to CAD 1.35 (Sep 30)");
+
   // The holding that still needs an exchange is named, and identifying it prepares a reviewed change.
-  await expect(view.getByRole("status").filter({ hasText: "1 holding needs you" })).toContainText("NOVA needs an exchange");
+  await expect(view.getByRole("note").filter({ hasText: "1 holding needs you" })).toContainText("NOVA needs an exchange");
 
   // By account.
   await view.getByRole("radio", { name: "RRSP" }).check();
@@ -111,7 +114,14 @@ test("draft edits stay separate from the committed portfolio until they are revi
   await expect(draft).toContainText("Nothing is saved yet");
   await expect(view.getByRole("row", { name: /BROAD/ })).toHaveAttribute("data-draft", "true");
 
+  // The draft is this session's only: a reload shows the committed fund type again.
+  await page.reload();
+  await page.getByRole("navigation", { name: "Portfolio, conversations and decisions" }).getByRole("button", { name: /^Portfolio/ }).click();
+  await expect(view.getByLabel("Fund type for BROAD")).toHaveValue("diversified");
+  await expect(draft).toBeHidden();
+
   // Discard puts the committed fund type back.
+  await view.getByLabel("Fund type for BROAD").selectOption("sector_theme");
   await draft.getByRole("button", { name: "Discard" }).click();
   await expect(draft).toBeHidden();
   await expect(view.getByLabel("Fund type for BROAD")).toHaveValue("diversified");

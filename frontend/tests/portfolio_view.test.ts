@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { allocation, draftEdits, holdingStatus, valuationFor } from "../components/desk/portfolio";
+import { allocation, draftEdits, holdingStatus, ruleChecks, valuationFor } from "../components/desk/portfolio";
 import type { Analysis, Position, Review, Snapshot } from "../lib/contracts";
 
 const ACME: Position = { id: "p1", account_id: "tfsa", kind: "stock", currency: "USD", ticker: "ACME", listing: "XNAS", shares: "10" };
@@ -18,15 +18,17 @@ const valued = (positions: Position[], basis?: "committed" | "hypothetical") =>
 test.describe("valuationFor", () => {
   test("a result stored with this revision values the portfolio", () => {
     const result = valued([ACME, CASH]);
-    expect(valuationFor(result, 14, 14, SNAPSHOT)).toBe(result.portfolio);
+    expect(valuationFor(result, { revision: 14, basis: "committed" }, 14, SNAPSHOT)).toBe(result.portfolio);
   });
 
   test("a result stored with another revision does not", () => {
-    expect(valuationFor(valued([ACME, CASH]), 13, 14, SNAPSHOT)).toBeNull();
+    expect(valuationFor(valued([ACME, CASH]), { revision: 13, basis: "committed" }, 14, SNAPSHOT)).toBeNull();
   });
 
   test("a hypothetical draft analysis never values the committed portfolio", () => {
     expect(valuationFor(valued([ACME, CASH], "hypothetical"), null, 14, SNAPSHOT)).toBeNull();
+    // A stored conversation result names its basis on its reference, with no revision.
+    expect(valuationFor(valued([ACME, CASH]), { revision: null, basis: "hypothetical" }, 14, SNAPSHOT)).toBeNull();
   });
 
   test("without a revision, only a result of exactly these holdings is used", () => {
@@ -38,7 +40,7 @@ test.describe("valuationFor", () => {
 
   test("nothing to value without a result or a portfolio", () => {
     expect(valuationFor(null, null, 14, SNAPSHOT)).toBeNull();
-    expect(valuationFor(valued([ACME, CASH]), 14, 14, null)).toBeNull();
+    expect(valuationFor(valued([ACME, CASH]), { revision: 14, basis: "committed" }, 14, null)).toBeNull();
   });
 });
 
@@ -96,5 +98,18 @@ test.describe("holding status and allocation", () => {
     expect(mix.etfs).toBeCloseTo(0.3);
     expect(mix.cash).toBeCloseTo(0.2);
     expect(allocation(review(["0.4", null, "0.3", "0.2"]))).toBeNull();
+  });
+});
+
+test.describe("ruleChecks", () => {
+  const checked = (cap: string | null, active: string | null) =>
+    ({ guardrails: { settings: { single_company_cap: cap, active_budget: active }, companies: [], active: {} } }) as unknown as Review;
+
+  test("the analysis checks count only for the rules committed now", () => {
+    const review = checked("0.15", "0.3");
+    expect(ruleChecks(review, { single_company_cap: "0.15", active_budget: "0.3" })).toBe(review.guardrails);
+    expect(ruleChecks(review, { single_company_cap: "0.12", active_budget: "0.3" })).toBeNull();
+    expect(ruleChecks(checked("0.15", null), { single_company_cap: "0.15", active_budget: "0.3" })).toBeNull();
+    expect(ruleChecks(null, { single_company_cap: "0.15" })).toBeNull();
   });
 });

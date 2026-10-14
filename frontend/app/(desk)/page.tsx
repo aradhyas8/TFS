@@ -36,13 +36,13 @@ import {
   type ThemeInput,
   type UnresolvedHolding,
 } from "../../lib/contracts";
-import Rail from "../../components/desk/Rail";
+import Rail, { type DeskView } from "../../components/desk/Rail";
 import Composer from "../../components/desk/Composer";
 import Register from "../../components/desk/Register";
 import Panel, { evidenceFor, ImportCsv } from "../../components/desk/Panel";
 import PortfolioPreview from "../../components/desk/PortfolioPreview";
 import PortfolioView from "../../components/desk/PortfolioView";
-import { draftEdits, valuationFor } from "../../components/desk/portfolio";
+import { draftEdits, ruleChecks, valuationFor } from "../../components/desk/portfolio";
 import {
   Answer,
   Clarify,
@@ -321,9 +321,8 @@ export default function DeskPage() {
   const [reopened, setReopened] = useState<SavedDecision | null>(null);
   // Portfolio and Decisions are views of their own; the conversation is the default. Any step that starts or
   // opens something in the conversation returns to it.
-  const [view, setView] = useState<"chat" | "portfolio" | "decisions">("chat");
-  const registerOpen = view !== "chat";
-  const setRegisterOpen = (open: boolean) => setView(open ? "decisions" : "chat");
+  const [view, setView] = useState<DeskView>("chat");
+  const viewOpen = view !== "chat";
   const [decisionsState, setDecisionsState] = useState<"loading" | "ready" | "failed">("loading");
   const [tab, setTab] = useState<Tab>("holdings");
   const [focus, setFocus] = useState<string | null>(null);
@@ -406,7 +405,7 @@ export default function DeskPage() {
   // Durable conversation: threads, messages and runs live in the backend, never in the cached last answer.
   const conversation = useConversation();
   // The stored result the Details panel reads while a conversation is on screen: the one the investor last opened.
-  const [threadResult, setThreadResult] = useState<{ id: string; analysis: Analysis; revision?: number | null } | null>(null);
+  const [threadResult, setThreadResult] = useState<{ id: string; analysis: Analysis; revision?: number | null; basis?: ArtifactReference["basis"] } | null>(null);
   // Which decision each stored result was saved as in this session: artifact ID to decision ID. The decision
   // itself is always read from the decisions list, so a deleted decision is no longer shown as saved.
   // ponytail: kept in memory, so after a reload a result can be saved a second time. Record the artifact ID
@@ -599,9 +598,11 @@ export default function DeskPage() {
 
   // The portfolio view's values: only an analysis of exactly the committed revision. The stored result on
   // screen comes first, then the last desk answer.
-  const valuation =
-    valuationFor(threadResult?.analysis ?? null, threadResult?.revision, committedRevision, committedSnapshot) ??
-    valuationFor(answer?.analysis ?? null, answer?.analysis.artifact_reference?.revision, committedRevision, committedSnapshot);
+  // Its rule checks count only while they were made against the rules committed now.
+  const valued =
+    valuationFor(threadResult?.analysis ?? null, threadResult ?? null, committedRevision, committedSnapshot) ??
+    valuationFor(answer?.analysis ?? null, answer?.analysis.artifact_reference ?? null, committedRevision, committedSnapshot);
+  const valuation = valued && { ...valued, guardrails: ruleChecks(valued, committedSettings) };
   const edits = draftEdits(committedPortfolio, { snapshot: draftSnapshot, settings: draftSettings, benchmark: draftBenchmark });
   const isDirty = isDraftDirty(committedPortfolio, {
     snapshot: draftSnapshot,
@@ -753,7 +754,7 @@ export default function DeskPage() {
   }
 
   const showThread =
-    !registerOpen && !reopened && !run && !clarify && !failure && (!!conversation.openId || !!conversation.pending);
+    !viewOpen && !reopened && !run && !clarify && !failure && (!!conversation.openId || !!conversation.pending);
   const result = (showThread ? threadResult?.analysis : answer?.analysis) ?? null;
   const evidence = evidenceFor(reopened ? null : result, reopened);
   const cite = {
@@ -775,7 +776,7 @@ export default function DeskPage() {
     setClarify(null);
     setSaved(null);
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
     setCollapsed(true);
     setNotice("");
     try {
@@ -899,7 +900,7 @@ export default function DeskPage() {
     setClarify(null);
     setSaved(null);
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
     setCollapsed(true);
     setNotice("");
 
@@ -1148,7 +1149,7 @@ export default function DeskPage() {
     setFailure(null);
     setClarify(null);
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
     setWorkflow(null);
     setCollapsed(false);
     setNotice("");
@@ -1188,7 +1189,7 @@ export default function DeskPage() {
     // A question asked from another view (the register, a workflow answer) starts a new conversation
     // rather than landing in a thread that is not on screen.
     // Asked from the new conversation already on screen, it stays in that same view.
-    if (!showThread) conversation.close(registerOpen || !!reopened || !!run || !!clarify || !!failure || !!answer);
+    if (!showThread) conversation.close(viewOpen || !!reopened || !!run || !!clarify || !!failure || !!answer);
     showConversation();
     void sendToConversation(text.trim());
   }
@@ -1288,7 +1289,7 @@ export default function DeskPage() {
     setQuestion(`/stock ${position.ticker}`);
     setRailOpen(false);
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
     setCollapsed(false);
     setTimeout(() => document.getElementById("ask")?.focus(), 0);
   }
@@ -1407,7 +1408,7 @@ export default function DeskPage() {
     setClarify(null);
     setSaved(null);
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
     conversation.close();
     try {
       localStorage.removeItem(ANSWER_KEY);
@@ -1425,7 +1426,7 @@ export default function DeskPage() {
 
   function rerunDecision(decision: SavedDecision) {
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
 
     if (decision.workflow === "review") {
       setWorkflow(null);
@@ -1503,9 +1504,7 @@ export default function DeskPage() {
       : null;
   const sentStock = tickerOf(sent?.stock, sent?.candidate);
   const sentLabel = sent?.newCash && newCashLabel(sent.newCash, committedSnapshot);
-  const ctxLabel = registerOpen
-    ? "Decisions Register"
-    : reopened
+  const ctxLabel = reopened
       ? `Decision · ${shortDate(reopened.saved_at)}`
       : showThread
         ? conversation.thread?.messages.find(message => message.role === "user")?.text || "Conversation"
@@ -1650,7 +1649,7 @@ export default function DeskPage() {
 
   /** A stored analysis inside the conversation: the same memo, reading the stored values, with its own save control. */
   function storedResult(analysis: Analysis, reference: ArtifactReference, source: Snapshot) {
-    const open = () => setThreadResult({ id: reference.id, analysis, revision: reference.revision });
+    const open = () => setThreadResult({ id: reference.id, analysis, revision: reference.revision, basis: reference.basis });
     const savedHere = decisions.find(decision => decision.id === savedResults[reference.id]) ?? null;
     return (
       <>
@@ -1919,7 +1918,7 @@ export default function DeskPage() {
 
   // The home screen: no answer, conversation or decision is open, so the composer sits in the middle of the page.
   const home =
-    !registerOpen && !reopened && !run && !clarify && !failure && !showThread && !answer && !restoring;
+    !viewOpen && !reopened && !run && !clarify && !failure && !showThread && !answer && !restoring;
   const blockedByIdentity = committedUnresolved.length > 0;
   const rulesSet = [
     committedSettings.single_company_cap && `Cap ${pct(committedSettings.single_company_cap)}`,
@@ -2053,7 +2052,7 @@ export default function DeskPage() {
         snapshot={committedSnapshot}
         revision={committedRevision}
         waiting={committedUnresolved.length + pendingProposals.length}
-        open={decisions.filter(decision => !decision.confirmed_action).length}
+        unconfirmed={decisions.filter(decision => !decision.confirmed_action).length}
         view={view}
         onClose={closeRail}
         inert={sheet}
@@ -2354,7 +2353,7 @@ export default function DeskPage() {
               </div>
             )}
             {center}
-            {!showThread && !run && !reopened && !registerOpen && !clarify && !failure && draftBasis}
+            {!showThread && !run && !reopened && !viewOpen && !clarify && !failure && draftBasis}
             <p className="sr-only" aria-live="polite">
               {result && !run ? "Answer ready." : ""}
             </p>

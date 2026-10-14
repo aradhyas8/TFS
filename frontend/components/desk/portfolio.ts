@@ -1,4 +1,4 @@
-import { BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type BenchmarkSetting, type PortfolioSettings, type Position, type Review, type SavedPortfolio, type Snapshot } from "../../lib/contracts";
+import { BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type ArtifactReference, type BenchmarkSetting, type GuardrailReview, type PortfolioSettings, type Position, type Review, type SavedPortfolio, type Snapshot } from "../../lib/contracts";
 import { pct } from "./format";
 
 /** Rows an analysis adds for its own purposes: the benchmark fund, a new-cash destination, a candidate. */
@@ -9,11 +9,12 @@ const sameHolding = (a: Position, b: Position) =>
 
 /** The valuation the portfolio page may show for the committed portfolio: an analysis of exactly this revision.
  *  A stored result names its revision; a desk answer names none, so it counts only when it valued exactly these
- *  holdings. A hypothetical draft analysis never values the committed portfolio. Nothing is estimated. */
-export function valuationFor(result: Analysis | null, resultRevision: number | null | undefined, revision: number | null, snapshot: Snapshot | null): Review | null {
+ *  holdings. A hypothetical draft analysis never values the committed portfolio, whether the result or its stored
+ *  reference says so. Nothing is estimated. */
+export function valuationFor(result: Analysis | null, stored: Partial<Pick<ArtifactReference, "revision" | "basis">> | null, revision: number | null, snapshot: Snapshot | null): Review | null {
   if (!result || !snapshot) return null;
-  if (result.artifact_reference?.basis === "hypothetical") return null;
-  if (resultRevision != null) return resultRevision === revision ? result.portfolio : null;
+  if (result.artifact_reference?.basis === "hypothetical" || stored?.basis === "hypothetical") return null;
+  if (stored?.revision != null) return stored.revision === revision ? result.portfolio : null;
   const valuedRows = result.portfolio.positions.map(row => row.supplied).filter(row => !isSynthetic(row.id));
   const held = snapshot.positions.filter(row => !isSynthetic(row.id));
   const matches = valuedRows.length === held.length && held.every(row => {
@@ -77,4 +78,13 @@ export function allocation(review: Review): { stocks: number; etfs: number; cash
   if (!rows.length || rows.some(row => row.weight === null)) return null;
   const sum = (kind: Position["kind"]) => rows.filter(row => row.supplied.kind === kind).reduce((total, row) => total + Number(row.weight), 0);
   return { stocks: sum("stock"), etfs: sum("etf"), cash: sum("cash") };
+}
+
+/** The analysis rule checks, only while they were made against the rules committed now: an older answer checked
+ *  against another cap or budget would put its verdict beside the new rule. */
+export function ruleChecks(review: Review | null, settings: PortfolioSettings): GuardrailReview | null {
+  const checks = review?.guardrails;
+  if (!checks) return null;
+  const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? null) === (b ?? null);
+  return same(checks.settings.single_company_cap, settings.single_company_cap) && same(checks.settings.active_budget, settings.active_budget) ? checks : null;
 }

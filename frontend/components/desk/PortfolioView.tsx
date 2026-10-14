@@ -1,7 +1,10 @@
 import { ArrowLeft, RefreshCw, TriangleAlert, Upload } from "lucide-react";
 import { useState, type Dispatch, type KeyboardEvent, type ReactNode, type SetStateAction } from "react";
-import { BENCHMARK_FUND, isSupportedStock, type BenchmarkSetting, type PortfolioProposal, type PortfolioSettings, type Position, type PriceRefresh, type Review, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { isSupportedStock, type BenchmarkSetting, type PortfolioProposal, type PortfolioSettings, type Position, type PriceRefresh, type Review, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import { baselineOver, Identify, ImportCsv, RulesEditor } from "./Panel";
+import { Alert } from "@/components/arc/alert/alert";
+import { Button } from "@/components/arc/button/button";
+import { Skeleton } from "@/components/arc/skeleton/skeleton";
 import { accountName, fullDate, money, pct, shortDate } from "./format";
 import { allocation, holdingStatus, isSynthetic, type HoldingStatus } from "./portfolio";
 
@@ -47,11 +50,13 @@ export default function PortfolioView(props: Props) {
     { id: "rules", label: "Rules and benchmark" },
     { id: "changes", label: props.pending.length ? `Changes · ${props.pending.length} pending` : "Changes" },
   ];
-  // Arrow keys move between the tabs, as in any tab list.
+  // Arrow keys, Home and End move between the tabs, as in any tab list.
   const onTabKey = (event: KeyboardEvent<HTMLButtonElement>) => {
-    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
-    if (!step) return;
-    const next = tabs[(tabs.findIndex(item => item.id === tab) + step + tabs.length) % tabs.length].id;
+    const at = tabs.findIndex(item => item.id === tab);
+    const to = ({ ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: tabs.length - 1 } as Record<string, number>)[event.key];
+    if (to === undefined) return;
+    event.preventDefault();
+    const next = tabs[(to + tabs.length) % tabs.length].id;
     setTab(next);
     requestAnimationFrame(() => document.getElementById(`ptab-${next}`)?.focus());
   };
@@ -64,11 +69,11 @@ export default function PortfolioView(props: Props) {
         {revision != null ? `Revision ${revision} · holdings` : "Holdings"} as of {fullDate(snapshot.as_of)}</span>}
     </div>
     <div className="ctx-right">
-      <button type="button" className="btn ghost small" onClick={props.onBack}><ArrowLeft size={15} aria-hidden="true" />Back to chat</button>
-      {snapshot && <button type="button" className="btn ghost small hide-sm" disabled={props.refreshing || props.running} onClick={props.onRefreshPrices}>
-        <RefreshCw size={15} aria-hidden="true" />{props.refreshing ? "Refreshing…" : "Refresh prices"}</button>}
-      {snapshot && <button type="button" className="btn secondary small" aria-expanded={importing} aria-controls="portfolio-import"
-        onClick={() => { setTab("holdings"); setImporting(open => !open); }}><Upload size={15} aria-hidden="true" />Import CSV</button>}
+      <Button variant="ghost" size="sm" onClick={props.onBack}><ArrowLeft size={15} aria-hidden="true" />Back to chat</Button>
+      {snapshot && <Button variant="ghost" size="sm" className="hide-sm" disabled={props.refreshing || props.running} onClick={props.onRefreshPrices}>
+        <RefreshCw size={15} aria-hidden="true" />{props.refreshing ? "Refreshing…" : "Refresh prices"}</Button>}
+      {snapshot && <Button variant="secondary" size="sm" aria-expanded={importing} aria-controls="portfolio-import"
+        onClick={() => { setTab("holdings"); setImporting(open => !open); }}><Upload size={15} aria-hidden="true" />Import CSV</Button>}
     </div>
   </header>;
 
@@ -76,8 +81,8 @@ export default function PortfolioView(props: Props) {
     return <section className="pview" aria-labelledby="portfolio-title">
       {header}
       <div className="pview-body">
-        {props.notice && <p className="amber" role="alert">{props.notice}</p>}
-        {props.restoring ? <p className="cap" role="status">Loading your saved portfolio…</p> : <div className="pempty">
+        {props.notice && <Alert tone="warning" title={props.notice} />}
+        {props.restoring ? <Skeleton label="Loading your saved portfolio" lines={4} /> : <div className="pempty">
           <h2>No portfolio saved yet.</h2>
           <p className="cap">Import your holdings once. They are saved on this computer, and nothing changes until you confirm the import.</p>
           <ImportCsv snapshot={null} baseRevision={revision} onProposal={props.onProposal} onError={props.onError} label="Choose a holdings CSV" />
@@ -85,7 +90,7 @@ export default function PortfolioView(props: Props) {
       </div>
     </section>;
 
-  const held = draft.positions.filter(row => row.id !== BENCHMARK_FUND && !isSynthetic(row.id));
+  const held = draft.positions.filter(row => !isSynthetic(row.id));
   const rows = held.filter(row => account === "all" || row.account_id === account);
   const holdings = held.filter(row => row.kind !== "cash").length;
   const cashCount = held.length - holdings;
@@ -120,7 +125,9 @@ export default function PortfolioView(props: Props) {
         aria-selected={tab === item.id} tabIndex={tab === item.id ? 0 : -1} onKeyDown={onTabKey} onClick={() => setTab(item.id)}>{item.label}</button>)}
     </div>
     <div className="pview-body" role="tabpanel" id="ptabpanel" aria-labelledby={`ptab-${tab}`}>
-      {props.notice && <p className="amber" role="alert">{props.notice}</p>}
+      {props.notice && <Alert tone="warning" title={props.notice} />}
+      {/* The header chip names the revision; on a phone it has no room, so it is said here. */}
+      <p className="cap n show-sm">{revision != null ? `Revision ${revision} · holdings` : "Holdings"} as of {fullDate(snapshot.as_of)}</p>
 
       {tab === "holdings" && <>
         {importing && <div className="pcard" id="portfolio-import" role="region" aria-label="Import holdings">
@@ -136,7 +143,8 @@ export default function PortfolioView(props: Props) {
               : valuation ? <><span className="ptotal n">{money(valuation.known_value, valuation.reporting_currency)}</span><span className="cap amber">Known value only. Some holdings could not be valued.</span></>
               : <><span className="ptotal muted">Not valued yet</span>
                 <span className="cap">Values and weights come from an analysis of this revision.</span>
-                <span><button type="button" className="btn secondary small" disabled={props.running || props.unresolved.length > 0} onClick={props.onReview}>Review my portfolio</button></span></>}
+                <span><Button variant="secondary" size="sm" disabled={props.running || props.unresolved.length > 0} onClick={props.onReview}>Review my portfolio</Button></span>
+                {props.unresolved.length > 0 && <span className="cap">Identify the holdings below first.</span>}</>}
             <span className="cap psum-foot n">{plural(holdings, "holding")} · {plural(cashCount, "cash balance")} · {plural(snapshot.accounts.length, "account")}</span>
           </div>
           <div className="pcard" role="group" aria-label="Allocation">
@@ -161,20 +169,20 @@ export default function PortfolioView(props: Props) {
           </div>
         </div>
 
-        {props.unresolved.length > 0 && <div className="pnotice" role="status">
+        {props.unresolved.length > 0 && <div className="pnotice" role="note">
           <TriangleAlert size={17} aria-hidden="true" />
           <span><b>{props.unresolved.length === 1 ? "1 holding needs you." : `${props.unresolved.length} holdings need you.`}</b>{" "}
             {props.unresolved.map(row => `${row.ticker} needs ${needs(row) || "identifying"}`).join("; ")} before it can be analyzed.</span>
-          <button type="button" className="btn secondary small" aria-expanded={identifying} aria-controls="identify-holdings" onClick={() => setIdentifying(open => !open)}>Identify</button>
+          <Button variant="secondary" size="sm" aria-expanded={identifying} aria-controls="identify-holdings" onClick={() => setIdentifying(open => !open)}>Identify</Button>
         </div>}
         {identifying && props.unresolved.length > 0 && <div className="pcard" id="identify-holdings" role="group" aria-label="Holdings to identify">
           <span className="cap">Nothing is assumed. Each answer is prepared as a change for you to review.</span>
           {props.unresolved.map(row => <Identify key={`${row.account_id}:${row.ticker}`} row={row} snapshot={snapshot} disabled={props.running} baseRevision={revision} onPreviewProposal={props.onReopenProposal} onError={props.onError} />)}
         </div>}
-        {props.pending.length > 0 && <div className="pnotice" role="status">
+        {props.pending.length > 0 && <div className="pnotice" role="note">
           <TriangleAlert size={17} aria-hidden="true" />
           <span><b>{props.pending.length === 1 ? "1 change is waiting for your review." : `${props.pending.length} changes are waiting for your review.`}</b> Your holdings stay as they are until you confirm.</span>
-          <button type="button" className="btn secondary small" onClick={() => setTab("changes")}>See changes</button>
+          <Button variant="secondary" size="sm" onClick={() => setTab("changes")}>See changes</Button>
         </div>}
 
         {snapshot.accounts.length > 1 && <div className="seg" role="radiogroup" aria-label="Account">
@@ -200,20 +208,20 @@ export default function PortfolioView(props: Props) {
               return <div className="hr" role="row" key={row.id} data-draft={isDraft || undefined}>
                 <span role="cell" className="c-hold">
                   <span className={`av ${row.kind}`} aria-hidden="true">{initials(row)}</span>
-                  <span className="hname"><b>{name}</b> <small>{row.kind === "cash" ? `${accountName(snapshot, row.account_id)} cash` : [row.company_name, row.listing].filter(Boolean).join(" · ")}</small></span>
+                  <span className="hname"><b>{name}</b> <small>{row.kind === "cash" ? `${accountName(snapshot, row.account_id)} cash` : [row.company_name, row.listing, row.currency].filter(Boolean).join(" · ")}</small></span>
                 </span>
                 <span role="cell" className="c-acct" data-label="Account">{accountName(snapshot, row.account_id)}</span>
                 <span role="cell" className="c-shares r n" data-label="Shares">{row.kind === "cash" ? "" : row.shares ?? <span className="m">Unknown</span>}</span>
-                <span role="cell" className="c-avg r n" data-label="Average cost">{avg ? money(avg, row.currency) : row.kind === "cash" ? "" : <span className="m" aria-label="No average cost">—</span>}</span>
-                <span role="cell" className="c-val r n">{v ? (v.value === null ? <span className="m" title={v.issues.join(" ")}>Not valued</span> : money(v.value, valuation!.reporting_currency))
+                <span role="cell" className="c-avg r n" data-label="Average cost">{avg ? money(avg, row.currency) : row.kind === "cash" ? "" : <span className="m">Not given</span>}</span>
+                <span role="cell" className="c-val r n">{v ? (v.value === null ? <span className="m">Not valued{v.issues.length > 0 && <span className="sr-only">: {v.issues.join(" ")}</span>}</span> : money(v.value, valuation!.reporting_currency))
                   : row.kind === "cash" ? money(row.cash ?? null, row.currency) : <span className="m">Not valued</span>}</span>
                 <span role="cell" className="c-weight n" data-label="Weight">{weight !== null ? <>
                   <span className={`wbar ${status}`} aria-hidden="true"><i style={{ width: `${Math.min(100, (Number(weight) / maxWeight) * 100)}%` }} />
                     {cap && row.kind === "stock" && <u style={{ left: `${Math.min(100, (Number(cap) / maxWeight) * 100)}%` }} />}</span>{pct(weight)}</>
-                  : <span className="m" aria-label="No weight yet">—</span>}</span>
+                  : <span className="sr-only">No weight yet</span>}</span>
                 <span role="cell" className="c-status">{statusCell(row)}</span>
-                <span role="cell" className="c-act">{isSupportedStock(row) && <button type="button" className="btn ghost small" aria-label={`Analyze ${name}`} title={`Stock Analysis for ${name}`}
-                  disabled={props.running || props.unresolved.length > 0} onClick={() => props.onStock(row)}>Analyze</button>}</span>
+                <span role="cell" className="c-act">{isSupportedStock(row) && <Button variant="ghost" size="sm" aria-label={`Analyze ${name}`} title={`Stock Analysis for ${name}`}
+                  disabled={props.running || props.unresolved.length > 0} onClick={() => props.onStock(row)}>Analyze</Button>}</span>
                 <span className="br" role="presentation" />
               </div>;
             })}
@@ -245,8 +253,8 @@ export default function PortfolioView(props: Props) {
                 {stale && <span className="cap amber">Prepared from an older revision. Review it again before confirming.</span>}
               </div>
               <div className="pchange-act">
-                <button type="button" className="btn ghost small" onClick={() => props.onCancelProposal(proposal.id)}>Discard</button>
-                <button type="button" className="btn primary small" onClick={() => props.onReopenProposal(proposal)}>Review</button>
+                <Button variant="ghost" size="sm" onClick={() => props.onCancelProposal(proposal.id)}>Discard</Button>
+                <Button variant="secondary" size="sm" onClick={() => props.onReopenProposal(proposal)}>Review</Button>
               </div>
             </div>;
           })}
@@ -256,10 +264,9 @@ export default function PortfolioView(props: Props) {
         <span className="chip good">Draft</span>
         <span className="draft-text"><b>{props.edits.length ? `${plural(props.edits.length, "unsaved edit")}.` : "Unsaved edits."}</b> {props.edits.join("; ")}{props.edits.length ? ". " : ""}Nothing is saved yet.</span>
         <span className="draft-act">
-          <button type="button" className="btn ghost small" disabled={props.running || props.reviewing} onClick={props.onDiscardDraft}>Discard</button>
-          <button type="button" className="btn secondary small" disabled={props.running || props.reviewing} onClick={props.onAnalyzeDraft}>Analyze this draft</button>
-          <button type="button" className="btn primary small" disabled={props.running || props.reviewing || baselineOver(props.settings)} onClick={props.onReviewChanges}>
-            {props.reviewing ? "Reviewing…" : "Review changes"}</button>
+          <Button variant="ghost" size="sm" disabled={props.running || props.reviewing} onClick={props.onDiscardDraft}>Discard</Button>
+          <Button variant="secondary" size="sm" disabled={props.running || props.reviewing} onClick={props.onAnalyzeDraft}>Analyze this draft</Button>
+          <Button variant="primary" size="sm" loading={props.reviewing} disabled={props.running || baselineOver(props.settings)} onClick={props.onReviewChanges}>Review changes</Button>
         </span>
       </div>}
     </div>

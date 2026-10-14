@@ -80,7 +80,7 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .nav-item { min-height: 36px; font-size: 14px; }
 .desk .thread-item { min-height: 34px; font-size: 13.5px; }
 .desk .nav-item:hover, .desk .thread-item:hover { background: var(--rail-raised); }
-.desk :is(.nav-item, .thread-item)[aria-current="true"] { background: var(--rail-selected); color: var(--text); font-weight: 600; }
+.desk :is(.nav-item, .thread-item)[aria-current="true"], .desk .nav-item[aria-current="page"] { background: var(--rail-selected); color: var(--text); font-weight: 600; }
 .desk .thread-item .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desk .thread-item .cap { flex: none; font-size: 11.5px; font-weight: 400; }
 .desk .count { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; font-size: 11.5px; font-weight: 600; display: grid; place-items: center; background: var(--warning-subtle); color: var(--amber); }
@@ -406,7 +406,6 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .btn.ghost { background: transparent; border-color: transparent; color: var(--text-2); }
 .desk .btn.ghost:hover:not(:disabled) { background: var(--raised); color: var(--text); }
 .desk .btn:disabled:not(.primary) { color: var(--muted); }
-.desk .nav-item[aria-current="page"] { background: var(--rail-selected); color: var(--text); font-weight: 600; }
 .desk .pview { display: flex; flex-direction: column; min-height: 100vh; }
 .desk .view-head { padding-left: 32px; padding-right: 24px; }
 .desk .view-title { font-size: 17px; line-height: 24px; font-weight: 600; letter-spacing: -.01em; outline: none; white-space: nowrap; }
@@ -417,7 +416,7 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .chip.good { background: var(--success-subtle); color: var(--sage); font-weight: 500; }
 .desk .chip.done { background: var(--surface-muted); color: var(--text); font-weight: 500; }
 .desk .pview-tabs { padding: 0 32px; min-height: 44px; position: sticky; top: 58px; z-index: 4; background: var(--ground); }
-.desk .pview-body { width: 100%; max-width: 1120px; margin: 0 auto; padding: 22px 32px 120px; display: flex; flex-direction: column; gap: 14px; }
+.desk .pview-body { width: 100%; max-width: 1120px; margin: 0 auto; padding: 24px 32px 48px; display: flex; flex-direction: column; gap: 14px; }
 .desk .pcard { background: var(--raised); border-radius: 20px; padding: 18px 20px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .desk .psum { display: grid; grid-template-columns: 1fr 1.5fr 1.25fr; gap: 12px; }
 .desk .psum .cap { font-size: 12.5px; }
@@ -505,7 +504,7 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .dq { color: var(--text-2); font-size: 13.5px; line-height: 20px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .desk .dside { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; text-align: right; }
 .desk .dconc { font-size: 13px; color: var(--text-2); white-space: nowrap; }
-.desk .dcard .ddel { top: 12px; right: 12px; opacity: 1; width: 36px; height: 36px; }
+.desk .dcard .ddel { top: 12px; right: 12px; width: 36px; height: 36px; }
 .desk .dcard .ddel:hover { background: var(--surface-muted); }
 @media (max-width: 1279px) {
   .desk .psum { grid-template-columns: 1fr 1fr; }
@@ -514,7 +513,9 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 @media (max-width: 1023px) {
   .desk .view-head { padding: 0 16px 0 8px; }
   .desk .pview-tabs { padding: 0 16px; }
-  .desk .pview-body { padding: 18px 16px 120px; }
+  .desk .pview-body { padding: 20px 16px 48px; }
+  /* Arc buttons and the view's selects are full touch targets here too. */
+  .desk .pview :is(button, select) { min-height: 44px; }
   .desk .hr { grid-template-columns: minmax(0, 1.5fr) minmax(0, .6fr) minmax(0, .5fr) minmax(0, .95fr) minmax(0, 1fr) minmax(0, 1.4fr) 84px; min-height: 48px; }
   .desk .hr .c-avg { display: none; }
   .desk .wbar { width: 56px; }
@@ -524,13 +525,14 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 @media (max-width: 767px) {
   .desk .view-head { padding: 0 8px 0 4px; }
   .desk .view-head .ctx-right .btn { padding: 0 10px; }
-  .desk .pview-body { padding: 16px 16px 120px; gap: 12px; }
+  .desk .pview-body { padding: 16px 16px 48px; gap: 12px; }
   .desk .psum { grid-template-columns: minmax(0, 1fr); }
   .desk .ptotal { font-size: 32px; }
   .desk .pnotice { flex-wrap: wrap; padding: 10px 12px; }
   .desk .seg { display: flex; }
   .desk .ht { border-radius: 18px; }
-  .desk .hr.hh { display: none; }
+  /* The header row stays in the accessibility tree, so every cell keeps its column name. */
+  .desk .hr.hh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
   .desk .hr { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 12px 14px; }
   /* Cells keep the header order for screen readers; on a phone the value moves up beside the name. */
   .desk .hr .c-hold { flex: 1 1 0; order: 0; }
@@ -544,9 +546,12 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
   .desk .hr .c-status { order: 4; margin-left: auto; }
   .desk .hr .c-act { order: 5; }
   .desk .hr .c-act:empty { display: none; }
-  .desk .draft-bar { flex-wrap: wrap; bottom: 8px; }
-  .desk .draft-act { flex-wrap: wrap; width: 100%; }
-  .desk .draft-act .btn { flex: 1 1 auto; }
+  /* Compact on a phone: the edits in two lines at most, the three actions in one row. */
+  .desk .draft-bar { flex-wrap: wrap; bottom: 8px; gap: 8px; padding: 10px 12px; }
+  .desk .draft-bar > .chip { display: none; }
+  .desk .draft-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; line-height: 18px; }
+  .desk .draft-act { width: 100%; gap: 6px; }
+  .desk .draft-act > * { flex: 1 1 0; min-width: 0; padding-inline: 8px; }
   .desk .pchange { flex-direction: column; align-items: stretch; }
   .desk .dopen { grid-template-columns: 30px minmax(0, 1fr); }
   .desk .dside { grid-column: 2; align-items: flex-start; text-align: left; }
