@@ -1,51 +1,123 @@
-# Personal Investment Analyst
+# TFS — Personal Investment Analyst
 
-A standalone Next.js and FastAPI app for tickets 01–10: enter a dated whole-portfolio snapshot, supply optional personal settings, select comparison alternatives, ask a question, and receive calculated exposure, guardrail checks and conditional five-year cases. All code is new.
+TFS is a local, chat-first investment research app. Ask questions about stocks and your portfolio, inspect dated financial evidence and conditional valuations, compare alternatives, and review proposed changes before explicitly confirming them. **TFS does not place brokerage trades.**
 
-## Run locally
+## Quick start: Windows
 
-Requires Python 3.11+ and Node.js 20.9+. From this directory on Windows:
+**You need:** [Git](https://git-scm.com/), **Python 3.11+**, **Node.js 20.9+** (with npm), and PowerShell. To connect using **Sign in with ChatGPT**, run the app on **native Windows**, not WSL: the current credential store uses Windows DPAPI. An eligible ChatGPT account or an OpenAI API key is needed for AI-powered requests; portfolio viewing and editing do not require an AI connection.
 
-```powershell
+### 1. Get the code
+
+Open PowerShell:
+
+~~~powershell
+git clone https://github.com/aradhyas8/TFS.git
+cd TFS
+~~~
+
+You need access to the repository. **While PR #48 remains unmerged**, switch to the branch containing this feature:
+
+~~~powershell
+git switch feat/dev-start-chatgpt
+~~~
+
+After the feature is merged into the branch you use, the extra switch is unnecessary. If you already have the project, open its root directory in PowerShell instead.
+
+### 2. Install once
+
+From the **TFS repository root**:
+
+~~~powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e "./backend[dev]"
 Copy-Item backend/.env.example backend/.env
-```
-
-Install frontend dependencies once, then start both services from the repository root:
-
-```powershell
 npm --prefix frontend ci
+~~~
+
+These commands create an isolated Python environment, install the backend, copy the sample configuration, and install the frontend. You do **not** need to add an API key to use the ChatGPT connection option. Keep `LLM_PROVIDER=` and `OPENAI_API_KEY=` blank in a new `backend/.env` for the default ChatGPT-first setup. Do not commit `backend/.env` or any credentials.
+
+### 3. Start TFS
+
+Each time you want to use TFS, run this **single command from the repository root**:
+
+~~~powershell
 npm run dev
-```
+~~~
 
-Open http://localhost:3000. The launcher uses the existing root `.venv` and `frontend/node_modules`, starts FastAPI on **127.0.0.1:8000** and Next.js on **localhost:3000**, labels their logs, waits for `/api/health`, and announces when both services are ready. **Ctrl+C stops both.** It checks dependencies and ports before starting, reports startup failures, and shuts down its other service if one exits. It never kills a process merely because it owns a port. It does not reinstall packages. On Windows, Uvicorn drains through a private temporary stop file; the owned Next.js process tree is terminated. An unresponsive backend gets a five-second shutdown grace period before the launcher terminates its owned tree.
+Wait until the terminal prints that TFS is ready, then open **http://localhost:3000**. The launcher starts FastAPI on `127.0.0.1:8000` and Next.js on `localhost:3000`, checks readiness, and labels both servers' logs. Keep the terminal open. Press **Ctrl+C** when you are done; it stops both services.
 
-For macOS/Linux first-time setup:
+On subsequent visits, just open the project root and run `npm run dev` again. No reinstall or repeated sign-in should be necessary while your saved connection is valid.
 
-```sh
+### 4. Connect ChatGPT to the AI analyst
+
+1. In TFS, click **Continue with ChatGPT** near the top of the page.
+2. Complete the authorization in the system browser opened by TFS. Return to the TFS tab afterward.
+3. Open **AI connection** if it is not already expanded. When connected, check that your account is displayed and select a model from the **ChatGPT model** dropdown.
+4. Click **Use ChatGPT plan**. TFS uses that selected model for **future** AI requests. If the model list does not appear, try **Refresh connection**. If permission or authorization fails, use **Reconnect ChatGPT**.
+
+Only models available to your account through this connection are listed; availability and plan usage limits vary. This feature uses supported **ChatGPT-plan inference through OpenAI's Responses API**. It **does not** run the Codex coding agent, reuse Codex CLI credentials, or import ChatGPT conversations.
+
+The browser sees connection status, model names and display-account information; credentials and OAuth tokens stay on the local Python backend. This sign-in is **for the AI provider**, not a TFS account login. You can still browse and edit a local portfolio while disconnected.
+
+**Note:** PR #48's simulated OAuth tests and disconnected UI have been verified, but a real-account sign-in and inference smoke test **have not yet been completed**. Do not interpret a successful mocked test as confirmation of account eligibility.
+
+### 5. Ask your first question
+
+You can test the AI **without importing any holdings**. Type this into the TFS chat composer and submit:
+
+> Explain the difference between a stock's market price and intrinsic value in two sentences.
+
+You should receive an AI answer after the connection is active. For portfolio-specific analysis:
+
+1. On the initial **Start with what you own** screen, download a holdings **Template**, or choose an existing holdings CSV.
+2. Choose the holdings date and reporting currency, import the file, and resolve any holdings TFS could not identify.
+3. **Review changes** and explicitly **Confirm changes** to save the portfolio revision. Importing or previewing alone does not commit it.
+4. Open **Portfolio** to inspect holdings and rules, or ask **Review my portfolio for concentration and risk** in chat. You can also choose a workflow such as **Analyze a stock** or **Place new cash**.
+
+The app keeps confirmed portfolio revisions, proposals and conversations on your local backend. Analysis figures are dated; missing prices, FX, financial facts and risk inputs may produce unknown results rather than estimates. **Nothing in TFS executes a real stock trade.**
+
+### Alternative: Use an OpenAI API key
+
+If you cannot use ChatGPT-plan sign-in, edit `backend/.env` and set:
+
+~~~dotenv
+LLM_PROVIDER=openai
+OPENAI_API_KEY=your_api_key_here
+OPENAI_MODEL=an_available_responses_model
+~~~
+
+Use an actual model available to your API account that supports the features TFS needs; replace the placeholders. Restart `npm run dev` after changing backend environment variables. If offered, select **Use API-key provider** in **AI connection**. Never put the API key in frontend code or a `NEXT_PUBLIC_*` variable. API billing and ChatGPT subscription usage are separate.
+
+### Troubleshooting
+
+| Problem | What to do |
+| --- | --- |
+| `Missing Python virtual environment` | Run the one-time Python setup in step 2 from the repository root. |
+| `Missing frontend dependencies` | Run `npm --prefix frontend ci`, then `npm run dev`. |
+| Port `3000` or `8000` is already in use | Stop the existing server you own, or close the other TFS session. The launcher does not kill unrelated processes. |
+| ChatGPT sign-in is unavailable on WSL/Linux/macOS | Use native Windows for DPAPI-backed ChatGPT login, or configure the API-key provider. Cross-platform launcher startup has not been manually validated on every OS. |
+| Sign-in callback port `1455` is busy | Finish or cancel the other sign-in attempt, then retry. |
+| Connection expired, permission missing, or no models listed | Open **AI connection**; try **Refresh connection**, then **Reconnect ChatGPT** if necessary. Check account eligibility and permissions. |
+| Changing the provider is refused | Finish or cancel the running AI request or sign-in, then try again. |
+| The app loads, but AI analysis fails | Check the AI connection/model, backend terminal output, and whether live account/model access actually works. Portfolio management works without AI. |
+
+### macOS/Linux local development
+
+The launcher also has macOS/Linux paths, but **real startup has only been verified on Windows**, and ChatGPT DPAPI storage is not supported on these systems. Use the **API-key provider** there:
+
+~~~sh
 python3 -m venv .venv
 .venv/bin/python -m pip install -e './backend[dev]'
 cp backend/.env.example backend/.env
 npm --prefix frontend ci
 npm run dev
-```
+~~~
 
-The launcher supports those platforms, but **ChatGPT credential storage currently requires native Windows DPAPI**. Run the backend in Windows rather than WSL for ChatGPT sign-in, or use the API-key provider on macOS/Linux. Cross-platform startup has automated failure coverage; real startup was verified on Windows only.
+For reproducible dependency versions, see `backend/requirements-dev.lock` and `frontend/package-lock.json`. For OAuth lifecycle, test results and security implementation, see [local startup and ChatGPT connection notes](docs/dev-chatgpt/README.md). This is intended for a **personal, loopback-only installation**, not a publicly exposed server.
 
-`backend/requirements-dev.lock` records verified Python dependency versions. For a matching environment, install it with the virtualenv Python and `-m pip install -r backend/requirements-dev.lock`, then install `backend` with `--no-deps -e backend`. The frontend uses its existing package lock with `npm --prefix frontend ci`.
+## Developer and technical documentation
 
-### Connect AI
-
-A new installation with no explicit provider and no API key starts with ChatGPT plan selected. Click **Continue with ChatGPT**, finish the browser authorization, choose a model from the account's supported catalog, and click **Use ChatGPT plan**. No terminal login is required. Reopening TFS recognizes the encrypted saved connection; **Refresh connection** renews an expired access token or retrieves the model catalog, and **Reconnect ChatGPT** recovers revoked/expired sessions or missing plan permission. Manage app limits and access in [ChatGPT Settings](https://chatgpt.com/#settings).
-
-The browser receives account display information, model choices and connection state only. OAuth codes, PKCE, access/refresh/ID tokens and storage stay on the backend. TFS never reads Codex CLI credentials. This enables supported ChatGPT-plan Responses inference through TFS; it does not integrate the Codex coding agent or import ChatGPT conversations.
-
-To use a backend API key, set `OPENAI_API_KEY` and `OPENAI_MODEL` in **backend/.env**, restart, and select **Use API-key provider**. Choose an account-supported Responses model with function calling and structured outputs. Never put credentials in frontend files or `NEXT_PUBLIC_*`. An explicit `LLM_PROVIDER` always determines the startup provider; without it, a saved browser selection wins over the inferred default. Browser provider/model changes take effect for subsequent AI requests without restarting and are rejected while AI work or sign-in is active. Finish or cancel it first. Signing in does not silently switch an explicitly selected API provider.
-
-Portfolio viewing, editing and proposal confirmation do not require AI authentication. Only AI requests need a configured working provider. Keep both servers bound to loopback; this workflow is for a personal local installation, not public hosting. Details, security review and test evidence: [developer connection notes](docs/dev-chatgpt/README.md).
-
-For production, set the Next.js server's `BACKEND_URL` **before building**, run `npm run build`, then `npm start`. The default is `http://127.0.0.1:8000`. Run FastAPI separately; Next.js forwards `/api/*` to it on the server. Only the backend owns OpenAI credentials. These instructions target a local personal app; remote public hosting is outside ticket 01.
+The sections below describe the original financial input formats, calculations, tools and API behavior. For up-to-date architecture and source qualifications, also see the corresponding files in `docs/`.
 
 ## Snapshot entry and CSV
 
