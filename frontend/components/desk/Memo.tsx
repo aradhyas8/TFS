@@ -1,4 +1,4 @@
-import { AlertTriangle, Check } from "lucide-react";
+import { AlertTriangle, Check, Info } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { actionLabel, BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type ArtifactReference, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot, type ThemeInput } from "../../lib/contracts";
 import { accountName, answerSentence, caseCurrency, clock, compact, decisionLabel, POSITION_LABEL, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
@@ -18,7 +18,7 @@ export function Row({ label, kind = "", children }: { label: string; kind?: stri
 
 function Cites({ ids, cite }: { ids: string[]; cite: Cite }) {
   const numbered = ids.filter(id => cite.numbers.has(id));
-  return <>{numbered.map(id => <sup key={id}><button type="button" aria-label={`Source ${cite.numbers.get(id)}`} onClick={() => cite.onCite(id)}>{cite.numbers.get(id)}</button></sup>)}</>;
+  return <>{numbered.map(id => <sup key={id}><button type="button" aria-label={`Source ${cite.numbers.get(id)}`} onClick={() => cite.onCite(id)}><span>{cite.numbers.get(id)}</span></button></sup>)}</>;
 }
 
 function Expandable({ title, count, children }: { title: string; count: string; children: ReactNode }) {
@@ -598,7 +598,10 @@ const CASE_NAME: Record<string, string> = { downside: "Downside", base: "Base", 
 
 /** The three per-share cases on one line, with today's price where it is in the same currency. Drawn only from the
  *  backend's case values; with fewer than two known cases there is nothing to place, so nothing is drawn. */
-function CaseRange({ cases, currency, price }: { cases: Case[]; currency: string; price: { value: string; currency: string } | null }) {
+// Said with the values when the analysis made no call, so they never read as a target or an approval.
+const NO_CALL = "No call yet: these are the cases, not a target.";
+
+function CaseRange({ cases, currency, price, undecided }: { cases: Case[]; currency: string; price: { value: string; currency: string } | null; undecided: boolean }) {
   const known = cases.filter(c => c.present_value_per_share != null).map(c => ({ name: c.name, value: c.present_value_per_share! }));
   if (known.length < 2) return null;
   const marker = price && price.currency === currency ? price.value : null;
@@ -611,23 +614,26 @@ function CaseRange({ cases, currency, price }: { cases: Case[]; currency: string
   const ends = known.map(c => at(c.value));
   const describe = known.map(c => `${CASE_NAME[c.name] ?? c.name} ${money(c.value, currency)}`).join(", ");
   // Cases can sit close together, so their values are a legend under the line rather than labels on it.
-  return <div className="range-wrap n" role="img" aria-label={`Per share, discounted to today: ${describe}${marker === null ? "" : `. Price ${money(marker, currency)}`}`}>
+  return <div className="range-wrap n" role="img" data-tone={undecided ? "neutral" : "signal"}
+    aria-label={`Per share, discounted to today: ${describe}${marker === null ? "" : `. Price ${money(marker, currency)}`}${undecided ? `. ${NO_CALL}` : ""}`}>
     <div className={`range${marker === null ? " bare" : ""}`}>
       <span className="trk" />
       <span className="zone" style={{ left: `${Math.min(...ends)}%`, width: `${Math.max(...ends) - Math.min(...ends)}%` }} />
       {known.map(c => <span key={c.name} className="tk" style={{ left: `${at(c.value)}%` }} />)}
       {marker !== null && <><span className="pl" style={place(marker)}>Price {money(marker, currency)}</span><span className="px" style={{ left: `${at(marker)}%` }} /></>}
     </div>
-    <div className="range-legend">{known.map(c => <span key={c.name} className={c.name}>{CASE_NAME[c.name] ?? c.name} <b>{money(c.value, currency)}</b></span>)}<span className="m">per share, discounted to today</span></div>
+    <div className="range-legend">{known.map(c => <span key={c.name} className={c.name}>{CASE_NAME[c.name] ?? c.name} <b>{money(c.value, currency)}</b></span>)}<span className="m">per share, discounted to today</span>{undecided && <span className="m">{NO_CALL}</span>}</div>
   </div>;
 }
 
-/** The company's weight against the cap the investor set, when both are known. */
-function CapInsight({ weight, cap, over }: { weight: string; cap: string; over: boolean }) {
+/** The company's weight against the cap the investor set, when both are known. Over the cap is a warning whatever
+ *  the verdict; within it is good standing only when the analysis made a call, and otherwise a plain rules check. */
+function CapInsight({ weight, cap, over, undecided, ticker }: { weight: string; cap: string; over: boolean; undecided: boolean; ticker: string }) {
   const scale = Math.max(Number(weight), Number(cap)) * 1.25 || 1;
-  return <div className={`ins${over ? "" : " ok"}`} data-testid="cap-insight">
-    {over ? <AlertTriangle size={17} aria-hidden="true" /> : <Check size={17} aria-hidden="true" />}
-    <span><b className="n">{pct(weight)} of your portfolio.</b> {over ? `Over your ${pct(cap)} company cap.` : `Within your ${pct(cap)} company cap.`}</span>
+  const tone = over ? "warning" : undecided ? "neutral" : "positive";
+  return <div className={`ins ${tone}`} data-testid="cap-insight" data-tone={tone}>
+    {over ? <AlertTriangle size={17} aria-hidden="true" /> : undecided ? <Info size={17} aria-hidden="true" /> : <Check size={17} aria-hidden="true" />}
+    <span><b className="n">{pct(weight)} of your portfolio.</b> {over ? `Over your ${pct(cap)} company cap.` : `Within your ${pct(cap)} company cap.`}{!over && undecided ? ` A rules check only, not a call on ${ticker}.` : ""}</span>
     <span className="wb" aria-hidden="true"><i style={{ width: `${Math.min(100, (Number(weight) / scale) * 100)}%` }} /><u style={{ left: `${(Number(cap) / scale) * 100}%` }} /></span>
   </div>;
 }
@@ -661,6 +667,8 @@ export function StockAnswer({ result, snapshot, cite, saved, onTab, onConfirm }:
   const cap = review.guardrails?.companies.find(row => row.company_id === companyId);
   // Broken rules make the backend's checks, not the model, set the answer to review only.
   const over = review.guardrails ? review.guardrails.companies.filter(row => row.status === "breached").length + (review.guardrails.active.status === "breached" ? 1 : 0) : 0;
+  // The verdicts below that make no call on the company: not enough to decide, or held back by another broken rule.
+  const undecided = ["wait_for_inputs", "clarify_inputs"].includes(rec.preferred_action) || (rec.preferred_action === "review_only" && over > 0 && cap?.status !== "breached");
   const cases = ["downside", "base", "upside"].map(name => stock.cases.find(c => c.name === name)).filter((c): c is NonNullable<typeof c> => !!c);
   const base = cases.find(c => c.name === "base");
   const documents = stock.research.documents.filter(doc => doc.available).sort((a, b) => b.published_on.localeCompare(a.published_on));
@@ -689,9 +697,9 @@ export function StockAnswer({ result, snapshot, cite, saved, onTab, onConfirm }:
             : rec.preferred_action === "review_only" && over ? `Your portfolio breaks ${over === 1 ? "one" : over} of your rules, so there is no call on ${ticker} yet.`
             : stockSentence(rec.preferred_action, rec.amount, ticker)}</h2>
           <span className="cap n meta"><span>{actionLabel(rec.preferred_action)} · {positionName(target, ticker)}</span>
-            {cap && <span>{cap.status === "breached" ? <><span className="amber">●</span> Over your company cap</> : cap.status === "within_limit" ? <><span className="sage">●</span> Within your company cap</> : "Company cap not checked"}</span>}</span>
-          <CaseRange cases={cases} currency={local} price={valuation?.price ? { value: valuation.price, currency: valuation.currency } : quote ? { value: quote.value, currency: quote.currency } : null} />
-          {cap?.cap && cap.current_weight != null && ["breached", "within_limit"].includes(cap.status) && <CapInsight weight={cap.current_weight} cap={cap.cap} over={cap.status === "breached"} />}
+            {cap && <span>{cap.status === "breached" ? <><span className="amber">●</span> Over your company cap</> : cap.status === "within_limit" ? <><span className={undecided ? "m" : "sage"}>●</span> Within your company cap</> : "Company cap not checked"}</span>}</span>
+          <CaseRange undecided={undecided} cases={cases} currency={local} price={valuation?.price ? { value: valuation.price, currency: valuation.currency } : quote ? { value: quote.value, currency: quote.currency } : null} />
+          {cap?.cap && cap.current_weight != null && ["breached", "within_limit"].includes(cap.status) && <CapInsight weight={cap.current_weight} cap={cap.cap} over={cap.status === "breached"} undecided={undecided} ticker={ticker} />}
         </div>
       </Row>
       <Row label="Your position">

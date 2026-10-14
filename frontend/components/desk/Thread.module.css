@@ -59,7 +59,13 @@
 
 /* A source number: a small blue pill, inline with the text it supports. */
 .ct { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; margin: 0 1px; border-radius: 9px; font-size: 11px; line-height: 1; font-weight: 600; font-variant-numeric: tabular-nums; vertical-align: 1px; background: var(--analysis-subtle); color: var(--analysis); text-decoration: none; }
-a.ct:hover { background: var(--analysis); color: var(--surface-raised); }
+.cite { text-decoration: none; border-radius: 9px; }
+.cite:hover .ct { background: var(--analysis); color: var(--surface-raised); }
+/* Touch layouts: the pill stays small, the link around it is a full 44px target. The target takes real space in the
+   line, so neighbouring numbers never share a tap area. */
+@media (max-width: 1023px) {
+  .cite { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; vertical-align: middle; border-radius: 12px; }
+}
 
 .fields { margin: 0; padding-left: var(--space-5); font-size: var(--text-sm); color: var(--text-secondary); }
 .agreement { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-4); font-size: var(--text-sm); }

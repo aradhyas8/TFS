@@ -41,8 +41,9 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 /* Adjacent source markers stay separate numbers, not one underlined run. */
 .desk sup + sup { margin-left: 3px; }
 .desk sup { vertical-align: 1px; }
-.desk sup button { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; font-size: 11px; font-weight: 600; background: var(--analysis-subtle); color: var(--analysis); font-variant-numeric: tabular-nums; }
-.desk sup button:hover { background: var(--analysis); color: var(--surface-raised); }
+.desk sup button { border-radius: 9px; }
+.desk sup button > span { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; font-size: 11px; font-weight: 600; background: var(--analysis-subtle); color: var(--analysis); font-variant-numeric: tabular-nums; }
+.desk sup button:hover > span { background: var(--analysis); color: var(--surface-raised); }
 
 /* Buttons and inputs */
 .desk .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 16px; min-height: 40px; border-radius: 999px; font-weight: 600; white-space: nowrap; background: var(--surface-raised); border: 1px solid var(--rule); transition: background var(--duration-fast) var(--ease-standard); }
@@ -166,7 +167,10 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 /* Downside, base and upside per share on one line, with today's price as a blue marker. */
 .desk .range-wrap { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 2px; font-size: 12px; line-height: 16px; }
 .desk .range { position: relative; height: 38px; }
-.desk .range.bare { height: 20px; margin-top: -12px; }
+/* With no comparable price there is no label above the line, so the line sits at the top of a shorter box. */
+.desk .range.bare { height: 14px; }
+.desk .range.bare .trk, .desk .range.bare .zone { top: 4px; }
+.desk .range.bare .tk { top: 1px; }
 .desk .range-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); }
 .desk .range-legend b { font-weight: 600; color: var(--text); }
 .desk .range-legend .downside b { color: var(--danger); }
@@ -178,13 +182,19 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .range .px { top: 19px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; background: var(--analysis); border: 3px solid var(--raised); box-shadow: 0 0 0 1px var(--analysis); }
 /* One line on the investor's own rule: amber when over it, green when within. */
 .desk .ins { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: var(--warning-subtle); font-size: 13.5px; line-height: 20px; }
-.desk .ins.ok { background: var(--success-subtle); }
+.desk .ins.positive { background: var(--success-subtle); }
+.desk .ins.neutral { background: var(--raised-2); }
 .desk .ins > svg { color: var(--amber); flex: none; }
-.desk .ins.ok > svg { color: var(--sage); }
+.desk .ins.positive > svg { color: var(--sage); }
+.desk .ins.neutral > svg { color: var(--muted); }
 .desk .ins b { font-weight: 600; }
 .desk .wb { position: relative; width: 96px; height: 6px; border-radius: 3px; background: var(--surface-raised); flex: none; margin-left: auto; }
 .desk .wb i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--warning); }
-.desk .ins.ok .wb i { background: var(--success); }
+.desk .ins.positive .wb i { background: var(--success); }
+.desk .ins.neutral .wb i { background: var(--muted); }
+/* No call made: the cases keep their places, without the downside-to-upside colouring. */
+.desk .range-wrap[data-tone="neutral"] .zone { background: var(--rule-strong); }
+.desk .range-wrap[data-tone="neutral"] .range-legend .downside b { color: var(--text); }
 .desk .wb u { position: absolute; top: -3px; width: 2px; height: 12px; margin-left: -1px; border-radius: 1px; background: var(--text); }
 
 /* Home: greeting, composer, starters and one summary strip, centered in the page. */
@@ -326,6 +336,10 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
   /* Touch layouts: everything a finger has to hit is at least 44px. */
   .desk .btn, .desk .btn.small, .desk .icon-btn, .desk .tab, .desk .nav-item, .desk .thread-item, .desk .rail-new, .desk .pill, .desk .ditem, .desk .link { min-height: 44px; }
   .desk .icon-btn { width: 44px; }
+  /* Source numbers in a result: the pill stays small, the button around it is a full target in the line. */
+  .desk sup { vertical-align: middle; }
+  .desk sup + sup { margin-left: 0; }
+  .desk sup button { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; border-radius: 12px; }
   .desk .send { width: 44px; height: 44px; }
   .desk .ddel { width: 44px; height: 44px; top: 0; right: 0; }
   .desk.rail-open .scrim { display: block; position: fixed; inset: 0; background: var(--scrim); z-index: 20; }

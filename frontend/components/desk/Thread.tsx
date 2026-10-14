@@ -19,6 +19,7 @@ import {
   type ThemeInput,
   type ThreadDetail,
 } from "../../lib/contracts";
+import { linkOnly, placeCitations, webAddress, type Source } from "./citations";
 import { fullDate } from "./format";
 import type { PendingSend } from "./useConversation";
 import styles from "./Thread.module.css";
@@ -77,16 +78,6 @@ const sentenceCase = (label: string) => label.charAt(0) + label.slice(1).toLower
 const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const list = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
-
-/** A link is drawn only for a web address; anything else a source supplied stays plain text. */
-function webAddress(value: unknown): URL | null {
-  try {
-    const url = new URL(text(value));
-    return url.protocol === "https:" || url.protocol === "http:" ? url : null;
-  } catch {
-    return null;
-  }
-}
 
 // Artifacts are immutable, so one request per ID serves every message and every reopening in this session.
 const envelopes = new Map<string, Promise<ArtifactEnvelope>>();
@@ -284,55 +275,14 @@ function Revisions({ ids }: { ids: string[] }) {
   );
 }
 
-// A cited span that is only a link written into the answer, such as "([site](https://...))", is not a quote.
-const linkOnly = (value: string) => /^\(?\[[^\]]*\]\([^)]*\)\)?$/.test(value.trim());
+/** A source number in the text: a small pill. On touch layouts the link around it is a full-size target. */
+const Mark = ({ number, anchor }: { number: number; anchor: string }) => (
+  <a className={styles.cite} href={`#${anchor}`} aria-label={`Source ${number}`}>
+    <span className={styles.ct}>{number}</span>
+  </a>
+);
 
-/** The sources a stored answer cited, numbered by page, kept with that answer. */
-function cited(citations: MessageRecord["citations"]) {
-  const seen = new Set<string>();
-  const pages: string[] = [];
-  return citations.flatMap(citation => {
-    const url = webAddress(citation.url);
-    const quote = text(citation.cited_text);
-    if (!url || seen.has(`${url.href}|${quote}`)) return [];
-    seen.add(`${url.href}|${quote}`);
-    if (!pages.includes(url.href)) pages.push(url.href);
-    return [{ url, quote, number: pages.indexOf(url.href) + 1, title: text(citation.title) || url.hostname }];
-  });
-}
-type Cited = ReturnType<typeof cited>;
-
-/** Answer text with each cited span followed by its source number. A span that is only a link is replaced by the number. */
-function CitedParagraph({ paragraph, sources, anchor }: { paragraph: string; sources: Cited; anchor: (n: number) => string }) {
-  // One mark per cited span; several sources citing the same words share it.
-  const spans = new Map<number, { quote: string; numbers: number[] }>();
-  for (const item of sources) {
-    const at = item.quote ? paragraph.indexOf(item.quote) : -1;
-    if (at < 0) continue;
-    const span = spans.get(at) ?? { quote: item.quote, numbers: [] };
-    if (!span.numbers.includes(item.number)) span.numbers.push(item.number);
-    spans.set(at, span);
-  }
-  const marks = [...spans].sort(([a], [b]) => a - b).filter(([at], index, all) => index === 0 || at >= all[index - 1][0] + all[index - 1][1].quote.length);
-  if (!marks.length) return <p>{paragraph}</p>;
-  const parts: ReactNode[] = [];
-  let from = 0;
-  for (const [at, { quote, numbers }] of marks) {
-    const end = at + quote.length;
-    parts.push(linkOnly(quote) ? paragraph.slice(from, at).trimEnd() : paragraph.slice(from, end));
-    for (const number of numbers)
-      parts.push(
-        <a key={`${at}-${number}`} className={styles.ct} href={`#${anchor(number)}`} aria-label={`Source ${number}`}>
-          {number}
-        </a>
-      );
-    from = end;
-  }
-  parts.push(paragraph.slice(from));
-  return <p>{parts}</p>;
-}
-
-function Citations({ sources, anchor }: { sources: Cited; anchor: (n: number) => string }) {
+function Citations({ sources, anchor }: { sources: Source[]; anchor: (n: number) => string }) {
   if (!sources.length) return null;
   return (
     <div className={styles.cited}>
@@ -575,14 +525,16 @@ function Message({ message, actionable, hypothetical, proposing, shared }: { mes
       </li>
     );
   }
-  const sources = cited(message.citations);
+  const { paragraphs, sources } = placeCitations(message.text, message.citations);
   const anchor = (n: number) => `source-${message.id}-${n}`;
   return (
     <li className={styles.assistant}>
       <span className="sr-only">Analyst answered: </span>
       {/* ponytail: plain paragraphs only; add a Markdown renderer when answers need lists or tables. */}
-      {message.text.split(/\n{2,}/).map((paragraph, index) => (
-        <CitedParagraph key={index} paragraph={paragraph} sources={sources} anchor={anchor} />
+      {paragraphs.map((pieces, index) => (
+        <p key={index}>
+          {pieces.map((piece, at) => (typeof piece === "string" ? piece : piece.map(number => <Mark key={`${at}-${number}`} number={number} anchor={anchor(number)} />)))}
+        </p>
       ))}
       {hypothetical && (
         <p className={styles.source}>

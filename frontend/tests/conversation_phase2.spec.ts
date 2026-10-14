@@ -142,11 +142,11 @@ test("a stock result draws its cases and today's price on one line, and the cap 
   // The chart repeats the backend's case values and the dated price, nothing else.
   const cases = await memo.getByRole("list", { name: "Downside, base and upside" }).innerText();
   const chart = memo.getByRole("img", { name: /^Per share, discounted to today/ });
-  await expect(chart).toHaveAttribute("aria-label", /Price C\$200$/);
+  await expect(chart).toHaveAttribute("aria-label", /\. Price C\$200\./);
   const drawn = (await chart.innerText()).match(/C\$[\d,.]+/g)!;
   expect(drawn.length).toBeGreaterThanOrEqual(3);
   for (const value of drawn.filter(value => value !== "C$200")) expect(cases).toContain(value);
-  await expect(memo.getByTestId("cap-insight")).toHaveText("50% of your portfolio. Within your 60% company cap.");
+  await expect(memo.getByTestId("cap-insight")).toContainText("50% of your portfolio. Within your 60% company cap.");
 });
 
 test("web sources are numbered in the answer and marked as not verified", async ({ page }) => {
@@ -158,7 +158,12 @@ test("web sources are numbered in the answer and marked as not verified", async 
     const body = await response.json();
     for (const message of body.messages ?? [])
       if (message.role === "assistant" && message.text.startsWith("Plain answer"))
-        message.citations = [{ type: "url_citation", url: "https://news.example/acme", title: "Acme lifts guidance", cited_text: "Plain answer" }];
+        message.citations = [
+          // From the answering turn: offsets into the stored text.
+          { type: "url_citation", url: "https://news.example/acme", title: "Acme lifts guidance", start_index: 0, end_index: 12, cited_text: "Plain answer" },
+          // From the search turn: no offsets, and its words appear in the answer too. Listed, never placed by guessing.
+          { type: "url_citation", url: "https://other.example/acme", title: "Other coverage", cited_text: "latest news" },
+        ];
     await route.fulfill({ response, json: body });
   });
   await ask(page).fill("What is the latest news on Acme?");
@@ -167,8 +172,113 @@ test("web sources are numbered in the answer and marked as not verified", async 
   const answer = thread(page).getByRole("listitem").filter({ has: page.getByRole("list", { name: "Sources for this answer" }) });
   await expect(answer.locator("p").first()).toHaveText("Plain answer1 to: What is the latest news on Acme?");
   const marker = answer.getByRole("link", { name: "Source 1" });
+  await expect(answer.getByRole("link", { name: "Source 2" })).toHaveCount(0);
+  await expect(answer.getByRole("list", { name: "Sources for this answer" })).toContainText("Other coverage");
   await expect(marker).toHaveAttribute("href", /#source-.+-1$/);
   await expect(answer.getByRole("list", { name: "Sources for this answer" })).toContainText("Acme lifts guidance");
   await expect(answer).toContainText("Web · not verified");
   await expect(thread(page).getByRole("article", { name: "Web research" })).toContainText("Web · not verified");
+});
+
+/** Inline source numbers: each target's box, and any pair of targets that overlap. */
+async function citationTargets(page: Page) {
+  return page.evaluate(() => {
+    const boxes = [...document.querySelectorAll<HTMLElement>("main a[aria-label^='Source '], main sup button")]
+      .filter(element => element.getClientRects().length)
+      .map(element => element.getBoundingClientRect());
+    const small = boxes.filter(box => box.width < 44 || box.height < 44).length;
+    let overlaps = 0;
+    for (let i = 0; i < boxes.length; i++)
+      for (let j = i + 1; j < boxes.length; j++) {
+        const [a, b] = [boxes[i], boxes[j]];
+        if (a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5) overlaps++;
+      }
+    return { count: boxes.length, small, overlaps };
+  });
+}
+
+for (const [name, width] of [["phone", 390], ["tablet", 768]] as const)
+  test(`inline source numbers are full touch targets that never overlap on a ${name}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await open(page);
+    // Two sources on the same words put two numbers side by side.
+    await page.route(/\/api\/threads\/[^/]+$/, async route => {
+      const response = await route.fetch();
+      const body = await response.json();
+      for (const message of body.messages ?? [])
+        if (message.role === "assistant" && message.text.startsWith("Plain answer"))
+          message.citations = ["https://news.example/acme", "https://other.example/acme"].map(url =>
+            ({ type: "url_citation", url, title: url, start_index: 0, end_index: 12, cited_text: "Plain answer" }));
+      await route.fulfill({ response, json: body });
+    });
+    await ask(page).fill("Analyze a stock in chat");
+    await page.getByRole("button", { name: "Ask", exact: true }).click();
+    await thread(page).getByRole("button", { name: "Analyze ACME" }).click();
+    await expect(thread(page).getByRole("region", { name: "Stock analysis" }).getByRole("heading", { level: 2 })).toBeVisible();
+    const targets = await citationTargets(page);
+    expect(targets.count).toBeGreaterThanOrEqual(4);
+    expect(targets).toEqual({ count: targets.count, small: 0, overlaps: 0 });
+
+    // From the keyboard a number still opens its source.
+    const marker = thread(page).getByRole("link", { name: "Source 2" }).first();
+    await marker.focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/#source-.+-2$/);
+    const filing = thread(page).getByRole("button", { name: "Source 1" }).first();
+    await filing.focus();
+    await page.keyboard.press("Enter");
+    await expect(details(page).locator(".ev.focus")).toBeVisible();
+  });
+
+/** The case line's parts: whether each stays inside the line, and whether the line clears its legend. */
+async function caseLineLayout(page: Page) {
+  return page.locator(".range-wrap").evaluate(wrap => {
+    const line = wrap.querySelector(".range")!.getBoundingClientRect();
+    const legend = wrap.querySelector(".range-legend")!.getBoundingClientRect();
+    const parts = [...wrap.querySelectorAll(".range > span")].map(part => part.getBoundingClientRect());
+    return {
+      marker: !!wrap.querySelector(".px"),
+      outside: parts.filter(part => part.top < line.top - 0.5 || part.bottom > line.bottom + 0.5).length,
+      clearsLegend: line.bottom <= legend.top + 0.5,
+    };
+  });
+}
+
+for (const [width, priced] of [[390, true], [390, false], [1440, false]] as const)
+  test(`the case line keeps its track, ticks and legend apart at ${width}px ${priced ? "with" : "without"} a price`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await open(page, CANADA);
+    if (!priced)
+      // The same result with its price quoted in another currency: there is no comparable price to mark.
+      await page.route("**/api/analyze", async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        if (body.stock?.valuation) body.stock.valuation.currency = "USD";
+        for (const row of body.portfolio?.positions ?? []) if (row.quote_used) row.quote_used.currency = "USD";
+        await route.fulfill({ response, json: body });
+      });
+    await ask(page).fill("/stock ACME");
+    await page.getByRole("button", { name: "Ask", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Stock analysis" }).getByRole("heading", { level: 2 })).toBeVisible();
+    expect(await caseLineLayout(page)).toEqual({ marker: priced, outside: 0, clearsLegend: true });
+  });
+
+test("an undecided stock result shows its cases and cap check without reading as approval", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page, CANADA);
+  await ask(page).fill("/stock ACME");
+  await page.getByRole("button", { name: "Ask", exact: true }).click();
+  const memo = page.getByRole("region", { name: "Stock analysis" });
+  // The test server cannot conclude on this holding, so the verdict is undecided.
+  await expect(memo.getByRole("heading", { level: 2 })).toHaveText("Not enough to decide on ACME yet.");
+  // Every value is still shown, in neutral colours and with what they are not.
+  const chart = memo.getByRole("img", { name: /^Per share, discounted to today/ });
+  await expect(chart).toHaveAttribute("data-tone", "neutral");
+  await expect(chart).toContainText("No call yet: these are the cases, not a target.");
+  await expect(chart).toHaveAttribute("aria-label", /No call yet/);
+  const cap = memo.getByTestId("cap-insight");
+  await expect(cap).toHaveAttribute("data-tone", "neutral");
+  await expect(cap).toHaveText("50% of your portfolio. Within your 60% company cap. A rules check only, not a call on ACME.");
+  // The status dot beside the verdict is muted too, not green.
+  await expect(memo.locator(".meta .sage")).toHaveCount(0);
 });
