@@ -1,3 +1,4 @@
+import { ArrowUp, Slash } from "lucide-react";
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { isThemeCandidate, type NewCashInput, type Position, type Snapshot, type ThemeInput } from "../../lib/contracts";
 import { accountName, fullDate, money, newCashLabel } from "./format";
@@ -28,6 +29,8 @@ type Props = {
   running: boolean;
   /** A conversation is open, so the next free-form question continues it. */
   inThread: boolean;
+  /** The home screen: the composer is the main thing on the page and carries its own shortcuts. */
+  home: boolean;
   collapsed: boolean;
   onExpand: () => void;
   onSubmit: () => void;
@@ -76,6 +79,7 @@ export default function Composer({
   onRemoveCandidate,
   running,
   inThread,
+  home,
   collapsed,
   onExpand,
   onSubmit,
@@ -214,12 +218,19 @@ export default function Composer({
     } else if (event.key === "Backspace" && !question && workflow) onWorkflow(null);
   }
 
-  function submit(event: FormEvent) {
+  function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!blocked && !running) onSubmit();
+    if (blocked || running) return;
+    // The send button is disabled while the answer runs. Focus must not stay parked on it, or the next key press goes nowhere.
+    event.currentTarget.querySelector<HTMLElement>(".send:focus")?.blur();
+    onSubmit();
   }
 
-  return <form className="composer" onSubmit={submit} aria-label="Ask the analyst">
+  const tools = home && !workflow;
+  const send = workflow ? <button type="submit" className="btn primary" disabled={!!blocked || running}>Analyze</button>
+    : <button type="submit" className="send" aria-label="Ask" title="Ask" disabled={!!blocked || running}><ArrowUp size={18} aria-hidden="true" /></button>;
+
+  return <form className={`composer${home ? " home" : ""}`} onSubmit={submit} aria-label="Ask the analyst">
     <div className="col">
       {slashOpen && <div className="slash" role="listbox" aria-label="Workflows" id="slash-menu">
         <span className="cap" style={{ padding: "8px 12px 6px" }}>Workflows</span>
@@ -326,9 +337,14 @@ export default function Composer({
             placeholder={running ? "Wait for this answer to finish" : workflow === "new-cash" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?") : workflow === "theme" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "Explore a theme against your shortlist.") : inThread ? "Ask a follow-up, or type / for a workflow" : "Ask anything, or type / for a workflow"}
             onChange={event => { onQuestion(event.target.value); setActive(0); }} />
           {(workflow || question.trim()) && blocked && !running && !slashOpen && <span className="cap amber hint">{blocked}</span>}
-          {workflow ? <button type="submit" className="btn primary" disabled={!!blocked || running}>Analyze</button>
-            : question.trim() && !slashOpen ? <button type="submit" className="btn primary" disabled={!!blocked || running}>Ask</button> : <span className="cap">/</span>}
+          {!tools && send}
         </div>
+        {tools && <div className="box-tools">
+          <button type="button" className="pill" disabled={running} onClick={() => { onQuestion("/"); setActive(0); document.getElementById("ask")?.focus(); }}>
+            <Slash size={14} aria-hidden="true" />Workflows</button>
+          {snapshot && <span className="pill status n"><span className="live" aria-hidden="true" /><span className="hide-sm">Using portfolio as of {fullDate(snapshot.as_of)}</span><span className="show-sm" aria-hidden="true">As of {fullDate(snapshot.as_of)}</span></span>}
+          {send}
+        </div>}
       </div>
     </div>
   </form>;

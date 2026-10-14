@@ -1,5 +1,6 @@
 "use client";
 
+import { Banknote, ChartPie, Lightbulb, Menu, Scale, TrendingUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   BENCHMARK_FUND,
@@ -108,6 +109,7 @@ const durationsKey = (sent: Sent | null) =>
           : "desk.reviewDurations";
 const TITLE = "Analyst";
 // The last answer, so a reload doesn't lose it. Per-browser convenience; Save puts it in Decisions.
+const PANEL_KEY = "tfs.details-panel";
 const ANSWER_KEY = "desk.lastAnswer";
 
 /** Only rules the user actually set; an all-unset rule set is sent and saved as none. */
@@ -304,6 +306,20 @@ export default function DeskPage() {
   const [focus, setFocus] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
+  // Wide screens dock the details beside the conversation. Closing them there is remembered on this computer.
+  const [panelDocked, setPanelDocked] = useState(true);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(PANEL_KEY) === "closed") setPanelDocked(false);
+    } catch {}
+  }, []);
+  const showPanel = (open: boolean) => {
+    setPanelOpen(open);
+    setPanelDocked(open);
+    try {
+      localStorage.setItem(PANEL_KEY, open ? "open" : "closed");
+    } catch {}
+  };
   const [notice, setNotice] = useState("");
   const [prices, setPrices] = useState<PriceRefresh | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -663,6 +679,7 @@ export default function DeskPage() {
     setTab(next);
     setFocus(null);
     setPanelOpen(true);
+    setPanelDocked(true);
   };
 
   /** Ordinary analysis uses COMMITTED portfolio state */
@@ -1754,7 +1771,7 @@ export default function DeskPage() {
     center = (
       <div className="hero">
         <h1>Start with what you own.</h1>
-        <p className="body" style={{ maxWidth: 520 }}>
+        <p className="hero-sub">
           Import your holdings once. They&apos;re saved on this computer and loaded every time.
           Prices, values and weights come from the analysis, not from your cost. You can ask a general
           question below before importing anything.
@@ -1776,96 +1793,132 @@ export default function DeskPage() {
             ? "What theme should we explore?"
             : workflow === "new-cash"
               ? "Where should new money go?"
-              : "What should we look at?"}
+              : "What do you want to look at today?"}
         </h1>
-        {workflow === "theme" ? (
-          <p className="body" style={{ maxWidth: 560 }}>
-            Frame an investment theme, name candidate stocks or let the analyst propose them, and test
-            whether exposure makes sense against your portfolio.
-          </p>
-        ) : workflow === "new-cash" ? (
-          <p className="body" style={{ maxWidth: 560 }}>
-            The analyst screens what you could add to, researches candidates that could change the
-            answer, and compares them with keeping cash and doing nothing. You place any order yourself.
-          </p>
-        ) : (
-          <div className="starters">
-            <button
-              type="button"
-              className="starter"
-              disabled={committedUnresolved.length > 0}
-              onClick={() => {
-                setQuestion("Review my portfolio");
-                review("Review my portfolio");
-              }}
-            >
-              <span>Review my portfolio</span>
-              <span className="m">Exposure, concentration, fund overlap and your rules</span>
-            </button>
-            <button
-              type="button"
-              className="starter"
-              onClick={() => {
-                setWorkflow("new-cash");
-                setCollapsed(false);
-                document.getElementById("ask")?.focus();
-              }}
-            >
-              <span>/new-cash</span>
-              <span className="m">Decide where new money should go</span>
-            </button>
-            <button
-              type="button"
-              className="starter"
-              disabled={committedUnresolved.length > 0}
-              onClick={() =>
-                void analyze({
-                  question: "Should I rebalance my portfolio?",
-                  newCash: null,
-                  rebalance: true,
-                })
-              }
-            >
-              <span>/rebalance</span>
-              <span className="m">Should anything change? Reduce, keep or add, within your rules</span>
-            </button>
-            <button
-              type="button"
-              className="starter"
-              disabled={committedUnresolved.length > 0}
-              onClick={() => {
-                setWorkflow("theme");
-                setCollapsed(false);
-                document.getElementById("ask")?.focus();
-              }}
-            >
-              <span>/theme</span>
-              <span className="m">Test an idea against a short list of candidate stocks</span>
-            </button>
-            <button
-              type="button"
-              className="starter"
-              disabled={committedUnresolved.length > 0}
-              onClick={() => {
-                setWorkflow(null);
-                setQuestion("/stock ");
-                document.getElementById("ask")?.focus();
-              }}
-            >
-              <span>/stock</span>
-              <span className="m">
-                Analyze one company you own. Or just ask: &ldquo;What do you think about{" "}
-                {committedSnapshot.positions.find(row => row.kind === "stock")?.ticker || "AVGO"}
-                ?&rdquo;
-              </span>
-            </button>
-          </div>
-        )}
+        <p className="hero-sub">
+          {workflow === "theme"
+            ? "Frame an investment theme, name candidate stocks or let the analyst propose them, and test whether exposure makes sense against your portfolio."
+            : workflow === "new-cash"
+              ? "The analyst screens what you could add to, researches candidates that could change the answer, and compares them with keeping cash and doing nothing. You place any order yourself."
+              : "Ask about your portfolio, a company or an idea."}
+        </p>
       </div>
     );
 
+  // The home screen: no answer, conversation or decision is open, so the composer sits in the middle of the page.
+  const home =
+    !registerOpen && !reopened && !run && !clarify && !failure && !showThread && !answer && !restoring;
+  const blockedByIdentity = committedUnresolved.length > 0;
+  const rulesSet = [
+    committedSettings.single_company_cap && `Cap ${pct(committedSettings.single_company_cap)}`,
+    committedSettings.active_budget && `active ${pct(committedSettings.active_budget)}`,
+  ].filter(Boolean);
+  const waitingOn = [
+    pendingProposals.length > 0 && `${pendingProposals.length} change${pendingProposals.length === 1 ? "" : "s"}`,
+    blockedByIdentity && `${committedUnresolved.length} holding${committedUnresolved.length === 1 ? "" : "s"} to identify`,
+  ].filter(Boolean);
+  const homeBelow = home && committedSnapshot && !workflow && (
+    <div className="home-below">
+      <div className="col">
+        <div className="starters">
+          <button
+            type="button"
+            className="starter"
+            disabled={blockedByIdentity}
+            onClick={() => {
+              setQuestion("Review my portfolio");
+              review("Review my portfolio");
+            }}
+          >
+            <span className="ico" aria-hidden="true"><ChartPie size={16} /></span>
+            <b>Review my portfolio</b>
+            <span className="m">Exposure and overlap</span>
+          </button>
+          <button
+            type="button"
+            className="starter"
+            disabled={blockedByIdentity}
+            onClick={() => {
+              setWorkflow(null);
+              setQuestion("/stock ");
+              document.getElementById("ask")?.focus();
+            }}
+          >
+            <span className="ico blue" aria-hidden="true"><TrendingUp size={16} /></span>
+            <b>Analyze a stock</b>
+            <span className="m">One company you own</span>
+          </button>
+          <button
+            type="button"
+            className="starter"
+            onClick={() => {
+              setWorkflow("new-cash");
+              setCollapsed(false);
+              document.getElementById("ask")?.focus();
+            }}
+          >
+            <span className="ico sand" aria-hidden="true"><Banknote size={16} /></span>
+            <b>Place new cash</b>
+            <span className="m">Where new money goes</span>
+          </button>
+          <button
+            type="button"
+            className="starter"
+            disabled={blockedByIdentity}
+            onClick={() =>
+              void analyze({
+                question: "Should I rebalance my portfolio?",
+                newCash: null,
+                rebalance: true,
+              })
+            }
+          >
+            <span className="ico sand" aria-hidden="true"><Scale size={16} /></span>
+            <b>Rebalance</b>
+            <span className="m">Reduce, keep or add</span>
+          </button>
+          <button
+            type="button"
+            className="starter"
+            disabled={blockedByIdentity}
+            onClick={() => {
+              setWorkflow("theme");
+              setCollapsed(false);
+              document.getElementById("ask")?.focus();
+            }}
+          >
+            <span className="ico blue" aria-hidden="true"><Lightbulb size={16} /></span>
+            <b>Test a theme</b>
+            <span className="m">An idea and a short list</span>
+          </button>
+        </div>
+        <dl className="glance">
+          <div>
+            <dt>Your portfolio{committedRevision != null ? ` · revision ${committedRevision}` : ""}</dt>
+            <dd className="n">
+              {committedSnapshot.positions.length} holding{committedSnapshot.positions.length === 1 ? "" : "s"} ·{" "}
+              {committedSnapshot.accounts.length} account{committedSnapshot.accounts.length === 1 ? "" : "s"}
+            </dd>
+          </div>
+          <div>
+            <dt>Your rules</dt>
+            <dd className="n">{rulesSet.length ? rulesSet.join(" · ") : "No rules set"}</dd>
+          </div>
+          <div>
+            <dt>Waiting on you</dt>
+            <dd className={waitingOn.length ? "amber" : undefined}>
+              {waitingOn.length ? waitingOn.join(" · ") : "Nothing right now"}
+            </dd>
+          </div>
+        </dl>
+      </div>
+    </div>
+  );
+
   return (
-    <div className={`desk${panelOpen ? " panel-open" : ""}${railOpen ? " rail-open" : ""}`}>
+    <div
+      className={`desk${panelOpen ? " panel-open" : ""}${railOpen ? " rail-open" : ""}${panelDocked ? "" : " panel-off"}`}
+    >
       <a className="skip" href="#details">
         Skip to details
       </a>
@@ -1874,7 +1927,11 @@ export default function DeskPage() {
         unresolved={committedUnresolved}
         settings={committedSettings}
         result={result}
+        revision={committedRevision}
+        pending={pendingProposals.length}
         decisions={decisions}
+        registerOpen={registerOpen}
+        onClose={() => setRailOpen(false)}
         currentId={reopened?.id ?? saved?.id ?? null}
         threads={conversation.threads}
         threadsError={conversation.threadsError}
@@ -1929,7 +1986,7 @@ export default function DeskPage() {
         onDelete={decision => void deleteDecision(decision)}
         onClearAll={() => void clearDecisions()}
       />
-      <main className="center">
+      <main className={`center${home ? " home" : ""}`}>
         <header className="ctx">
           <div className="ctx-left">
             <button
@@ -1938,17 +1995,7 @@ export default function DeskPage() {
               aria-label="Open portfolio and decisions"
               onClick={() => setRailOpen(true)}
             >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                aria-hidden="true"
-              >
-                <path d="M4 7h16M4 12h16M4 17h16" />
-              </svg>
+<Menu size={18} aria-hidden="true" />
             </button>
             <span>{ctxLabel}</span>
           </div>
@@ -1995,7 +2042,7 @@ export default function DeskPage() {
             <button
               type="button"
               className="btn secondary small details-btn"
-              onClick={() => setPanelOpen(true)}
+              onClick={() => showPanel(true)}
             >
               Details
             </button>
@@ -2177,6 +2224,7 @@ export default function DeskPage() {
             onRemoveCandidate={removeThemeCandidate}
             running={!!run || conversation.busy || capturingHere}
             inThread={showThread}
+            home={home}
             collapsed={collapsed && !!(answer || failure || run)}
             onExpand={() => setCollapsed(false)}
             onSubmit={() => {
@@ -2211,11 +2259,12 @@ export default function DeskPage() {
             }}
           />
         )}
+        {homeBelow}
       </main>
       <Panel
         tab={tab}
         onTab={openTab}
-        onClose={() => setPanelOpen(false)}
+        onClose={() => showPanel(false)}
         focus={focus}
         snapshot={draftSnapshot}
         setSnapshot={setDraftSnapshot}

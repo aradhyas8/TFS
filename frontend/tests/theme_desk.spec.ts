@@ -203,7 +203,7 @@ test("theme discovery full flow: form, agreement card, edit clearing, agreed res
 
 test("starters button opens /theme workflow in composer", async ({ page }) => {
   await open(page);
-  const starter = page.getByRole("button", { name: /\/theme Test an idea/ });
+  const starter = page.getByRole("button", { name: "Test a theme" });
   await expect(starter).toBeVisible();
   await starter.click();
 
