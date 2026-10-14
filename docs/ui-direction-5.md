@@ -132,6 +132,33 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
 - The Details panel keeps its Holdings tab as the quick editor inside a conversation. Both read and write the same
   draft; there is no second copy of the portfolio.
 
+## Proposal review (phase 4)
+
+- A prepared change is reviewed in an Arc drawer from the right (nearly full width on a phone). Its header names the
+  origin (From a conversation, Your edits, Holdings import, Identity correction) and the revision it was prepared from;
+  the first line says which revision the portfolio is at now.
+- What changes is a three-column table, What changes, Before and After, built from the backend's own differences:
+  holdings added and removed, each changed field of a holding (shares, balance, fund type, listing, ticker, company,
+  price mark), holdings still to identify, average costs, exchange rates, each rule, the benchmark, the holdings date
+  and the reporting currency. Before is muted and struck through; after is set on the green draft tint. Below 640 the
+  subject takes its own line above before and after.
+- The parts the proposal leaves alone are listed as Unchanged (holdings date, rules and benchmark, average costs). The
+  backend's warnings follow in an amber note, three at a time with the rest behind "more". Values and weights are not
+  recalculated in the review; the note says they come from the next analysis.
+- The footer stays in view: it says confirming saves a new revision with a receipt, that stored analyses keep their
+  revision, and that it updates records only and places no trade. Confirm changes (ink) and Cancel proposal (ghost).
+- Closing (the X, Escape or outside the panel) leaves the proposal waiting. Only Cancel proposal cancels it. While a
+  confirmation or cancellation is in flight neither can close the panel, and a second click sends nothing.
+- A proposal prepared from an older revision, or refused by the backend as stale, shows a red "This proposal is out of
+  date" alert and a disabled Confirm. It is never moved onto the newer revision, and unsaved edits are kept.
+- A confirmation that gets no reply says so and can be confirmed again; the backend returns the receipt of a proposal
+  already applied, so nothing is applied twice.
+- After confirming, an Arc toast below the header gives the new revision, the one before and the time, and that no
+  trade was placed. The conversation card keeps "Your portfolio moved from revision 1 to revision 2".
+- Changes waiting for confirmation are listed above the conversation with Review and Cancel proposal, except one
+  prepared in the conversation that is open, which its own card shows. That card previews up to three changes as
+  before → after. The portfolio's Changes tab lists the same proposals.
+
 ## Where the app differs from the mockup on purpose
 
 - Muted text is `#6B655C`, not `#756F66`, and amber and green text use the `-strong` values. The mockup values fall
@@ -160,6 +187,10 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
   phone), the not-valued total 26, 13.5 in the table, notices and the draft bar, 12.5 in summary captions, legends
   and chips, 10.5 in holding initials. The empty states use 17 for their heading.
 - Buttons in the portfolio and decisions views are Arc buttons at their small size, which is fully round at 36px.
+- The review is a drawer over the page, not a column beside the conversation as in the mockup, so it reads the same
+  from the portfolio view and at every width. Its close button is Arc's, labelled "Close drawer".
+- Amounts in the review are the quantities and balances the records hold (shares, cash, average cost, marks). The
+  mockup's cash after a sale is shown only when the proposal itself changes that balance.
 - The summary strip shows holdings and accounts, the rules as set, and what is waiting. A portfolio value and a count of
   companies over the cap need a valuation, which exists only after an analysis.
 

@@ -99,7 +99,8 @@ test("browser unresolved holding: partial correction -> preview -> confirm -> co
   // Preview dialog opens
   const dialog = page.getByRole("dialog", { name: "Review portfolio changes" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("Identity correction · Base revision 1")).toBeVisible();
+  await expect(dialog).toContainText("Identity correction · prepared from revision 1");
+  await expect(dialog.getByRole("table", { name: "What changes" }).getByRole("row", { name: /XYZ/ }).first()).toContainText("XTSE");
 
   // Verify backend committed state remains revision 1 before confirmation
   const checkRev1 = await (await page.request.get("/api/portfolio")).json();
@@ -127,7 +128,7 @@ test("browser unresolved holding: partial correction -> preview -> confirm -> co
 
   // Preview dialog opens for complete resolution
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("Identity correction · Base revision 2")).toBeVisible();
+  await expect(dialog).toContainText("Identity correction · prepared from revision 2");
 
   // Confirm complete resolution
   await dialog.getByTestId("confirm-proposal").click();
@@ -173,12 +174,12 @@ test("reload discovers pending proposal and stale state is identified when commi
   const pendingBanner = page.getByTestId("pending-proposals-banner");
   await expect(pendingBanner).toBeVisible();
   await expect(pendingBanner).toContainText("Identity correction");
-  await expect(pendingBanner).toContainText("Base rev 1");
+  await expect(pendingBanner).toContainText("Prepared from revision 1");
 
   // Reopen the proposal preview
   await page.getByTestId("reopen-proposal").click();
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("Identity correction · Base revision 1")).toBeVisible();
+  await expect(dialog).toContainText("Identity correction · prepared from revision 1");
 
   // Advance committed revision in background to revision 2
   const competingPrep = await page.request.put("/api/portfolio", {
@@ -201,10 +202,10 @@ test("reload discovers pending proposal and stale state is identified when commi
   await dialog.getByTestId("confirm-proposal").click();
 
   // Stale alert is clearly displayed and confirm button is hidden/gone
-  await expect(dialog.getByText("This proposal is stale.", { exact: true })).toBeVisible();
-  await expect(dialog.getByTestId("confirm-proposal")).toHaveCount(0);
+  await expect(dialog.getByRole("alert")).toContainText("This proposal is out of date");
+  await expect(dialog.getByTestId("confirm-proposal")).toBeDisabled();
 
-  // Dismiss button closes the dialog
+  // Cancel proposal closes the review
   await dialog.getByTestId("cancel-proposal").click();
   await expect(dialog).toHaveCount(0);
 });

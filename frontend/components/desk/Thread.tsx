@@ -21,6 +21,7 @@ import {
 } from "../../lib/contracts";
 import { linkOnly, placeCitations, webAddress, type Source } from "./citations";
 import { fullDate } from "./format";
+import { changeRows } from "./proposal";
 import type { PendingSend } from "./useConversation";
 import styles from "./Thread.module.css";
 
@@ -446,6 +447,13 @@ function Proposal({ id, shared }: { id: string; shared: Shared }) {
           {label}
         </Badge>
       </div>
+      {proposal.status === "pending" && !outdated && (
+        <ul className={styles.proposalChanges} aria-label="Changes, before and after">
+          {changeRows(proposal, shared.snapshot).slice(0, 3).map(row => (
+            <li key={row.key}><span>{row.subject} <small>{row.detail.split(" · ").pop()}</small></span><b>{row.before} → {row.after}</b></li>
+          ))}
+        </ul>
+      )}
       <p className={styles.source}>
         {proposal.status === "applied" && proposal.receipt
           ? `Confirmed by you. Your portfolio moved from revision ${proposal.receipt.previous_revision ?? "none"} to revision ${proposal.receipt.new_revision}.`

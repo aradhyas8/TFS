@@ -102,7 +102,7 @@ test("typing changes draft state only without autosave; review opens differences
 
   const dialog = page.getByRole("dialog", { name: "Review portfolio changes" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("Portfolio settings modified")).toBeVisible();
+  await expect(dialog.getByRole("table", { name: "What changes" }).getByRole("row", { name: /Target cash/ })).toContainText("10%");
 
   // 3. Confirm adopts returned committed revision
   const confirmBtn = dialog.getByTestId("confirm-proposal");
@@ -204,8 +204,9 @@ test("rules, benchmark, and ETF-role edits follow the same action model", async 
   await expect(dialog).toBeVisible();
 
   // Verify both differences exist
-  await expect(dialog.getByText(/Benchmark/)).toBeVisible();
-  await expect(dialog.getByText(/etf_role/)).toBeVisible();
+  const changes = dialog.getByRole("table", { name: "What changes" });
+  await expect(changes.getByRole("row", { name: /Benchmark/ })).toContainText("SPY");
+  await expect(changes.getByRole("row", { name: /XEQT/ })).toContainText("fund type");
 
   // Confirm changes
   await dialog.getByTestId("confirm-proposal").click();
@@ -301,7 +302,8 @@ test("stale previews preserve draft work and require fresh review", async ({ pag
   await dialog.getByTestId("confirm-proposal").click();
 
   // Stale alert is displayed in dialog
-  await expect(dialog.getByText("This proposal is stale.", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("alert").filter({ hasText: "This proposal is out of date" })).toBeVisible();
+  await expect(dialog.getByTestId("confirm-proposal")).toBeDisabled();
 
   // Dismiss dialog
   await dialog.getByTestId("cancel-proposal").click();

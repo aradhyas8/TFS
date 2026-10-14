@@ -287,10 +287,10 @@ test("a proposal from the conversation changes nothing until its review is confi
   // Reviewing and backing out: still nothing committed, and the conversation records the cancellation.
   await card.getByRole("button", { name: "Review changes" }).click();
   const dialog = page.getByRole("dialog", { name: "Review portfolio changes" });
-  await expect(dialog).toContainText("Action proposal · Base revision 1");
-  await expect(dialog.locator(".diff-list")).toHaveText("Position tfsa-acme modified (shares)");
+  await expect(dialog).toContainText("From a conversation · prepared from revision 1");
+  await expect(dialog.getByRole("table", { name: "What changes" }).getByRole("row", { name: /ACME/ })).toHaveText(/TFSA · shares.*10.*12/);
   expect(await acmeShares(page)).toBe(10);
-  await page.keyboard.press("Escape");
+  await dialog.getByRole("button", { name: "Cancel proposal" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(card).toContainText("Cancelled. Your saved portfolio was not changed.");
   await expect(card.getByRole("button")).toHaveCount(0);
@@ -545,7 +545,7 @@ test("a proposal that this page knows is out of date offers no review, whatever 
   await details.getByLabel("Single-company cap (%)").fill("42");
   await details.getByTestId("review-changes").click();
   const dialog = page.getByRole("dialog", { name: "Review portfolio changes" });
-  await expect(dialog).toContainText("Manual edit");
+  await expect(dialog).toContainText("Your edits · prepared from revision 1");
   await dialog.getByTestId("confirm-proposal").click();
   await expect(dialog).toHaveCount(0);
   expect((await holdings(page)).revision).toBe(2);
@@ -555,11 +555,13 @@ test("a proposal that this page knows is out of date offers no review, whatever 
   await expect(card.getByRole("button")).toHaveCount(0);
   expect(await acmeShares(page)).toBe(10);
 
-  // The banner above the thread reaches the same review: it opens as out of date, with nothing to confirm.
-  await page.getByTestId("reopen-pending-proposal").click();
-  await expect(dialog).toContainText("This proposal is stale.");
-  await expect(dialog.getByTestId("confirm-proposal")).toHaveCount(0);
-  await dialog.getByRole("button", { name: "Close and cancel review" }).click();
+  // The portfolio's list of changes reaches the same review: it opens as out of date, with nothing to confirm.
+  await page.getByRole("navigation", { name: "Portfolio, conversations and decisions" }).getByRole("button", { name: /^Portfolio/ }).click();
+  await page.getByRole("region", { name: "Portfolio" }).getByRole("tab", { name: /Changes/ }).click();
+  await page.getByRole("region", { name: "Portfolio" }).getByRole("button", { name: "Review", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("This proposal is out of date");
+  await expect(dialog.getByTestId("confirm-proposal")).toBeDisabled();
+  await dialog.getByRole("button", { name: "Cancel proposal" }).click();
   await expect(dialog).toHaveCount(0);
 
   // Reloaded while the list still answers from before: the page compares revisions itself.
@@ -567,7 +569,7 @@ test("a proposal that this page knows is out of date offers no review, whatever 
   await expect(card).toContainText("Out of date");
   await expect(card.getByRole("button")).toHaveCount(0);
 
-  // With the real list back after a reload: closing the out-of-date review cancelled it, and nothing was applied.
+  // With the real list back after a reload: cancelling the out-of-date review cancelled it, and nothing was applied.
   await page.unroute("**/api/portfolio/proposals", cached);
   await page.reload();
   await expect(card).toContainText("Cancelled. Your saved portfolio was not changed.");

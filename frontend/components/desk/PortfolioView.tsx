@@ -253,7 +253,7 @@ export default function PortfolioView(props: Props) {
                 {stale && <span className="cap amber">Prepared from an older revision. Review it again before confirming.</span>}
               </div>
               <div className="pchange-act">
-                <Button variant="ghost" size="sm" onClick={() => props.onCancelProposal(proposal.id)}>Discard</Button>
+                <Button variant="ghost" size="sm" onClick={() => props.onCancelProposal(proposal.id)}>Cancel proposal</Button>
                 <Button variant="secondary" size="sm" onClick={() => props.onReopenProposal(proposal)}>Review</Button>
               </div>
             </div>;

@@ -26,6 +26,7 @@ import {
   type DecisionWorkflow,
   type NewCashInput,
   type PortfolioProposal,
+  type ProposalReceipt,
   type PortfolioSettings,
   type Position,
   type PriceRefresh,
@@ -41,6 +42,7 @@ import Composer from "../../components/desk/Composer";
 import Register from "../../components/desk/Register";
 import Panel, { evidenceFor, ImportCsv } from "../../components/desk/Panel";
 import PortfolioPreview from "../../components/desk/PortfolioPreview";
+import { ORIGIN, isStale } from "../../components/desk/proposal";
 import PortfolioView from "../../components/desk/PortfolioView";
 import { draftEdits, ruleChecks, valuationFor } from "../../components/desk/portfolio";
 import {
@@ -62,6 +64,7 @@ import threadStyles from "../../components/desk/Thread.module.css";
 import { Alert } from "@/components/arc/alert/alert";
 import { Button } from "@/components/arc/button/button";
 import { Checkbox } from "@/components/arc/checkbox/checkbox";
+import Toast from "@/components/arc/toast/toast";
 import { useConversation } from "../../components/desk/useConversation";
 import { clock, decisionLabel, fullDate, newCashLabel, pct, shortDate } from "../../components/desk/format";
 
@@ -269,8 +272,13 @@ export default function DeskPage() {
   const [reviewing, setReviewing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  // The backend refused to confirm the open proposal because the portfolio moved on since it was prepared.
   const [isProposalStale, setIsProposalStale] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  // The receipt of the last confirmation, shown once; the revision itself is shown wherever the portfolio is.
+  const [receipt, setReceipt] = useState<ProposalReceipt | null>(null);
+  // A second click, or a click while the first confirmation is in flight, sends nothing.
+  const confirmingRef = useRef(false);
 
   // Refreshes start from several places. Only the latest one may report: an older request that fails late
   // must not hide a list a newer request already loaded.
@@ -295,12 +303,10 @@ export default function DeskPage() {
 
   function openProposal(proposal: PortfolioProposal) {
     setActiveProposal(proposal);
-    const stale =
-      proposal.status === "stale" ||
-      (committedRevision != null && proposal.base_revision != null && proposal.base_revision !== committedRevision);
-    setIsProposalStale(stale);
+    setIsProposalStale(false);
     setPreviewError(null);
   }
+
 
   const [restoring, setRestoring] = useState(true);
   const [workflow, setWorkflow] = useState<"new-cash" | "theme" | null>(null);
@@ -661,7 +667,6 @@ export default function DeskPage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to prepare portfolio review.";
       if (msg.includes("409") || msg.toLowerCase().includes("stale")) {
-        setIsProposalStale(true);
         setNotice(
           "The saved portfolio was updated. Your draft edits are preserved — please review again against current state."
         );
@@ -696,42 +701,43 @@ export default function DeskPage() {
   }
 
   async function confirmActiveProposal() {
-    if (!activeProposal) return;
+    if (!activeProposal || confirmingRef.current) return;
+    confirmingRef.current = true;
+    const confirmed = activeProposal;
     setConfirming(true);
     setPreviewError(null);
     try {
-      const res = await confirmProposal(activeProposal.id);
-      const confirmedId = activeProposal.id;
-      adoptCommitted(res, activeProposal);
+      const res = await confirmProposal(confirmed.id);
+      adoptCommitted(res, confirmed);
+      setReceipt(res.receipt);
       setActiveProposal(null);
       setIsProposalStale(false);
-      setPendingProposals(prev => prev.filter(p => p.id !== confirmedId));
+      setPendingProposals(prev => prev.filter(p => p.id !== confirmed.id));
       refreshProposals();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Confirmation failed.";
-      if (
-        msg.includes("409") ||
-        msg.toLowerCase().includes("stale") ||
-        msg.toLowerCase().includes("conflict")
-      ) {
+      const msg = err instanceof Error ? err.message : "";
+      if (/stale|409|conflict/i.test(msg)) {
+        // Refused, never rebased: the proposal stays as it was prepared and the draft is untouched.
         setIsProposalStale(true);
-        setPreviewError(
-          "This proposal is stale because the committed portfolio changed. Your draft edits are preserved."
-        );
+        refreshProposals();
+      } else if (!(err instanceof Error) || err instanceof TypeError || err.name === "TimeoutError" || err.name === "AbortError") {
+        // The request may have reached the server. Confirming again is safe: an applied proposal returns its receipt.
+        setPreviewError("The confirmation got no reply, so it isn't known whether it was saved. Confirm again to check; a proposal is never applied twice.");
       } else {
         setPreviewError(msg);
       }
     } finally {
+      confirmingRef.current = false;
       setConfirming(false);
     }
   }
 
   async function cancelActiveProposal() {
-    if (!activeProposal) return;
+    if (!activeProposal || confirmingRef.current) return;
     setCancelling(true);
     const cancellingId = activeProposal.id;
     try {
-      await cancelProposal(activeProposal.id);
+      await cancelProposal(cancellingId);
     } catch {
       // Ignored if network issue or already cancelled
     } finally {
@@ -744,6 +750,13 @@ export default function DeskPage() {
     }
   }
 
+  /** Closes the review and leaves the proposal waiting, to be reviewed again from the list of changes. */
+  function closeProposal() {
+    setActiveProposal(null);
+    setIsProposalStale(false);
+    setPreviewError(null);
+  }
+
   function discardDraft() {
     if (!committedPortfolio) return;
     setDraftSnapshot(committedSnapshot);
@@ -754,6 +767,8 @@ export default function DeskPage() {
     setNotice("");
   }
 
+  // Changes waiting for confirmation. One prepared in the open conversation is already shown there, with its review.
+  const waitingHere = pendingProposals.filter(p => !(view === "chat" && p.thread_id && p.thread_id === conversation.openId));
   const showThread =
     !viewOpen && !reopened && !run && !clarify && !failure && (!!conversation.openId || !!conversation.pending);
   const result = (showThread ? threadResult?.analysis : answer?.analysis) ?? null;
@@ -2209,62 +2224,6 @@ export default function DeskPage() {
         </header>
         <div className="scroll">
           <div className="col">
-            {pendingProposals.length > 0 && !activeProposal && (
-              <aside
-                className="pending-proposal-banner"
-                data-testid="pending-proposal-banner"
-                role="status"
-                aria-label="Pending portfolio proposal"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "12px 16px",
-                  marginBottom: 16,
-                  background: "rgba(224, 163, 92, 0.12)",
-                  border: "1px solid var(--amber)",
-                  borderRadius: 6,
-                  gap: 12,
-                }}
-              >
-                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  <span style={{ fontSize: 13, fontWeight: 500, color: "var(--amber)" }}>
-                    Pending review: {
-                      pendingProposals[0].origin === "import"
-                        ? "Holdings import"
-                        : pendingProposals[0].origin === "manual"
-                          ? "Manual edit"
-                          : pendingProposals[0].origin === "identify"
-                            ? "Identity correction"
-                            : "Action proposal"
-                    }
-                  </span>
-                  <span className="cap" style={{ color: "var(--text-2)" }}>
-                    {pendingProposals[0].base_revision != null
-                      ? `Prepared from revision ${pendingProposals[0].base_revision}`
-                      : "Initial portfolio creation"}
-                  </span>
-                </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <button
-                    type="button"
-                    className="btn secondary small"
-                    data-testid="cancel-pending-proposal"
-                    onClick={() => void cancelPendingProposal(pendingProposals[0].id)}
-                  >
-                    Discard
-                  </button>
-                  <button
-                    type="button"
-                    className="btn primary small"
-                    data-testid="reopen-pending-proposal"
-                    onClick={() => openProposal(pendingProposals[0])}
-                  >
-                    Reopen preview
-                  </button>
-                </div>
-              </aside>
-            )}
             {notice && (
               <p className="amber" role="alert" style={{ marginBottom: 16 }}>
                 {notice}
@@ -2279,80 +2238,30 @@ export default function DeskPage() {
                 before asking. They aren&apos;t in the analysis until then.
               </p>
             )}
-            {pendingProposals.length > 0 && !activeProposal && (
-              <div
-                className="pgroup pending-proposals-banner"
-                data-testid="pending-proposals-banner"
-                role="region"
-                aria-label="Pending portfolio proposals"
-                style={{
-                  background: "var(--raised)",
-                  border: "1px solid var(--rule-strong)",
-                  padding: "12px 14px",
-                  borderRadius: 8,
-                  marginBottom: 16,
-                }}
-              >
-                <div className="pv" style={{ alignItems: "center" }}>
-                  <div>
-                    <span className="lbl amber">
-                      Pending proposal{pendingProposals.length === 1 ? "" : "s"} ({pendingProposals.length})
-                    </span>
-                    <p className="cap" style={{ marginTop: 2 }}>
-                      Prepared actions waiting for confirmation.
-                    </p>
-                  </div>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
-                  {pendingProposals.map((p, idx) => {
-                    const isStale =
-                      p.status === "stale" ||
-                      (committedRevision != null && p.base_revision != null && p.base_revision !== committedRevision);
-                    return (
-                      <div
-                        key={p.id}
-                        className="pv"
-                        style={{
-                          alignItems: "center",
-                          padding: "6px 0",
-                          borderTop: idx > 0 ? "1px solid var(--rule)" : undefined,
-                        }}
-                        data-testid={`pending-proposal-item-${p.id}`}
-                      >
-                        <div>
-                          <span style={{ fontWeight: 500, fontSize: 13 }}>
-                            {p.origin === "manual"
-                              ? "Manual edit"
-                              : p.origin === "import"
-                                ? "Holdings import"
-                                : p.origin === "identify"
-                                  ? "Identity correction"
-                                  : "Action proposal"}
-                          </span>
-                          <span className="cap" style={{ marginLeft: 8 }}>
-                            {p.base_revision != null ? `Base rev ${p.base_revision}` : "Initial creation"} ·{" "}
-                            {p.differences.length} change{p.differences.length === 1 ? "" : "s"}
-                            {p.warnings.length > 0 ? ` · ${p.warnings.length} warning(s)` : ""}
-                          </span>
-                          {isStale && (
-                            <span className="cap amber" style={{ marginLeft: 8, fontWeight: 500 }}>
-                              (stale)
-                            </span>
-                          )}
-                        </div>
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          data-testid="reopen-proposal"
-                          onClick={() => openProposal(p)}
-                        >
-                          Reopen review
-                        </button>
+            {waitingHere.length > 0 && !activeProposal && (
+              <section className="waiting" data-testid="pending-proposals-banner" aria-labelledby="waiting-title">
+                <h2 id="waiting-title" className="waiting-title">Changes waiting for you</h2>
+                <p className="waiting-sub">Prepared, not saved. Nothing changes until you confirm a review.</p>
+                {waitingHere.map(p => {
+                  const outdated = isStale(p, committedRevision);
+                  return (
+                    <div className="waiting-item" key={p.id} data-testid={`pending-proposal-item-${p.id}`}>
+                      <div className="waiting-text">
+                        <b>{ORIGIN[p.origin] || "Change"}</b>
+                        <span className="cap">
+                          {p.base_revision != null ? `Prepared from revision ${p.base_revision}` : "First portfolio"} · {p.differences.length} change{p.differences.length === 1 ? "" : "s"}
+                          {p.warnings.length > 0 ? ` · ${p.warnings.length} warning${p.warnings.length === 1 ? "" : "s"}` : ""}
+                        </span>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
+                      {outdated && <span className="chip amber">Out of date</span>}
+                      <div className="waiting-actions">
+                        <Button variant="ghost" size="sm" data-testid="cancel-pending-proposal" onClick={() => void cancelPendingProposal(p.id)}>Cancel proposal</Button>
+                        <Button variant="secondary" size="sm" data-testid="reopen-proposal" onClick={() => openProposal(p)}>Review</Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </section>
             )}
             {center}
             {!showThread && !run && !reopened && !viewOpen && !clarify && !failure && draftBasis}
@@ -2451,16 +2360,27 @@ export default function DeskPage() {
         pendingProposals={pendingProposals}
         onReopenProposal={openProposal}
       />
-      {activeProposal && (
-        <PortfolioPreview
-          proposal={activeProposal}
-          onConfirm={confirmActiveProposal}
-          onCancel={cancelActiveProposal}
-          confirming={confirming}
-          cancelling={cancelling}
-          error={previewError}
-          isStale={isProposalStale}
-        />
+      <PortfolioPreview
+        proposal={activeProposal}
+        snapshot={committedSnapshot}
+        committedRevision={committedRevision}
+        onConfirm={() => void confirmActiveProposal()}
+        onCancel={() => void cancelActiveProposal()}
+        onClose={closeProposal}
+        confirming={confirming}
+        cancelling={cancelling}
+        error={previewError}
+        refused={isProposalStale}
+      />
+      {receipt && (
+        <div className="receipt-toast">
+          <Toast
+            title={`Saved as portfolio revision ${receipt.new_revision}`}
+            description={`${receipt.previous_revision != null ? `Was revision ${receipt.previous_revision}` : "Your first revision"} · saved ${clock(receipt.committed_at)} · Your records only. No trade was placed.`}
+            duration={10000}
+            onOpenChange={open => { if (!open) setReceipt(null); }}
+          />
+        </div>
       )}
       <div
         className="scrim"

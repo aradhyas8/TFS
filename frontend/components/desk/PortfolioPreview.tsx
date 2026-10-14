@@ -1,203 +1,128 @@
 "use client";
 
+import { AlertTriangle, Check } from "lucide-react";
 import { useEffect, useRef } from "react";
-import type { PortfolioProposal } from "../../lib/contracts";
+import { Alert } from "../arc/alert/alert";
+import { Button } from "../arc/button/button";
+import { Drawer, DrawerContent, useDrawerItem } from "../arc/drawer/drawer";
+import type { PortfolioProposal, Snapshot } from "../../lib/contracts";
+import { ORIGIN, changeRows, isStale, unchangedGroups } from "./proposal";
 
 export type PortfolioPreviewProps = {
-  proposal: PortfolioProposal;
-  onConfirm: () => void | Promise<void>;
-  onCancel: () => void | Promise<void>;
+  /** The proposal under review; null closes the review. */
+  proposal: PortfolioProposal | null;
+  /** The committed portfolio now, to name holdings and accounts and to tell whether the proposal is out of date. */
+  snapshot: Snapshot | null;
+  committedRevision: number | null;
+  onConfirm: () => void;
+  /** Cancels the proposal on the server. */
+  onCancel: () => void;
+  /** Closes the review and leaves the proposal waiting. */
+  onClose: () => void;
   confirming?: boolean;
   cancelling?: boolean;
   error?: string | null;
-  isStale?: boolean;
+  /** The backend refused to confirm it because the portfolio moved on. */
+  refused?: boolean;
 };
 
-export default function PortfolioPreview({
-  proposal,
-  onConfirm,
-  onCancel,
-  confirming = false,
-  cancelling = false,
-  error = null,
-  isStale = false,
-}: PortfolioPreviewProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const confirmBtnRef = useRef<HTMLButtonElement>(null);
+const prepared = (proposal: PortfolioProposal) =>
+  proposal.base_revision != null ? `prepared from revision ${proposal.base_revision}` : "a first portfolio";
 
-  const stale = isStale || proposal.status === "stale";
-
-  // Focus dialog / confirm button on mount and handle Escape key
+/** The review of a prepared portfolio change: what changes, as saved now and after confirming, the revision it was
+ *  prepared from, and an explicit Confirm that saves a new revision. Closing leaves the proposal waiting; only Cancel
+ *  proposal cancels it. A stale proposal can't be confirmed and is never moved onto the newer revision. */
+export default function PortfolioPreview({ proposal, snapshot, committedRevision, onConfirm, onCancel, onClose, confirming = false, cancelling = false, error = null, refused = false }: PortfolioPreviewProps) {
+  // The last proposal stays on screen while the panel slides out.
+  const shown = useDrawerItem(proposal);
+  const busy = confirming || cancelling;
+  // What opened the review gets focus back. Its button may be disabled while the proposal is prepared, which drops
+  // focus to the page, so the last control focused outside the review is remembered rather than read at opening.
+  const opener = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    confirmBtnRef.current?.focus();
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !confirming && !cancelling) {
-        e.preventDefault();
-        onCancel();
-      }
+    const track = (event: FocusEvent) => {
+      if (event.target instanceof HTMLElement && !event.target.closest("[role='dialog']")) opener.current = event.target;
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [confirming, cancelling, onCancel]);
+    document.addEventListener("focusin", track);
+    return () => document.removeEventListener("focusin", track);
+  }, []);
+  const giveBack = (event: Event) => {
+    event.preventDefault();
+    const target = opener.current;
+    const fallback = document.getElementById("portfolio-title") || document.getElementById("decisions-title") || document.getElementById("ask");
+    (target?.isConnected && !target.matches(":disabled") ? target : fallback)?.focus();
+  };
+  if (!shown) return null;
 
-  const originLabel =
-    proposal.origin === "manual"
-      ? "Manual edit"
-      : proposal.origin === "import"
-        ? "Holdings import"
-        : proposal.origin === "identify"
-          ? "Identity correction"
-          : "Action proposal";
+  // The page may not have loaded the newer revision yet when the backend refuses; then it is not named.
+  const known = isStale(shown, committedRevision);
+  const stale = refused || known;
+  const rows = changeRows(shown, snapshot);
+  const same = unchangedGroups(shown);
+  const base = shown.base_revision;
+  const hold = (event: Event) => { if (busy) event.preventDefault(); };
 
-  return (
-    <div
-      className="preview-overlay"
-      role="presentation"
-      onClick={e => {
-        if (e.target === e.currentTarget && !confirming && !cancelling) {
-          onCancel();
-        }
-      }}
-    >
-      <div
-        ref={dialogRef}
-        className="preview-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="preview-title"
-        aria-describedby="preview-desc"
-        tabIndex={-1}
-      >
-        <header className="preview-head">
-          <div>
-            <h2 id="preview-title" style={{ fontSize: 18, fontWeight: 500, margin: 0 }}>
-              Review portfolio changes
-            </h2>
-            <p id="preview-desc" className="cap" style={{ marginTop: 2 }}>
-              {originLabel} ·{" "}
-              {proposal.base_revision != null
-                ? `Base revision ${proposal.base_revision}`
-                : "Initial portfolio creation"}
-            </p>
+  return <Drawer open={!!proposal} onOpenChange={open => { if (!open && !busy) onClose(); }}>
+    <DrawerContent title="Review portfolio changes" description={`${ORIGIN[shown.origin] || "Change"} · ${prepared(shown)}`}
+      className="review-sheet" onEscapeKeyDown={hold} onInteractOutside={hold} onCloseAutoFocus={giveBack}>
+      <div className="review">
+        <p className="review-rev">
+          {refused && !known ? "Your saved portfolio changed after this was prepared"
+            : committedRevision != null ? `Your portfolio is at revision ${committedRevision}` : "No portfolio is saved yet"}
+          {" · "}{rows.length} change{rows.length === 1 ? "" : "s"}
+        </p>
+
+        {stale && <Alert tone="danger" title="This proposal is out of date">
+          It was {prepared(shown)}{known && committedRevision != null ? `, and your portfolio is now revision ${committedRevision}` : ", and the saved portfolio has changed since"}. It can&apos;t be
+          confirmed. It won&apos;t be moved onto the newer portfolio. Cancel it, then review your changes again. Edits you haven&apos;t saved are kept.
+        </Alert>}
+        {error && !stale && <Alert tone="danger" title="Not confirmed">{error}</Alert>}
+
+        <div className="review-table" role="table" aria-label="What changes">
+          <div role="row" className="review-row head">
+            <span role="columnheader">What changes</span><span role="columnheader">Before</span><span role="columnheader">After</span>
           </div>
-          <button
-            type="button"
-            className="icon-btn panel-close"
-            style={{ display: "inline-flex" }}
-            aria-label="Close and cancel review"
-            disabled={confirming || cancelling}
-            onClick={onCancel}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              aria-hidden="true"
-            >
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </header>
-
-        <div className="preview-body">
-          {error && (
-            <div className="pgroup" role="alert">
-              <span className="amber" style={{ fontSize: 13 }}>
-                {error}
-              </span>
-            </div>
-          )}
-
-          {stale && (
-            <div
-              className="pgroup"
-              role="alert"
-              style={{
-                background: "rgba(224, 163, 92, 0.12)",
-                padding: "10px 14px",
-                borderRadius: 6,
-                border: "1px solid var(--amber)",
-              }}
-            >
-              <span className="amber" style={{ fontWeight: 500 }}>
-                This proposal is stale.
-              </span>
-              <span className="cap" style={{ color: "var(--text-2)" }}>
-                The committed portfolio has changed since this review was prepared. Your draft
-                edits have been preserved — please cancel this preview and review again against
-                the current portfolio.
-              </span>
-            </div>
-          )}
-
-          {proposal.warnings.length > 0 && (
-            <div
-              className="pgroup"
-              role="alert"
-              aria-label="Warnings"
-              style={{
-                background: "rgba(224, 163, 92, 0.08)",
-                padding: "10px 14px",
-                borderRadius: 6,
-                border: "1px solid rgba(224, 163, 92, 0.3)",
-              }}
-            >
-              <span className="lbl amber">Warnings ({proposal.warnings.length})</span>
-              <ul style={{ listStyle: "none", display: "flex", flexDirection: "column", gap: 4, margin: 0 }}>
-                {proposal.warnings.map((w, i) => (
-                  <li key={i} className="cap" style={{ color: "var(--amber)" }}>
-                    • {w}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          <div className="pgroup">
-            <span className="lbl">
-              Differences ({proposal.differences.length})
-            </span>
-            {proposal.differences.length === 0 ? (
-              <p className="cap">No differences detected.</p>
-            ) : (
-              <ul className="diff-list" role="list">
-                {proposal.differences.map((diff, index) => (
-                  <li key={`${diff.path}-${index}`} className="diff-item">
-                    <span style={{ color: "var(--text)" }}>{diff.description}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          {rows.map(row => <div role="row" className="review-row" data-change={row.change} key={row.key}>
+            <span role="cell" className="what"><b>{row.subject}</b><small>{row.detail}</small></span>
+            <span role="cell" className="was"><span className="sr-only">Before: </span>{row.before}</span>
+            <span role="cell" className="now"><span className="sr-only">After: </span>{row.after}</span>
+          </div>)}
         </div>
 
-        <footer className="preview-actions">
-          <button
-            type="button"
-            className="btn secondary small"
-            data-testid="cancel-proposal"
-            disabled={confirming || cancelling}
-            onClick={onCancel}
-          >
-            {cancelling ? "Cancelling…" : stale ? "Dismiss" : "Cancel"}
-          </button>
-          {!stale && (
-            <button
-              ref={confirmBtnRef}
-              type="button"
-              className="btn primary small"
-              data-testid="confirm-proposal"
-              disabled={confirming || cancelling}
-              onClick={onConfirm}
-            >
-              {confirming ? "Confirming…" : "Confirm changes"}
-            </button>
-          )}
+        {same.length > 0 && <ul className="review-same" aria-label="Left as they are">
+          {same.map(label => <li key={label}><span>{label}</span><b>Unchanged</b></li>)}
+        </ul>}
+
+        {shown.warnings.length > 0 && <section className="review-warn" aria-labelledby="review-warn-title">
+          <AlertTriangle size={17} aria-hidden="true" />
+          <div>
+            <h3 id="review-warn-title">Check before confirming · {shown.warnings.length}</h3>
+            <ul className="review-warnings">{shown.warnings.slice(0, 3).map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+            {shown.warnings.length > 3 && <details className="review-more">
+              <summary>{shown.warnings.length - 3} more</summary>
+              <ul className="review-warnings">{shown.warnings.slice(3).map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+            </details>}
+          </div>
+        </section>}
+
+        <p className="review-note">Values and weights aren&apos;t recalculated here. They come from the next analysis of the saved portfolio.</p>
+
+        <footer className="review-foot">
+          <p>
+            {base != null ? `Confirming saves a new revision after revision ${base}, with a receipt. Analyses already stored keep revision ${base}.` : "Confirming saves your first portfolio revision, with a receipt."}
+            {" "}It updates your records only. It does not place a trade.
+          </p>
+          <div className="review-actions">
+            <Button variant="primary" data-testid="confirm-proposal" onClick={onConfirm} loading={confirming}
+              disabled={stale || cancelling}>
+              {!confirming && <Check size={16} aria-hidden="true" />}{confirming ? "Confirming…" : "Confirm changes"}
+            </Button>
+            <Button variant="ghost" data-testid="cancel-proposal" onClick={onCancel} loading={cancelling} disabled={confirming}>
+              {cancelling ? "Cancelling…" : "Cancel proposal"}
+            </Button>
+          </div>
         </footer>
       </div>
-    </div>
-  );
+    </DrawerContent>
+  </Drawer>;
 }
