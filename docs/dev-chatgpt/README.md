@@ -1,4 +1,4 @@
-﻿# Local startup and ChatGPT connection
+# Local startup and ChatGPT connection
 
 Integration base: `ba400e2` on `ticket-02-to-09-actions-and-persistence`, verified after fetching origin. Direction 5 phases 1–4 are merged as PRs #44–#47. Implementation is isolated from the original checkout's uncommitted UI work.
 
@@ -62,3 +62,22 @@ The code-review standards pass found one P2: connection controls needed 44px tou
 The independent spec pass found one P1: disconnected theme clarification was incorrectly gated on AI credentials. The no-inference path now bypasses credential resolution, with an HTTP regression test. The reviewer confirmed the fix. A separate secret-leak regression led to dropping provider-controlled stream failure messages at the shared transport boundary while retaining allowlisted recovery codes and generic HTTP status.
 
 Review totals: Standards 1 resolved finding (worst P2), Spec 1 resolved finding (worst P1); no unresolved review findings. Real OAuth remains unverified.
+
+
+## Final validation
+
+| Check | Result |
+| --- | --- |
+| Backend regression | 880 passed; one existing Starlette/httpx deprecation warning |
+| Backend typing/lint | mypy and Ruff passed |
+| Launcher behavior | 5 passed (missing virtualenv/frontend dependencies, occupied port, backend exit, frontend exit/peer cleanup) |
+| Windows manual startup | backend health and frontend readiness reached; Ctrl+C released ports 8000/3000 |
+| Full Playwright run | 218 passed, 3 failed in 10.9 minutes |
+| Clean focused Playwright rerun | 11 passed, covering all auth states and all three earlier failures |
+| Frontend typecheck | passed |
+| Production build | passed against the final frontend source in `.scratch/build-check/frontend` |
+| Real account OAuth/inference | not run |
+
+The full browser run's source guard detected API-key configuration names in frontend help copy; the copy now points to README setup and the guard passes. Two other reported failures were trace-artifact ENOENT errors caused by a concurrent screenshot run clearing Playwright's shared output directory, not failed product assertions. Both were rerun independently and passed. No unresolved automated test failure remains. Subsequent capture/regression checks ran without overlapping artifact writers.
+
+Browser tests use dedicated ChatGPT fixture storage so they cannot read the developer's saved TFS connection. The original checkout and its uncommitted UI work were left intact. Both review findings were fixed and confirmed separately by the reviewers.
