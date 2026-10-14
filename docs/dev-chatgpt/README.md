@@ -52,3 +52,13 @@ Connection-state screenshots use mocked status responses and a fictional account
 Remaining limits: native Windows credential storage; one saved ChatGPT registration (reconnect preserves its identity); no new multi-account picker or sign-out/revocation feature; real plan/model availability depends on the account; startup was not run on macOS/Linux. The referenced `.claude/skills/arc` design skill/checklist is absent; the existing installed Arc controls and checked-in Direction 5 guidance were used.
 
 Recommendation: **CONDITIONAL GO**, pending a user-controlled real ChatGPT sign-in and inference smoke test. Mocked authentication cannot establish real account eligibility or consent behavior.
+
+## Standards
+
+The code-review standards pass found one P2: connection controls needed 44px touch targets below 1024px. A local responsive rule now supplies that size without modifying Arc internals; the reviewer confirmed the fix. The summary uses the existing `--radius-pill` token.
+
+## Spec
+
+The independent spec pass found one P1: disconnected theme clarification was incorrectly gated on AI credentials. The no-inference path now bypasses credential resolution, with an HTTP regression test. The reviewer confirmed the fix. A separate secret-leak regression led to dropping provider-controlled stream failure messages at the shared transport boundary while retaining allowlisted recovery codes and generic HTTP status.
+
+Review totals: Standards 1 resolved finding (worst P2), Spec 1 resolved finding (worst P1); no unresolved review findings. Real OAuth remains unverified.

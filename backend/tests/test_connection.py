@@ -87,6 +87,9 @@ def oauth(monkeypatch, tmp_path):
         while state.get("hold"):
             await asyncio.sleep(.01)
         state["calls"].append(json.loads(request.content))
+        if state.get("inference_error"):
+            return httpx.Response(200, text=sse({"type": "response.failed", "response": {"error": {
+                "code": "test_failure", "message": "dummy-access dummy-refresh dummy-id"}}}), headers={"content-type": "text/event-stream"})
         assert request.headers["Authorization"] == "Bearer dummy-access"
         items = [{"type": "message", "id": "message", "role": "assistant", "status": "completed", "content": [
             {"type": "output_text", "text": "A local conceptual answer.", "annotations": []}]}]
@@ -206,3 +209,58 @@ def test_callback_port_conflict_does_not_touch_its_owner(oauth):
             status = wait_login(client)
             assert status['state'] == 'failed' and '1455 is occupied' in status['message']
             assert owner.getsockname()[1] == 1455
+
+
+def test_unsupported_storage_reports_native_windows_path(oauth, monkeypatch):
+    from types import SimpleNamespace
+
+    from analyst import connection
+    monkeypatch.setattr(connection, 'sys', SimpleNamespace(platform='linux'))
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        status = client.get('/api/ai/connection').json()
+        assert status['state'] == 'unavailable' and 'WSL/Linux' in status['message']
+        assert client.post('/api/ai/login', headers=LOCAL).status_code == 503
+
+
+def test_local_auth_rejects_cross_origin_missing_header_and_remote_proxy(oauth):
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        assert client.post('/api/ai/login', headers={'Origin': 'http://localhost:3000'}).status_code == 403
+        assert client.post('/api/ai/login', headers={'X-TFS-Local': '1'}).status_code == 403
+        assert client.get('/api/ai/connection', headers={'Host': 'attacker.example'}).status_code == 403
+        assert client.get('/api/ai/connection', headers={'X-Forwarded-For': '203.0.113.1'}).status_code == 403
+
+
+def test_new_install_defaults_to_plan_but_honors_explicit_api_provider(monkeypatch, tmp_path):
+    monkeypatch.delenv('LLM_PROVIDER')
+    monkeypatch.delenv('OPENAI_API_KEY')
+    assert Settings.from_environment().provider == 'chatgpt_plan'
+    monkeypatch.setenv('LLM_PROVIDER', 'openai')
+    assert Settings.from_environment().provider == 'openai'
+
+
+def test_disconnected_theme_clarification_still_needs_no_ai(oauth):
+    from analyst.providers import FakeDataProvider
+    from tests.test_theme import theme_request
+    with TestClient(create_app(data=FakeDataProvider()), client=("127.0.0.1", 50000)) as client:
+        result = client.post('/api/analyze', json=theme_request())
+        assert result.status_code == 200, result.text
+        assert result.json()['theme']['status'] == 'awaiting_agreement'
+
+
+def test_plan_service_errors_never_expose_provider_secrets(oauth, caplog):
+    oauth['inference_error'] = True
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        client.post('/api/ai/login', headers=LOCAL)
+        wait_login(client)
+        client.post('/api/ai/provider', headers=LOCAL, json={"provider": "chatgpt_plan", "model": "supported-test-model"})
+        thread = client.post('/api/threads', json={}).json()['id']
+        run = client.post(f'/api/threads/{thread}/messages', json={"text": "Explain diversification", "client_request_id": "error"}).json()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            result = client.get(f'/api/threads/{thread}/runs/{run["id"]}').json()
+            if result['status'] != 'running':
+                break
+            time.sleep(.01)
+        assert result['status'] == 'failed'
+        for secret in ['dummy-access', 'dummy-refresh', 'dummy-id']:
+            assert secret not in json.dumps(result) + caplog.text

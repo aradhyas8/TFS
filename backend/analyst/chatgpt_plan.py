@@ -44,6 +44,7 @@ REDIRECT = "http://127.0.0.1:1455/auth/callback"
 LOGIN_TIMEOUT = 600
 REFRESH_MARGIN = 900  # refresh when under 15 minutes remain; an analysis finishes well inside that
 USAGE_CODES = {"subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"}
+SAFE_RESPONSE_CODES = USAGE_CODES | {"model_not_found", "insufficient_permissions", "invalid_api_key", "rate_limit_exceeded", "server_error"}
 
 
 class PlanError(openai.OpenAIError):
@@ -70,6 +71,8 @@ async def stream_response(client: openai.AsyncOpenAI, params: dict[str, Any], ti
         async with asyncio.timeout(timeout):
             stream = await client.responses.create(**params, stream=True)
             return await _terminal(stream, seen)
+    except openai.APIStatusError as exc:
+        raise PlanError("request_failed", f"HTTP {exc.status_code}; check AI connection and retry.") from None
     except TimeoutError:
         logging.error("CHATGPT PLAN TIMEOUT after %ss; partial events (diagnostic only): %s", timeout, dict(seen))
         raise openai.APITimeoutError(request=httpx.Request("POST", f"{RESOURCE}/responses")) from None
@@ -95,9 +98,10 @@ async def _terminal(stream: Any, seen: collections.Counter[str]) -> Any:
             code = getattr(error, "code", None) or "response_failed"
             if code in USAGE_CODES:
                 logging.error("CHATGPT PLAN USAGE LIMIT code=%s: pause plan requests; see ChatGPT Settings > Usage.", code)
-            raise PlanError(code, getattr(error, "message", "") or "")
+            raise PlanError(code if code in SAFE_RESPONSE_CODES else "response_failed")
         elif event.type == "error":
-            raise PlanError(getattr(event, "code", None) or "stream_error", getattr(event, "message", "") or "")
+            code = getattr(event, "code", None)
+            raise PlanError(code if code in SAFE_RESPONSE_CODES else "stream_error")
     logging.error("CHATGPT PLAN stream ended without a terminal event; partial events (diagnostic only): %s", dict(seen))
     raise PlanError("no_terminal_event", "The stream ended without response.completed.")
 

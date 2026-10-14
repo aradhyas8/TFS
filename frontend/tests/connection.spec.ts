@@ -32,7 +32,7 @@ for (const state of ['disconnected', 'connecting', 'connected', 'expired', 'unav
         api_key_available: true, api_provider: 'openai', message: messages[state] } });
     });
     await page.goto('/');
-    await page.getByText(`AI connection · ${state}`, { exact: true }).click();
+    await page.getByText(`AI connection Â· ${state}`, { exact: true }).click();
     await expect(page.getByText(messages[state], { exact: true })).toBeVisible();
     if (state === 'connected') {
       await page.getByLabel('ChatGPT model').selectOption('supported-test-model');
@@ -51,7 +51,7 @@ test('connection controls fit a phone and preserve API-key choice', async ({ pag
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route('**/api/ai/**', route => route.fulfill({ json: { state: 'connected', provider: 'openai', model: 'api-model', account: 'investor@example.test', models: [], api_key_available: true, api_provider: 'openai', message: 'ChatGPT connected.' } }));
   await page.goto('/');
-  await page.getByText('AI connection · connected', { exact: true }).click();
+  await page.getByText('AI connection Â· connected', { exact: true }).click();
   await expect(page.getByRole('button', { name: 'Use API-key provider' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: '../docs/dev-chatgpt/screenshots/mobile.png', fullPage: true });

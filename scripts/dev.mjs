@@ -82,7 +82,7 @@ try {
   if (!existsSync(python)) throw new Error('Missing Python virtual environment. Follow first-time setup in README.md.');
   if (!existsSync(next)) throw new Error('Missing frontend dependencies. Run npm --prefix frontend ci; see README.md.');
   const check = spawnSync(python, ['-c', 'import fastapi, uvicorn, openai, pandas, numpy, dotenv, httpx, yfinance'], {
-    cwd: root, env: { ...process.env, PYTHONPATH: path.join(root, 'backend') }, encoding: 'utf8', windowsHide: true,
+    cwd: root, env: { ...process.env, PYTHONPATH: path.join(root, 'backend') }, encoding: 'utf8', windowsHide: true, timeout: 30000,
   });
   if (check.error) throw new Error(`Python could not start (${check.error.code}). Check OS permissions and the virtual environment; see README.md.`);
   if (check.status !== 0) throw new Error('Backend dependency/configuration check failed. Follow README.md; run .venv Python -m uvicorn analyst.api:app --app-dir backend to diagnose.');

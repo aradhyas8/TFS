@@ -613,13 +613,14 @@ def create_app(
             if ref:
                 request = request.model_copy(update={"artifact_reference": ref})
         nonlocal legacy_active
-        if connection.task and not connection.task.done() and model is None:
+        needs_ai = not (request.theme and not request.theme.confirmed)
+        if needs_ai and connection.task and not connection.task.done() and model is None:
             raise HTTPException(409, "Finish or cancel ChatGPT sign-in before starting AI work.")
         async with provider_lock:
-            config = settings if model is not None and settings is not None else await asyncio.to_thread(connection.resolve)
-            legacy_active += 1
+            config = app_settings if not needs_ai or model is not None else await asyncio.to_thread(connection.resolve)
+            legacy_active += int(needs_ai)
         provider = model
-        if provider is None and not (request.theme and not request.theme.confirmed):
+        if provider is None and needs_ai:
             if not config.api_key or not config.model:
                 legacy_active -= 1
                 raise HTTPException(
@@ -674,7 +675,7 @@ def create_app(
                 502, "The model service could not complete the review. Try again."
             ) from None
         finally:
-            legacy_active -= 1
+            legacy_active -= int(needs_ai)
             if isinstance(provider, OpenAIModel):
                 await provider.client.close()
 

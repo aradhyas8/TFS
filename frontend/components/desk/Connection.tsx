@@ -73,7 +73,7 @@ export default function Connection() {
           </form>}
           <div className={styles.api}>
             <strong>API-key provider</strong>
-            <p>{status?.api_key_available ? "Use the provider configured on this backend." : "To use an API key, configure OPENAI_API_KEY and OPENAI_MODEL in backend/.env and restart TFS."}</p>
+            <p>{status?.api_key_available ? "Use the provider configured on this backend." : "Follow API-key setup in README.md, then restart TFS."}</p>
             {status?.api_key_available && <Button variant="secondary" size="sm" disabled={busy || connecting} onClick={() => void act("provider", { provider: status.api_provider })}>Use API-key provider</Button>}
           </div>
           <p className={styles.caption}>Supported ChatGPT-plan inference through TFS. Connection changes apply to future AI work after current work finishes.</p>
