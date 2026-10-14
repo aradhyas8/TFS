@@ -12,10 +12,12 @@ type Props = {
   unsent: { key: string; text: string }[]; onUnsent: (key: string) => void;
   onNew: () => void; onHoldings: () => void; onOpen: (decision: SavedDecision) => void; onAllDecisions: () => void; onStock: (position: Position) => void;
   onDelete: (decision: SavedDecision) => void; onClearAll: () => void; onClose: () => void;
+  /** Set while the details cover the page. */
+  inert?: boolean;
 };
 
 /** Left rail: which portfolio and which decisions am I working with? */
-export default function Rail({ snapshot, unresolved, settings, result, revision, pending, decisions, currentId, running, registerOpen, threads, threadsError, threadId, onThread, unsent, onUnsent, onNew, onHoldings, onOpen, onAllDecisions, onStock, onDelete, onClearAll, onClose }: Props) {
+export default function Rail({ snapshot, unresolved, settings, result, revision, pending, decisions, currentId, running, registerOpen, threads, threadsError, threadId, onThread, unsent, onUnsent, onNew, onHoldings, onOpen, onAllDecisions, onStock, onDelete, onClearAll, onClose, inert }: Props) {
   const review = result?.portfolio;
   // A supported stock row offers Stock Analysis; funds and cash are listed only.
   const holding = (row: Position, figure: string) => {
@@ -26,7 +28,7 @@ export default function Rail({ snapshot, unresolved, settings, result, revision,
   const rules = [settings.single_company_cap && `cap ${pct(settings.single_company_cap)}`, settings.active_budget && `active ${pct(settings.active_budget)}`].filter(Boolean);
   const waiting = unresolved.length + pending;
   const open = decisions.filter(decision => !decision.confirmed_action).length;
-  return <nav className="rail" aria-label="Portfolio, conversations and decisions" id="rail">
+  return <nav className="rail" aria-label="Portfolio, conversations and decisions" id="rail" inert={inert}>
     <div className="rail-head">
       <span className="wordmark"><span className="mark" aria-hidden="true"><Leaf size={14} /></span>Analyst</span>
       <button type="button" className="icon-btn rail-close" aria-label="Close menu" onClick={onClose}><X size={17} aria-hidden="true" /></button>

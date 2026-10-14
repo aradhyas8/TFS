@@ -1,5 +1,5 @@
 /* Direction 5 ("Oat and Ink") layout and components on Arc's design system. Every selector is scoped under .desk.
-   Token values: app/theme.css. Analysis results, the details panel and the review dialog keep their earlier structure until their own phase. */
+   Token values: app/theme.css. The portfolio, decisions and the review dialog keep their earlier structure until their own phase. */
 body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 72px; scroll-padding-bottom: 280px; }
 
 .desk {
@@ -37,10 +37,13 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .desk .skip { position: absolute; left: 8px; top: -48px; z-index: 50; background: var(--text); color: var(--ground); padding: 8px 14px; border-radius: 999px; }
 .desk .skip:focus { top: 8px; }
-.desk sup { line-height: 1; vertical-align: super; font-size: 11px; }
+.desk sup { line-height: 1; font-size: 11px; margin-left: 2px; }
 /* Adjacent source markers stay separate numbers, not one underlined run. */
 .desk sup + sup { margin-left: 3px; }
-.desk sup button { color: var(--analysis); padding: 0 1px; font-variant-numeric: tabular-nums; text-decoration: underline; text-underline-offset: 2px; }
+.desk sup { vertical-align: 1px; }
+.desk sup button { border-radius: 9px; }
+.desk sup button > span { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; font-size: 11px; font-weight: 600; background: var(--analysis-subtle); color: var(--analysis); font-variant-numeric: tabular-nums; }
+.desk sup button:hover > span { background: var(--analysis); color: var(--surface-raised); }
 
 /* Buttons and inputs */
 .desk .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 16px; min-height: 40px; border-radius: 999px; font-weight: 600; white-space: nowrap; background: var(--surface-raised); border: 1px solid var(--rule); transition: background var(--duration-fast) var(--ease-standard); }
@@ -120,25 +123,27 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .ctx-left { flex: 1 1 auto; }
 .desk .ctx-right { flex-shrink: 0; }
 .desk .ctx-left > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: 15px; font-weight: 600; letter-spacing: -.005em; }
+@media (min-width: 1024px) { .desk .ctx-right > .cap:not(:empty) { display: inline-flex; align-items: center; gap: 6px; min-height: 26px; padding: 0 10px; border-radius: 999px; background: var(--raised); color: var(--text-2); } }
 .desk .indet { position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; overflow: hidden; }
 .desk .indet span { position: absolute; top: 0; bottom: 0; width: 30%; background: var(--brass); animation: desk-slide 2.4s ease-in-out infinite; }
 @keyframes desk-slide { 0% { left: -30%; } 100% { left: 100%; } }
 @media (prefers-reduced-motion: reduce) { .desk .indet span { animation: none; left: 0; width: 100%; opacity: .5; } }
 .desk .scroll { flex: 1; padding: 28px 24px 240px; }
 .desk .col { width: 100%; max-width: 720px; margin: 0 auto; }
-.desk .echo { display: flex; flex-direction: column; gap: 4px; padding-bottom: 24px; }
+.desk .echo { display: flex; flex-direction: column; gap: 4px; padding-bottom: 16px; }
 .desk .echo .q { font-size: 15px; line-height: 24px; }
-.desk .memo { border-top: 1px solid var(--rule); }
-.desk .row { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 24px; padding: 20px 0; border-bottom: 1px solid var(--rule); }
+/* An analysis result: one oat card, rows separated by hairlines, the verdict in the serif. */
+.desk .memo { background: var(--raised); border-radius: 20px; padding: 4px 20px; }
+.desk .row { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 24px; padding: 18px 0; border-bottom: 1px solid var(--border-subtle); }
 .desk .row:last-child { border-bottom: 0; }
 .desk .row > .lbl { padding-top: 4px; }
-.desk .row.rec { padding: 24px 0; }
-.desk .row.rec > .lbl { padding-top: 10px; color: var(--brass); }
+.desk .row.rec { padding: 20px 0 22px; }
+.desk .row.rec > .lbl { padding-top: 8px; color: var(--brass); }
 .desk .row.needs > .lbl, .desk .row.err > .lbl { color: var(--amber); }
 .desk .row.working > .lbl { color: var(--brass); padding-top: 8px; }
 .desk .body { font-size: 15px; line-height: 24px; color: var(--text-2); }
 .desk .bullets { padding-left: 16px; font-size: 15px; line-height: 24px; color: var(--text-2); display: flex; flex-direction: column; gap: 6px; }
-.desk .display { font-family: var(--serif); font-weight: 500; font-size: 32px; line-height: 40px; letter-spacing: var(--tracking-display); }
+.desk .display { font-family: var(--serif); font-weight: 500; font-size: 26px; line-height: 34px; letter-spacing: var(--tracking-display); text-wrap: pretty; }
 .desk .display .amt { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
 .desk .meta { display: flex; gap: 16px; flex-wrap: wrap; }
 .desk .alts { display: flex; flex-direction: column; gap: 10px; }
@@ -147,7 +152,7 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .more:last-child { border-bottom: 0; }
 .desk .more .arrow { color: var(--brass); }
 .desk .expand { padding: 4px 0 16px; }
-.desk .bar { position: relative; height: 6px; background: var(--raised); border-radius: 3px; }
+.desk .bar { position: relative; height: 6px; background: var(--raised-2); border-radius: 3px; }
 .desk .bar .now { position: absolute; left: 0; top: 0; bottom: 0; background: var(--rule-strong); border-radius: 3px 0 0 3px; }
 .desk .bar .chg { position: absolute; top: 0; bottom: 0; background: var(--brass); }
 .desk .bar .chg.over { background: var(--amber); }
@@ -159,6 +164,38 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .wname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
 .desk .bar-legend { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; flex-wrap: wrap; }
 .desk .actions { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+/* Downside, base and upside per share on one line, with today's price as a blue marker. */
+.desk .range-wrap { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 2px; font-size: 12px; line-height: 16px; }
+.desk .range { position: relative; height: 38px; }
+/* With no comparable price there is no label above the line, so the line sits at the top of a shorter box. */
+.desk .range.bare { height: 14px; }
+.desk .range.bare .trk, .desk .range.bare .zone { top: 4px; }
+.desk .range.bare .tk { top: 1px; }
+.desk .range-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); }
+.desk .range-legend b { font-weight: 600; color: var(--text); }
+.desk .range-legend .downside b { color: var(--danger); }
+.desk .range > span { position: absolute; }
+.desk .range .trk { left: 0; right: 0; top: 24px; height: 6px; border-radius: 3px; background: var(--raised-2); }
+.desk .range .zone { top: 24px; height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--danger-subtle), var(--analysis-subtle) 50%, var(--success-subtle)); }
+.desk .range .tk { top: 21px; width: 2px; height: 12px; margin-left: -1px; border-radius: 1px; background: var(--muted); }
+.desk .range .pl { top: 0; white-space: nowrap; color: var(--analysis); font-weight: 600; }
+.desk .range .px { top: 19px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; background: var(--analysis); border: 3px solid var(--raised); box-shadow: 0 0 0 1px var(--analysis); }
+/* One line on the investor's own rule: amber when over it, green when within. */
+.desk .ins { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: var(--warning-subtle); font-size: 13.5px; line-height: 20px; }
+.desk .ins.positive { background: var(--success-subtle); }
+.desk .ins.neutral { background: var(--raised-2); }
+.desk .ins > svg { color: var(--amber); flex: none; }
+.desk .ins.positive > svg { color: var(--sage); }
+.desk .ins.neutral > svg { color: var(--muted); }
+.desk .ins b { font-weight: 600; }
+.desk .wb { position: relative; width: 96px; height: 6px; border-radius: 3px; background: var(--surface-raised); flex: none; margin-left: auto; }
+.desk .wb i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--warning); }
+.desk .ins.positive .wb i { background: var(--success); }
+.desk .ins.neutral .wb i { background: var(--muted); }
+/* No call made: the cases keep their places, without the downside-to-upside colouring. */
+.desk .range-wrap[data-tone="neutral"] .zone { background: var(--rule-strong); }
+.desk .range-wrap[data-tone="neutral"] .range-legend .downside b { color: var(--text); }
+.desk .wb u { position: absolute; top: -3px; width: 2px; height: 12px; margin-left: -1px; border-radius: 1px; background: var(--text); }
 
 /* Home: greeting, composer, starters and one summary strip, centered in the page. */
 .desk .center.home .ctx { background: none; border-bottom-color: transparent; }
@@ -202,10 +239,12 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .box.focus { border-color: var(--brass); }
 .desk .box-line { display: flex; align-items: center; gap: 10px; padding: 9px 9px 9px 20px; min-height: 56px; }
 .desk .composer.home .box-line { padding: 14px 16px 6px 20px; min-height: 62px; }
-.desk .composer.home .box-line input { font-size: 16px; }
+.desk .composer.home .box-line textarea { font-size: 16px; min-height: 48px; }
 .desk .box-line + .box-line, .desk .nc-form + .box-line, .desk .theme-form + .box-line { border-top: 1px solid var(--rule); }
-.desk .box-line input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; font-size: 15px; min-height: 40px; }
-.desk .box-line input::placeholder { color: var(--muted); }
+.desk .box-line textarea { flex: 1; min-width: 0; background: transparent; border: 0; outline: none; resize: none; font-size: 15px; line-height: 24px; padding: 8px 0; min-height: 40px; max-height: 192px; overflow-y: auto; }
+.desk .box-line textarea::placeholder { color: var(--muted); }
+.desk .box-line:has(textarea) { align-items: flex-end; }
+.desk .box-line:has(textarea) > .prefix { align-self: center; }
 .desk .prefix { color: var(--text); font-weight: 600; white-space: nowrap; }
 .desk .box-tools { display: flex; align-items: center; gap: 8px; padding: 0 12px 12px 14px; }
 .desk .pill { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border-radius: 999px; background: var(--raised); color: var(--text-2); font-size: 13px; white-space: nowrap; min-width: 0; }
@@ -234,20 +273,29 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 
 /* Detail panel */
 .desk .panel { background: var(--ground); border-left: 1px solid var(--rule); display: flex; flex-direction: column; min-width: 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
-.desk .tabs { display: flex; gap: 4px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border-subtle); min-height: 58px; align-items: stretch; flex-shrink: 0; position: sticky; top: 0; background: var(--ground); z-index: 2; }
-.desk .tab { padding: 0 12px; color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.desk .ptop { position: sticky; top: 0; z-index: 2; flex-shrink: 0; background: var(--ground); }
+.desk .phead { display: flex; align-items: center; gap: 8px; min-height: 58px; padding: 8px 12px 0 18px; }
+.desk .phead-title { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.desk .phead-title b { font-size: 15px; line-height: 20px; font-weight: 600; overflow-wrap: anywhere; }
+.desk .tabs { display: flex; gap: 20px; padding: 0 18px; border-bottom: 1px solid var(--border-subtle); min-height: 40px; align-items: stretch; overflow-x: auto; scrollbar-width: none; }
+.desk .tab { padding: 0; color: var(--text-2); font-size: 13.5px; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .desk .tab:hover { color: var(--text-2); }
 .desk .tab[aria-selected="true"] { color: var(--text); font-weight: 600; box-shadow: inset 0 -2px 0 var(--text); }
 .desk .panel-close { margin-left: auto; align-self: center; }
-.desk .pbody { padding: 20px 16px; display: flex; flex-direction: column; gap: 20px; }
+.desk .pbody { padding: 16px 18px 24px; display: flex; flex-direction: column; gap: 20px; }
 .desk .pgroup { display: flex; flex-direction: column; gap: 12px; }
 .desk .plist { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
 .desk .pnote { padding-top: 12px; border-top: 1px solid var(--rule); }
-.desk .ev { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 8px; padding: 12px; border-radius: 12px; font-size: 13px; text-align: left; width: 100%; }
-.desk .ev.focus { background: var(--raised); }
-.desk .ev .num { color: var(--analysis); font-variant-numeric: tabular-nums; }
-.desk .ev blockquote { padding: 4px 0 4px 12px; border-left: 2px solid var(--rule-strong); color: var(--text-2); }
-.desk .ev-list { padding: 8px 0; display: flex; flex-direction: column; gap: 2px; }
+/* A source the analyst retrieved: an oat card with its number. The one a citation points at is ringed in blue. */
+.desk .ev { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; padding: 12px; border-radius: 12px; background: var(--raised); font-size: 13px; line-height: 18px; text-align: left; width: 100%; scroll-margin: 112px 0 16px; }
+.desk .ev.focus { box-shadow: 0 0 0 1px var(--analysis), 0 0 0 4px var(--analysis-subtle); }
+.desk .ev-title { font-weight: 600; font-size: 13.5px; }
+.desk .ev blockquote { padding: 0 0 0 10px; border-left: 2px solid var(--rule); color: var(--text-2); line-height: 20px; }
+.desk .ev-list { display: flex; flex-direction: column; gap: 10px; }
+.desk .ct { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; font-size: 11px; line-height: 1; font-weight: 600; font-variant-numeric: tabular-nums; background: var(--analysis-subtle); color: var(--analysis); }
+.desk .fx { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; }
+.desk .fx .chip { font-size: 12px; padding: 3px 10px; background: var(--surface-raised); color: var(--text-2); }
+.desk .nf { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px dashed var(--rule-strong); border-radius: 12px; font-size: 12.5px; line-height: 18px; color: var(--muted); }
 .desk .case { display: flex; flex-direction: column; gap: 8px; padding: 16px 0; border-bottom: 1px solid var(--rule); }
 .desk .case:last-child { border-bottom: 0; }
 .desk .drv { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--text-2); }
@@ -288,6 +336,10 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
   /* Touch layouts: everything a finger has to hit is at least 44px. */
   .desk .btn, .desk .btn.small, .desk .icon-btn, .desk .tab, .desk .nav-item, .desk .thread-item, .desk .rail-new, .desk .pill, .desk .ditem, .desk .link { min-height: 44px; }
   .desk .icon-btn { width: 44px; }
+  /* Source numbers in a result: the pill stays small, the button around it is a full target in the line. */
+  .desk sup { vertical-align: middle; }
+  .desk sup + sup { margin-left: 0; }
+  .desk sup button { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; border-radius: 12px; }
   .desk .send { width: 44px; height: 44px; }
   .desk .ddel { width: 44px; height: 44px; top: 0; right: 0; }
   .desk.rail-open .scrim { display: block; position: fixed; inset: 0; background: var(--scrim); z-index: 20; }
@@ -311,7 +363,9 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
   .desk .composer { padding: 12px 16px 16px; }
   .desk .row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .desk .row > .lbl, .desk .row.rec > .lbl { padding-top: 0; }
-  .desk .display { font-size: 26px; line-height: 34px; }
+  .desk .display { font-size: 24px; line-height: 32px; }
+  .desk .memo { padding: 2px 14px; }
+  .desk .ins .wb { display: none; }
   .desk .alt, .desk .nc-grid, .desk .setup, .desk .opt { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .desk .opt .cap:last-child { display: none; }
   .desk .panel { top: auto; left: 0; right: 0; width: 100%; height: 85vh; border-left: 0; border-radius: 24px 24px 0 0; transform: translateY(100%); }

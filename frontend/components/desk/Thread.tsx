@@ -1,3 +1,4 @@
+import { AlertTriangle, Check, ChartLine, FileText, Globe, Pause } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { Alert } from "@/components/arc/alert/alert";
 import { Badge } from "@/components/arc/badge/badge";
@@ -18,6 +19,7 @@ import {
   type ThemeInput,
   type ThreadDetail,
 } from "../../lib/contracts";
+import { linkOnly, placeCitations, webAddress, type Source } from "./citations";
 import { fullDate } from "./format";
 import type { PendingSend } from "./useConversation";
 import styles from "./Thread.module.css";
@@ -76,16 +78,6 @@ const sentenceCase = (label: string) => label.charAt(0) + label.slice(1).toLower
 const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const list = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
-
-/** A link is drawn only for a web address; anything else a source supplied stays plain text. */
-function webAddress(value: unknown): URL | null {
-  try {
-    const url = new URL(text(value));
-    return url.protocol === "https:" || url.protocol === "http:" ? url : null;
-  } catch {
-    return null;
-  }
-}
 
 // Artifacts are immutable, so one request per ID serves every message and every reopening in this session.
 const envelopes = new Map<string, Promise<ArtifactEnvelope>>();
@@ -149,6 +141,26 @@ function SourceLink({ url, title }: { url: URL; title: string }) {
   );
 }
 
+/** A stored result in the conversation: a tonal card with what it is, where it came from, and its values. */
+function Card({ label, icon, tone = "", title, meta, chip, children }: { label: string; icon: ReactNode; tone?: string; title: string; meta: string; chip?: ReactNode; children: ReactNode }) {
+  return (
+    <article className={styles.card} aria-label={label}>
+      <header className={styles.cardHead}>
+        <span className={`${styles.tile} ${tone}`} aria-hidden="true">{icon}</span>
+        <span className={styles.cardTitle}>
+          <b>{title}</b>
+          <small className={styles.source}>{meta}</small>
+        </span>
+        {chip}
+      </header>
+      <div className={styles.cardBody}>{children}</div>
+    </article>
+  );
+}
+
+/** Web pages are not checked against filings. Said wherever they are shown, so they never read as verified evidence. */
+const Unverified = () => <span className={`${styles.chip} ${styles.web}`}>Web · not verified</span>;
+
 type WebResearch = { status?: string; query?: string | null; sources?: { url?: string; title?: string | null }[]; qualifications?: string[] };
 
 function Artifact({ id, actionable, shared }: { id: string; actionable: boolean; shared: Shared }) {
@@ -180,17 +192,24 @@ function Artifact({ id, actionable, shared }: { id: string; actionable: boolean;
     const form = ["portfolio_required", "unresolved_identity"].includes(text(needed.code)) ? "holdings" : "";
     return <Clarification clarification={{ ...needed, form }} actionable={actionable} shared={shared} />;
   }
-  if (reference.kind === "analysis_result")
+  if (reference.kind === "analysis_result") {
+    const readable = !!(payload as Partial<Analysis> | null)?.portfolio?.positions && !!(payload as Analysis).recommendation;
+    const analysis = payload as Analysis;
+    // The company a stock result is about, as the stored result recorded it.
+    const held = readable && analysis.stock ? analysis.portfolio.positions.find(row => row.supplied.id === analysis.stock!.position_id)?.supplied : undefined;
     return (
-      <article className={styles.result} aria-label={`${sentenceCase(reference.label)} result`}>
-        <p className={styles.source}>{`${sentenceCase(reference.label)} · ${source}`}</p>
-        {(payload as Partial<Analysis> | null)?.portfolio?.positions && (payload as Analysis).recommendation ? (
-          shared.renderResult(payload as Analysis, reference, storedSnapshot(payload as Analysis))
-        ) : (
-          unreadable
-        )}
-      </article>
+      <Card
+        label={`${sentenceCase(reference.label)} result`}
+        icon={<ChartLine size={16} />}
+        tone={styles.blue}
+        title={`${sentenceCase(reference.label)}${held?.ticker ? ` · ${held.ticker}` : ""}`}
+        meta={source}
+        chip={held?.listing && <span className={styles.chip}>{`${held.listing} · ${held.currency}`}</span>}
+      >
+        {readable ? shared.renderResult(analysis, reference, storedSnapshot(analysis)) : unreadable}
+      </Card>
     );
+  }
   if (reference.kind === "web_research") {
     const research = payload as WebResearch;
     const sources = (research.sources ?? []).flatMap(item => {
@@ -198,8 +217,13 @@ function Artifact({ id, actionable, shared }: { id: string; actionable: boolean;
       return url ? [{ url, title: item.title || url.hostname }] : [];
     });
     return (
-      <article className={styles.result} aria-label={reference.label}>
-        <p className={styles.source}>{`${reference.label}${research.query ? ` for "${research.query}"` : ""} · stored ${fullDate(reference.created_at)}`}</p>
+      <Card
+        label={reference.label}
+        icon={<Globe size={16} />}
+        title={`${reference.label}${research.query ? ` for "${research.query}"` : ""}`}
+        meta={`Stored ${fullDate(reference.created_at)}`}
+        chip={research.status !== "unavailable" && <Unverified />}
+      >
         {research.status === "unavailable" ? (
           <Alert tone="warning" title="Web search was unavailable">
             {list(research.qualifications).map(sentence).join(" ") || "No current lookup took place."}
@@ -209,7 +233,8 @@ function Artifact({ id, actionable, shared }: { id: string; actionable: boolean;
             {sources.length ? (
               <ul className={styles.sources} aria-label="Sources consulted">
                 {sources.map(item => (
-                  <li key={item.url.href}>
+                  <li key={item.url.href} className={styles.sourceCard}>
+                    <Globe size={14} aria-hidden="true" className={styles.globe} />
                     <SourceLink url={item.url} title={item.title} />
                   </li>
                 ))}
@@ -224,16 +249,15 @@ function Artifact({ id, actionable, shared }: { id: string; actionable: boolean;
             ))}
           </>
         )}
-      </article>
+      </Card>
     );
   }
   // ponytail: research, evidence and calculation records show their stored values as a tree, never as prose.
   // Give a kind its own view when its values need more than reading.
   return (
-    <article className={styles.result} aria-label={reference.label}>
-      <p className={styles.source}>{`${reference.label} · ${source}`}</p>
+    <Card label={reference.label} icon={<FileText size={16} />} title={reference.label} meta={source}>
       <JsonViewer data={payload} rootName="result" label={`${reference.label} values`} defaultExpandDepth={2} searchable={false} showPath={false} maxHeight={320} />
-    </article>
+    </Card>
   );
 }
 
@@ -251,26 +275,32 @@ function Revisions({ ids }: { ids: string[] }) {
   );
 }
 
-/** The sources a stored answer cited, kept with that answer. */
-function Citations({ citations }: { citations: MessageRecord["citations"] }) {
-  const seen = new Set<string>();
-  const cited = citations.flatMap(citation => {
-    const url = webAddress(citation.url);
-    const quote = text(citation.cited_text);
-    if (!url || seen.has(`${url.href}|${quote}`)) return [];
-    seen.add(`${url.href}|${quote}`);
-    return [{ url, quote, title: text(citation.title) || url.hostname }];
-  });
-  if (!cited.length) return null;
+/** A source number in the text: a small pill. On touch layouts the link around it is a full-size target. */
+const Mark = ({ number, anchor }: { number: number; anchor: string }) => (
+  <a className={styles.cite} href={`#${anchor}`} aria-label={`Source ${number}`}>
+    <span className={styles.ct}>{number}</span>
+  </a>
+);
+
+function Citations({ sources, anchor }: { sources: Source[]; anchor: (n: number) => string }) {
+  if (!sources.length) return null;
   return (
-    <ol className={styles.sources} aria-label="Sources for this answer">
-      {cited.map(item => (
-        <li key={`${item.url.href}|${item.quote}`}>
-          <SourceLink url={item.url} title={item.title} />
-          {item.quote && <q className={styles.quote}>{item.quote}</q>}
-        </li>
-      ))}
-    </ol>
+    <div className={styles.cited}>
+      <p className={styles.citedHead}>
+        <span>Sources</span>
+        <Unverified />
+      </p>
+      <ol className={styles.sources} aria-label="Sources for this answer">
+        {sources.map((item, index) => (
+          // A page quoted twice is listed twice; the number's anchor is on its first entry.
+          <li key={`${item.url.href}|${item.quote}`} id={sources.findIndex(other => other.number === item.number) === index ? anchor(item.number) : undefined} className={styles.sourceCard}>
+            <span className={styles.ct} aria-hidden="true">{item.number}</span>
+            <SourceLink url={item.url} title={item.title} />
+            {item.quote && !linkOnly(item.quote) && <q className={styles.quote}>{item.quote}</q>}
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
@@ -454,14 +484,19 @@ function Message({ message, actionable, hypothetical, proposing, shared }: { mes
     const clarification = message.clarification_required;
     // A proposal's before and after portfolios are read through its review, not as separate results.
     const results = message.proposal_ids.length ? [] : [...new Set(message.artifact_ids)].filter(id => !revisionOf(id));
+    // Same rule as the step text below: a failed step that still stored its result is shown by that result.
+    const failedStep = message.tool_outcomes.some(outcome => outcome.status === "error" && (!outcome.artifact_ids.length || outcome.name === "web_search"));
     return (
       <li className={styles.stepGroup}>
         <div className={styles.step}>
+          <span className={`${styles.stepIcon} ${clarification ? styles.paused : failedStep ? styles.failed : ""}`} aria-hidden="true">
+            {clarification ? <Pause size={10} /> : failedStep ? <AlertTriangle size={10} /> : <Check size={10} strokeWidth={3} />}
+          </span>
           <span className="sr-only">Analyst step: </span>
           {message.tool_outcomes.map(outcome => {
             const [done, failed] = STEP[outcome.name] ?? [`Checked ${toolLabel(outcome.name)}`, `Could not check ${toolLabel(outcome.name)}`];
             return (
-              <span key={outcome.id}>
+              <span key={outcome.id} className={styles.stepText}>
                 {clarification
                   ? `Paused ${toolLabel(outcome.name)}`
                   : outcome.status !== "error"
@@ -490,12 +525,16 @@ function Message({ message, actionable, hypothetical, proposing, shared }: { mes
       </li>
     );
   }
+  const { paragraphs, sources } = placeCitations(message.text, message.citations);
+  const anchor = (n: number) => `source-${message.id}-${n}`;
   return (
     <li className={styles.assistant}>
       <span className="sr-only">Analyst answered: </span>
       {/* ponytail: plain paragraphs only; add a Markdown renderer when answers need lists or tables. */}
-      {message.text.split(/\n{2,}/).map((paragraph, index) => (
-        <p key={index}>{paragraph}</p>
+      {paragraphs.map((pieces, index) => (
+        <p key={index}>
+          {pieces.map((piece, at) => (typeof piece === "string" ? piece : piece.map(number => <Mark key={`${at}-${number}`} number={number} anchor={anchor(number)} />)))}
+        </p>
       ))}
       {hypothetical && (
         <p className={styles.source}>
@@ -504,7 +543,7 @@ function Message({ message, actionable, hypothetical, proposing, shared }: { mes
             : "Based on your unsaved draft, not your saved portfolio. Nothing was saved."}
         </p>
       )}
-      <Citations citations={message.citations} />
+      <Citations sources={sources} anchor={anchor} />
       <Revisions ids={message.artifact_ids} />
     </li>
   );
