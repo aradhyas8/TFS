@@ -80,9 +80,12 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
 - The verdict is the serif at 26 (24 on a phone). A stock result draws the downside, base and upside values per share
   on one line, with today's price as a blue marker when it is in the same currency. Below the line the three values
   are written out. A line on the company cap follows: amber when over it, green when within. Nothing is drawn when the
-  backend did not return the values.
+  backend did not return the values. When the verdict makes no call (not enough to decide, or held back by another
+  rule), the line is grey and says "No call yet", and a within-cap line is grey and says it is a rules check only.
 - Citation numbers are small blue pills. In an analysis result they open the source in the details. In a web answer
-  they sit after the words they support and link to the source below the answer.
+  they sit after the words they support and link to the source below the answer. A number is placed only where the
+  citation's stored offsets address those words in the shown text; a citation without usable offsets is listed under
+  the answer and never placed by searching for its words. On touch layouts each number is a 44px target.
 - Web pages carry a "Web · not verified" chip wherever they are shown. Filings and issuer material in the details are
   labeled by kind (SEC filing, SEDAR+ filing, Issuer material) and are never mixed with web pages.
 - The details have a header that names what they belong to and its portfolio revision, then ink-underlined tabs.
