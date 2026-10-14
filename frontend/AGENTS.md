@@ -28,6 +28,6 @@ Arc Free (https://uiarc.dev) is the preferred component library for new or redes
 - Registry: `components.json` maps `@uiarc` to `https://uiarc.dev/r/{name}.json`. Arc needs no Tailwind; components use CSS modules and CSS variables.
 - MCP: the `arc` server is declared in the repository root `.mcp.json` (`https://uiarc.dev/api/mcp`). The first connection opens a browser sign-in. If a tool call fails with an auth error, ask the user to reconnect instead of guessing.
 - Foundation: `components/arc/foundation.css` is imported once in `app/layout.tsx`, with `data-theme="light"` on `<html>`. `app/theme.css` is imported right after it and sets Arc's semantic tokens to the Direction 5 ("Oat and Ink") values, plus the few TFS tokens Arc lacks (`--rail-surface`, `--font-serif`, `--analysis`, soft and strong status colors). Hanken Grotesk and Newsreader load as `--font-hanken` and `--font-newsreader`. The desk tokens in `app/(desk)/desk.css` are aliases of these tokens, so desk screens and Arc components share one palette, type and focus ring. Design reference: `docs/ui-direction-5.md`.
-- Installed Arc Free components: `alert`, `badge`, `button`, `checkbox`, `json-viewer`, `skeleton`, `text-shimmer`.
+- Installed Arc Free components: `alert`, `badge`, `button`, `checkbox`, `drawer`, `json-viewer`, `skeleton`, `text-shimmer`, `toast`.
 - Path alias: `@/*` resolves to this directory (`tsconfig.json`).
 - Existing desk components in `components/desk/` predate this rule. Leave their structure alone until a ticket redesigns them, then move that surface to Arc.

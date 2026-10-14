@@ -100,7 +100,7 @@ test.describe("Ticket 06: First import and replacement-import previews", () => {
     // 3. Preview modal opens without adopting into committed state
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await expect(page.getByText("Holdings import · Initial portfolio creation")).toBeVisible();
+    await expect(dialog).toContainText("Holdings import · a first portfolio");
 
     // Check backend directly: committed portfolio is STILL absent (null)
     const committedCheck = await page.request.get("/api/portfolio");
@@ -165,11 +165,12 @@ test.describe("Ticket 06: First import and replacement-import previews", () => {
     // Preview dialog opens
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await expect(page.getByText("Holdings import · Base revision 1")).toBeVisible();
+    await expect(dialog).toContainText("Holdings import · prepared from revision 1");
 
     // Exact differences must show removals (ACME was removed)
-    await expect(dialog.getByText(/Removed position ACME/i)).toBeVisible();
-    await expect(dialog.getByText(/Added position XEQT/i)).toBeVisible();
+    const changes = dialog.getByRole("table", { name: "What changes" });
+    await expect(changes.getByRole("row", { name: /ACME/ }).first()).toContainText("Removed");
+    await expect(changes.getByRole("row", { name: /XEQT/ }).first()).toContainText("Not held");
 
     // Confirm replacement
     await page.getByTestId("confirm-proposal").click();
@@ -247,14 +248,14 @@ test.describe("Ticket 06: First import and replacement-import previews", () => {
     await page.reload();
 
     // Dialog is not currently open, but pending proposal banner is displayed
-    const banner = page.getByTestId("pending-proposal-banner");
+    const banner = page.getByRole("region", { name: "Changes waiting for you" });
     await expect(banner).toBeVisible();
-    await expect(banner).toContainText("Pending review: Holdings import");
+    await expect(banner).toContainText("Holdings import");
 
-    // Click Reopen preview
-    await banner.getByTestId("reopen-pending-proposal").click();
+    // Review it again
+    await banner.getByRole("button", { name: "Review" }).click();
     await expect(dialog).toBeVisible();
-    await expect(page.getByText("Holdings import · Initial portfolio creation")).toBeVisible();
+    await expect(dialog).toContainText("Holdings import · a first portfolio");
 
     // Cancel from preview dialog
     await page.getByTestId("cancel-proposal").click();
@@ -262,6 +263,6 @@ test.describe("Ticket 06: First import and replacement-import previews", () => {
 
     // Reload again: proposal is cancelled, so banner is gone
     await page.reload();
-    await expect(page.getByTestId("pending-proposal-banner")).toBeHidden();
+    await expect(page.getByRole("region", { name: "Changes waiting for you" })).toBeHidden();
   });
 });

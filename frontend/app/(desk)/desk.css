@@ -34,7 +34,7 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .sage { color: var(--sage); }
 .desk .amber { color: var(--amber); }
 .desk .brass { color: var(--brass); }
-.desk .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.desk .sr-only, .review-sheet .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 .desk .skip { position: absolute; left: 8px; top: -48px; z-index: 50; background: var(--text); color: var(--ground); padding: 8px 14px; border-radius: 999px; }
 .desk .skip:focus { top: 8px; }
 .desk sup { line-height: 1; font-size: 11px; margin-left: 2px; }
@@ -375,32 +375,54 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .choices { display: flex; flex-wrap: wrap; gap: 8px; }
 .desk .cases { display: flex; flex-direction: column; gap: 6px; max-width: 420px; }
 
-/* Portfolio Preview Modal */
-.desk .preview-overlay {
-  position: fixed; inset: 0; background: var(--scrim-strong); z-index: 50;
-  display: flex; align-items: center; justify-content: center; padding: 24px;
+/* Proposal review (phase 4): an Arc drawer from the right, portaled outside .desk, so it uses the theme tokens.
+   Before is struck through in muted text, after is set on the green draft tint; the footer stays in view. */
+.review-sheet[data-side] { --drawer-size: min(34rem, calc(100vw - 12px)); font-family: var(--font-body); color: var(--foreground); }
+.review-more summary { cursor: pointer; margin-top: 6px; font-weight: 500; }
+.review { display: flex; flex-direction: column; gap: 14px; min-height: 100%; color: var(--foreground); }
+.review-rev { margin: 0; color: var(--text-secondary); font-size: 13px; }
+.review-table { border-radius: 12px; overflow: hidden; background: var(--surface); }
+.review-row { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 10px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--border-subtle); font-size: 13.5px; overflow-wrap: anywhere; }
+.review-row.head { border-top: 0; padding: 7px 14px; background: var(--surface-muted); color: var(--text-muted); font-size: 12px; }
+.review-row .what b { font-weight: 600; }
+.review-row .what small { display: block; color: var(--text-muted); font-size: 12px; }
+.review-row .was { color: var(--text-muted); text-decoration: line-through; text-decoration-color: var(--border-strong); }
+.review-row .now { justify-self: start; padding: 2px 8px; border-radius: 7px; background: var(--success-subtle); color: var(--success-strong); font-weight: 600; }
+.review-row[data-change="removed"] .now { background: var(--surface-muted); color: var(--text-secondary); }
+.review-row[data-change="added"] .was, .review-row[data-change="removed"] .now { text-decoration: none; }
+.review-same { list-style: none; margin: 0; padding: 2px; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+.review-same li { display: flex; justify-content: space-between; gap: 10px; }
+.review-same span { color: var(--text-secondary); }
+.review-same b { font-weight: 500; }
+.review-warn { display: flex; gap: 10px; padding: 11px 12px; border-radius: 12px; background: var(--warning-subtle); font-size: 13px; line-height: 1.45; }
+.review-warn > svg { flex: none; margin-top: 1px; color: var(--warning-strong); }
+.review-warn h3 { margin: 0 0 4px; font-size: 13.5px; font-weight: 600; }
+.review-warnings { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.review-note { margin: 0; color: var(--text-muted); font-size: 12.5px; }
+.review-foot { position: sticky; bottom: calc(-1 * var(--space-6)); margin: auto calc(-1 * var(--space-6)) calc(-1 * var(--space-6)); padding: 14px var(--space-6) var(--space-6);
+  display: flex; flex-direction: column; gap: 12px; background: var(--surface-raised); border-top: 1px solid var(--border-subtle); }
+.review-foot p { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
+.review-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 40rem) {
+  .review-foot { bottom: calc(-1 * var(--space-5)); margin: auto calc(-1 * var(--space-5)) calc(-1 * var(--space-5)); padding: 12px var(--space-5) var(--space-5); }
+  .review-row { grid-template-columns: 1fr 1fr; }
+  .review-row .what { grid-column: 1 / -1; }
+  .review-row.head span:first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .review-actions > * { flex: 1 1 auto; min-height: 44px; }
 }
-.desk .preview-dialog {
-  background: var(--surface-raised); border: 1px solid var(--rule); border-radius: 24px;
-  width: 100%; max-width: 580px; max-height: 85vh; display: flex; flex-direction: column;
-  box-shadow: var(--shadow-floating); overflow: hidden;
-}
-.desk .preview-head {
-  padding: 16px 20px; border-bottom: 1px solid var(--rule); display: flex; justify-content: space-between; align-items: center;
-}
-.desk .preview-body {
-  padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px;
-}
-.desk .preview-actions {
-  padding: 16px 20px; border-top: 1px solid var(--rule); display: flex; justify-content: flex-end; gap: 12px;
-}
-.desk .diff-list {
-  list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0;
-}
-.desk .diff-item {
-  background: var(--raised); border-radius: 12px; padding: 8px 12px; font-size: 13px; line-height: 18px;
-}
+/* Below the header, clear of the composer and its send button. */
+.receipt-toast { position: fixed; z-index: 60; right: 24px; top: 68px; width: min(26rem, calc(100vw - 32px)); }
+@media (max-width: 640px) { .receipt-toast { left: 16px; right: 16px; top: 64px; width: auto; } }
 
+/* Changes waiting for confirmation, above the conversation. */
+.desk .waiting { margin-bottom: 16px; padding: 14px 16px; border-radius: 16px; background: var(--raised); display: flex; flex-direction: column; gap: 10px; }
+.desk .waiting-title { margin: 0; font-size: 15px; font-weight: 600; }
+.desk .waiting-sub { margin: -6px 0 0; color: var(--text-2); font-size: 13px; }
+.desk .waiting-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-top: 10px; border-top: 1px solid var(--rule); }
+.desk .waiting-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 14rem; font-size: 14px; }
+.desk .waiting-text b { font-weight: 600; }
+.desk .waiting-actions { display: flex; gap: 8px; }
+@media (max-width: 1023px) { .desk .waiting-actions > * { min-height: 44px; } }
 
 /* Portfolio and Decisions (phase 3): views of their own in place of the conversation, with their own header. */
 .desk .btn.ghost { background: transparent; border-color: transparent; color: var(--text-2); }
@@ -478,6 +500,8 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .pchange { flex-direction: row; align-items: center; gap: 16px; padding: 14px 16px 14px 20px; }
 .desk .pchange-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .desk .pchange-act { display: flex; gap: 8px; flex: none; }
+.desk .pchange { flex-wrap: wrap; }
+.desk .pchange-error, .desk .waiting-error { flex-basis: 100%; margin: 0; color: var(--danger); font-size: 13px; }
 /* The draft floats over the page, white and lifted, until it is reviewed or discarded. */
 .desk .draft-bar { position: sticky; bottom: 16px; z-index: 3; display: flex; align-items: center; gap: 10px; margin-top: 6px; padding: 10px 10px 10px 16px;
   border-radius: 20px; background: var(--surface-raised); border: 1px solid var(--rule); box-shadow: var(--shadow-raised); font-size: 13.5px; line-height: 20px; }

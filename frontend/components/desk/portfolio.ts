@@ -46,10 +46,10 @@ export function valuationFor(result: Analysis | null, stored: Partial<Pick<Artif
   return sameInputs(result.portfolio, snapshot) ? result.portfolio : null;
 }
 
-const ROLE: Record<string, string> = { diversified: "Diversified", sector_theme: "Sector or theme" };
+export const ROLE: Record<string, string> = { diversified: "Diversified", sector_theme: "Sector or theme" };
 const percent = (value: string | null | undefined) => (value == null ? "not set" : pct(value));
 const yesNo = (value: boolean | null | undefined) => (value == null ? "not set" : value ? "Yes" : "No");
-const SETTINGS: [string, (s: PortfolioSettings) => string][] = [
+export const SETTINGS: [string, (s: PortfolioSettings) => string][] = [
   ["Company cap", s => percent(s.single_company_cap)],
   ["Active budget", s => percent(s.active_budget)],
   ["Fund holdings count toward the cap", s => (s.indirect_cap_policy ? (s.indirect_cap_policy === "include_known_indirect" ? "Yes" : "No") : "not set")],

@@ -23,6 +23,8 @@ type Props = {
   isDirty: boolean; edits: string[]; reviewing: boolean; running: boolean;
   onReviewChanges: () => void; onDiscardDraft: () => void; onAnalyzeDraft: () => void;
   pending: PortfolioProposal[]; onReopenProposal: (proposal: PortfolioProposal) => void; onCancelProposal: (id: string) => void;
+  /** A cancel from this list that failed, shown on that proposal. */
+  cancelFailure?: { id: string; message: string } | null;
   onProposal: (proposal: PortfolioProposal) => void; onError: (message: string) => void;
   onStock: (position: Position) => void; onReview: () => void; onBack: () => void;
 };
@@ -253,9 +255,10 @@ export default function PortfolioView(props: Props) {
                 {stale && <span className="cap amber">Prepared from an older revision. Review it again before confirming.</span>}
               </div>
               <div className="pchange-act">
-                <Button variant="ghost" size="sm" onClick={() => props.onCancelProposal(proposal.id)}>Discard</Button>
+                <Button variant="ghost" size="sm" onClick={() => props.onCancelProposal(proposal.id)}>Cancel proposal</Button>
                 <Button variant="secondary" size="sm" onClick={() => props.onReopenProposal(proposal)}>Review</Button>
               </div>
+              {props.cancelFailure?.id === proposal.id && <p className="pchange-error" role="alert">{props.cancelFailure.message}</p>}
             </div>;
           })}
       </div>}
