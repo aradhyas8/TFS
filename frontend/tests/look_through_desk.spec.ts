@@ -60,7 +60,7 @@ function createPortfolio(sponsorScenario: "full" | "partial" | "stale", policy: 
   };
 }
 
-import { seedPortfolio } from "./test_helpers";
+import { openDetails, seedPortfolio } from "./test_helpers";
 
 async function open(page: Page, portfolio: object) {
   await page.route("**/*", route =>
@@ -96,7 +96,7 @@ test("full ETF sponsor holdings look-through surfaces overlap without double cou
   await expect(memo).toContainText("through funds");
 
   // Details panel Evidence tab shows fund holdings source
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Evidence" }).click();
   await expect(details).toContainText("Full holdings file");
 });
@@ -110,7 +110,7 @@ test("indirect_cap_policy governs guardrail checks with known indirect exposure"
   let memo = await runReview(page, "Review with include_known_indirect");
 
   await expect(memo).toContainText(/breaks (one|1) of your rules/i);
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Guardrails" }).click();
   await expect(details).toContainText("Single company · Acme Corp");
   await expect(details).toContainText("Over · 38.9% / 37%");
@@ -121,6 +121,7 @@ test("indirect_cap_policy governs guardrail checks with known indirect exposure"
   memo = await runReview(page, "Review with direct_only");
 
   await expect(memo).toContainText("Within your rules");
+  await openDetails(page);
   await details.getByRole("tab", { name: "Guardrails" }).click();
   await expect(details).toContainText("Single company · Acme Corp");
   await expect(details).toContainText("Within · 36.1% / 37%");
@@ -135,7 +136,7 @@ test("partial coverage qualifies conclusion but does not block within_limit", as
   await expect(memo).toContainText("partly looked through");
   await expect(memo).toContainText("Indirect exposure is not assumed to be zero.");
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Guardrails" }).click();
   await expect(details).toContainText("Within · 38.9% / 45%");
   await expect(details).toContainText("Fund look-through is partial; indirect exposure is not assumed to be zero.");
@@ -148,7 +149,7 @@ test("stale coverage is honestly labeled", async ({ page }) => {
   await expect(memo).toContainText("looked through with stale holdings");
   await expect(memo).toContainText("Indirect exposure is not assumed to be zero.");
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Guardrails" }).click();
   await expect(details).toContainText("Fund look-through is stale; indirect exposure is not assumed to be zero.");
 });

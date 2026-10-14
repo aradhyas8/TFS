@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { openDetails } from "./test_helpers";
 
 const SAVED = {
   snapshot: {
@@ -93,7 +94,7 @@ test.describe("Ticket 08: Immutable hypothetical draft analysis", () => {
     expect(initialPortfolio.revision).toBe(1);
 
     // Open details panel on Holdings tab
-    const details = page.getByRole("complementary", { name: "Details" });
+    const details = await openDetails(page);
     await details.getByRole("tab", { name: "Holdings" }).click();
 
     const capInput = details.getByRole("textbox", { name: "Single-company cap (%)" });

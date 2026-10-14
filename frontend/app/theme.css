@@ -1,0 +1,49 @@
+/* Direction 5, "Oat and Ink": the TFS values for Arc's semantic tokens. Loaded after components/arc/foundation.css,
+   so Arc components, shadcn/ui components and the desk all read one palette. Ink does the acting; color is kept for meaning:
+   green for good standing, blue for analysis and evidence, amber for attention, red for real downside. */
+:root {
+  --background: #FDFCFA;
+  --surface: #F6F3EE;
+  --surface-raised: #FFFFFF;
+  --surface-muted: #ECE8E0;
+  --foreground: #26241F;
+  --text-secondary: #57534B;
+  --text-muted: #6B655C;
+  --border: #E2DDD3;
+  --border-subtle: #EAE6DD;
+  --border-strong: #CFC9BC;
+  --accent: #26241F;
+  --accent-strong: #12110E;
+  --accent-subtle: rgb(38 36 31 / .08);
+  --accent-foreground: #FFFFFF;
+  --control-on: #26241F;
+  --control-track: #E2DDD3;
+  --control-track-hover: #D6D0C4;
+  --success: #1F7A54;
+  --warning: #9C6410;
+  --danger: #B4412F;
+  --shadow-resting: 0 1px 2px rgb(38 36 31 / .04);
+  --shadow-raised: 0 1px 2px rgb(38 36 31 / .04), 0 12px 32px rgb(38 36 31 / .07);
+  --shadow-floating: 0 2px 6px rgb(38 36 31 / .05), 0 24px 56px rgb(38 36 31 / .12);
+  --font-display: var(--font-hanken, "Hanken Grotesk"), system-ui, sans-serif;
+  --font-body: var(--font-hanken, "Hanken Grotesk"), system-ui, sans-serif;
+  --tracking-display: -.02em;
+
+  /* TFS additions. Arc has no rail surface, no serif voice, no info color and no soft status fills.
+     The -strong status colors are for text: they hold 4.5:1 on every surface here, tinted ones included. */
+  --rail-surface: #F5F2EC;
+  --rail-raised: #ECE8DF;
+  --rail-selected: #E8E3D9;
+  --font-serif: var(--font-newsreader, "Newsreader"), Georgia, serif;
+  --analysis: #3565A8;
+  --analysis-subtle: #E1E9F4;
+  --success-strong: #17623F;
+  --success-subtle: #DCEBE1;
+  --warning-strong: #8A5609;
+  --warning-subtle: #F5E8CD;
+  --danger-subtle: #F5DFD9;
+  --scrim: rgb(38 36 31 / .28);
+  --scrim-strong: rgb(38 36 31 / .4);
+  --sand: #6B5320;
+  --sand-subtle: #EFE5D2;
+}

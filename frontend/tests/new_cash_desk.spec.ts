@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { openDetails } from "./test_helpers";
 
 const RICH_CSV = `row_type,id,account_id,account_name,ticker,listing,company_id,company_name,shares,cash,currency,mark,mark_date,mark_source,to_currency,fx_rate,fx_date,fx_source
 etf,fund,broker,Brokerage,BROAD,XNYS,,,80,,USD,100,2026-09-30,Fixture allocation,,,,
@@ -36,6 +37,7 @@ async function start(page: Page) {
 }
 
 async function reviewAndConfirmRules(page: Page) {
+  await openDetails(page);
   const panel = details(page);
   const reviewBtn = panel.getByTestId("review-changes");
   if (await reviewBtn.isVisible()) {
@@ -48,6 +50,7 @@ async function reviewAndConfirmRules(page: Page) {
 }
 
 async function setRules(page: Page, fundType = true) {
+  await openDetails(page);
   await details(page).getByRole("tab", { name: "Holdings" }).click();
   if (fundType) await details(page).getByRole("combobox", { name: "Fund type for BROAD" }).selectOption("diversified");
   await details(page).getByLabel("Single-company cap (%)").fill("15");
@@ -95,6 +98,7 @@ test("new cash: required inputs gate the run, then a cited recommendation with s
   await expect(memo).toContainText("no company cap applies");
   await expect(rail(page)).toContainText(/Weights · .* analysis/);
 
+  await openDetails(page);
   await expect(details(page)).toContainText("No filings were researched for this answer");
   await memo.getByRole("button", { name: /Scenarios/ }).click();
   await expect(details(page).getByRole("table", { name: "Five-year comparison" })).toBeVisible();
@@ -146,6 +150,7 @@ test("portfolio: simple import asks only what's unknown, then holdings and rules
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
   await ask.fill("/"); await ask.press("Enter");
   await expect(page.getByText("Identify 1 holding first")).toBeVisible();
+  await openDetails(page);
   const needs = details(page).getByRole("group", { name: "Holdings to identify" });
   await details(page).getByRole("tab", { name: "Holdings" }).click();
   await expect(needs.getByRole("combobox", { name: "Type for BROAD" })).toHaveCount(0);
@@ -173,6 +178,7 @@ test("portfolio: simple import asks only what's unknown, then holdings and rules
   await expect(rail(page)).toContainText("BROAD");
   await expect(rail(page)).toContainText("Rules · cap 15% · active 30%");
   await expect(page.locator(".ctx")).toContainText("Portfolio as of Sep 30, 2026");
+  await openDetails(page);
   await details(page).getByRole("tab", { name: "Holdings" }).click();
   await expect(details(page).getByRole("combobox", { name: "Fund type for BROAD" })).toHaveValue("diversified");
   await expect(details(page)).toContainText("Average cost US$92.10");

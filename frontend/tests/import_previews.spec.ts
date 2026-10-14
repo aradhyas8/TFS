@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { openDetails } from "./test_helpers";
 
 const SIMPLE_CSV = `account,ticker,shares,average_cost,type
 TFSA,XEQT.TO,100,30,etf
@@ -130,7 +131,7 @@ test.describe("Ticket 06: First import and replacement-import previews", () => {
 
     // Now committed state is adopted: hero is gone, desk is shown
     await expect(page.getByRole("heading", { name: "Start with what you own." })).toBeHidden();
-    await expect(page.getByRole("complementary", { name: "Details" })).toBeVisible();
+    await openDetails(page);
 
     // Check backend: Revision 1 committed
     const adoptedCheck = await page.request.get("/api/portfolio");
@@ -147,7 +148,7 @@ test.describe("Ticket 06: First import and replacement-import previews", () => {
     await page.goto("/");
 
     // Open Panel -> Holdings tab
-    const panel = page.getByRole("complementary", { name: "Details" });
+    const panel = await openDetails(page);
     await expect(panel).toBeVisible();
     await panel.getByRole("tab", { name: "Holdings" }).click();
 
@@ -195,7 +196,7 @@ test.describe("Ticket 06: First import and replacement-import previews", () => {
     await page.goto("/");
 
     // Open panel and make a draft edit to single-company cap
-    const panel = page.getByRole("complementary", { name: "Details" });
+    const panel = await openDetails(page);
     await panel.getByRole("tab", { name: "Holdings" }).click();
     await panel.getByLabel("Single-company cap (%)").fill("35");
 

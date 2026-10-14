@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
-import { seedPortfolio } from "./test_helpers";
+import { openDetails, seedPortfolio } from "./test_helpers";
 
 // ACME has reviewed research fixtures on the test server; with the 15% cap it breaks a rule.
 const SAVED = {
@@ -536,7 +536,7 @@ test("a proposal that this page knows is out of date offers no review, whatever 
   const cached = await proposalList(page, { json: await (await page.request.get("/api/portfolio/proposals")).json() });
 
   // A rule change is reviewed and confirmed in the holdings panel: the saved portfolio is now revision 2.
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByLabel("Single-company cap (%)").fill("42");
   await details.getByTestId("review-changes").click();
   const dialog = page.getByRole("dialog", { name: "Review portfolio changes" });

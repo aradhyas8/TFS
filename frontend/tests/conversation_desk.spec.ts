@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { seedPortfolio } from "./test_helpers";
+import { openDetails, seedPortfolio } from "./test_helpers";
 
 const SAVED = {
   snapshot: {
@@ -141,7 +141,7 @@ test("threads are listed, switched and reopened after reload, by pointer or keyb
 test("a failed send and a failed answer stay distinct from the saved conversation, and drafts stay out of it", async ({ page }) => {
   await open(page, SAVED);
   // An unsaved rule edit: a draft, not part of the committed portfolio or of any answer.
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByLabel("Single-company cap (%)").fill("42");
 
   await page.route("**/api/threads/*/messages", route => route.fulfill({ status: 503, json: { detail: "The analyst service is offline." } }));
