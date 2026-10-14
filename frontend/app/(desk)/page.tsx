@@ -277,6 +277,8 @@ export default function DeskPage() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   // The receipt of the last confirmation, shown once; the revision itself is shown wherever the portfolio is.
   const [receipt, setReceipt] = useState<ProposalReceipt | null>(null);
+  // A cancel started from a list of waiting changes that failed: shown on that proposal's row, where it was asked.
+  const [cancelFailure, setCancelFailure] = useState<{ id: string; message: string } | null>(null);
   // A second click, or a click while the first confirmation is in flight, sends nothing.
   const confirmingRef = useRef(false);
 
@@ -698,8 +700,8 @@ export default function DeskPage() {
 
   /** Cancels a proposal. If the server says it was already applied (a confirmation whose reply was lost), the
    *  receipt is fetched instead, since confirming an applied proposal returns it, and the page shows what was saved.
-   *  Any other failure is reported and the proposal stays where it was. */
-  async function cancelOnServer(proposal: PortfolioProposal): Promise<boolean> {
+   *  Any other failure is passed to `report` and the proposal stays where it was. */
+  async function cancelOnServer(proposal: PortfolioProposal, report: (message: string) => void): Promise<boolean> {
     try {
       await cancelProposal(proposal.id);
       return true;
@@ -712,7 +714,7 @@ export default function DeskPage() {
           setNotice("This change was already saved. Reload the page to see it.");
         }
       } else if (/cancelled/i.test(msg)) return true;
-      else setPreviewError(msg || "The proposal couldn't be cancelled. Try again.");
+      else report(msg || "The proposal couldn't be cancelled. Try again.");
       return false;
     }
   }
@@ -720,9 +722,8 @@ export default function DeskPage() {
   async function cancelPendingProposal(proposalId: string) {
     const proposal = pendingProposals.find(p => p.id === proposalId);
     if (!proposal) return;
-    if (!(await cancelOnServer(proposal))) {
-      return;
-    }
+    setCancelFailure(null);
+    if (!(await cancelOnServer(proposal, message => setCancelFailure({ id: proposalId, message })))) return;
     setPendingProposals(prev => prev.filter(p => p.id !== proposalId));
     if (activeProposal?.id === proposalId) closeProposal();
     refreshProposals();
@@ -759,7 +760,7 @@ export default function DeskPage() {
     const cancelling = activeProposal;
     setCancelling(true);
     setPreviewError(null);
-    const done = await cancelOnServer(cancelling);
+    const done = await cancelOnServer(cancelling, setPreviewError);
     setCancelling(false);
     if (!done) return;
     setPendingProposals(prev => prev.filter(p => p.id !== cancelling.id));
@@ -2154,6 +2155,7 @@ export default function DeskPage() {
             pending={pendingProposals}
             onReopenProposal={openProposal}
             onCancelProposal={id => void cancelPendingProposal(id)}
+            cancelFailure={cancelFailure}
             onProposal={handleProposal}
             onError={setNotice}
             onStock={offerStock}
@@ -2277,6 +2279,7 @@ export default function DeskPage() {
                         <Button variant="ghost" size="sm" data-testid="cancel-pending-proposal" onClick={() => void cancelPendingProposal(p.id)}>Cancel proposal</Button>
                         <Button variant="secondary" size="sm" data-testid="reopen-proposal" onClick={() => openProposal(p)}>Review</Button>
                       </div>
+                      {cancelFailure?.id === p.id && <p className="waiting-error" role="alert">{cancelFailure.message}</p>}
                     </div>
                   );
                 })}
@@ -2284,10 +2287,7 @@ export default function DeskPage() {
             )}
             {center}
             {!showThread && !run && !reopened && !viewOpen && !clarify && !failure && draftBasis}
-            <p className="sr-only" aria-live="polite">
-              {result && !run ? "Answer ready." : ""}
-              {receipt ? ` Saved as portfolio revision ${receipt.new_revision}. No trade was placed.` : ""}
-            </p>
+            <p className="sr-only" aria-live="polite">{result && !run ? "Answer ready." : ""}</p>
           </div>
         </div>
         {!reopened && (
@@ -2393,6 +2393,9 @@ export default function DeskPage() {
         refused={proposalRefused}
         fallbackFocus={() => document.getElementById(view === "chat" ? "ask" : `${view}-title`)}
       />
+      <p className="sr-only" aria-live="polite">
+        {receipt ? `Saved as portfolio revision ${receipt.new_revision}. No trade was placed.` : ""}
+      </p>
       {receipt && (
         <div className="receipt-toast">
           <Toast

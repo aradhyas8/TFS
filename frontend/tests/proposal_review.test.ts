@@ -88,7 +88,33 @@ test.describe("changeRows: what changes, before and after", () => {
       ["Company cap", "Rule", "15%", "12%", "changed"],
       ["Fund holdings count toward the cap", "Rule", "No", "Yes", "changed"],
       ["Target cash", "Rule", "Not set", "5%", "changed"],
-      ["Benchmark", "Rule", "None", "VFV", "changed"],
+      ["Benchmark", "Rule", "None", "VFV, XTSE, CAD", "changed"],
+    ]);
+  });
+
+  test("a benchmark that keeps its ticker but moves listing or currency shows both in full", () => {
+    expect(rows(diff("benchmark_changed", "benchmark", { ticker: "VFV", listing: "XNAS", currency: "USD" }, { ticker: "VFV", listing: "XTSE", currency: "CAD" })))
+      .toEqual([["Benchmark", "Rule", "VFV, XNAS, USD", "VFV, XTSE, CAD", "changed"]]);
+    expect(rows(diff("benchmark_changed", "benchmark", { ticker: "VFV", listing: "XTSE", currency: "USD" }, { ticker: "VFV", listing: "XTSE", currency: "CAD" })))
+      .toEqual([["Benchmark", "Rule", "VFV, XTSE, USD", "VFV, XTSE, CAD", "changed"]]);
+  });
+
+  test("an average cost changed along with its holding's currency shows each side in its own currency", () => {
+    expect(rows(
+      diff("position_changed", "snapshot.positions[p1]", ACME, { ...ACME, currency: "CAD", listing: "XTSE" }),
+      diff("cost_changed", "average_costs[p1]", "80", "110"),
+    )).toEqual([
+      ["ACME", "TFSA · listing", "XNAS", "XTSE", "changed"],
+      ["ACME", "TFSA · currency", "USD", "CAD", "changed"],
+      ["ACME", "Average cost", "US$80", "C$110", "changed"],
+    ]);
+    // A cost for a holding added in the same proposal uses that holding's currency.
+    expect(rows(
+      diff("position_added", "snapshot.positions[p2]", null, { ...ACME, id: "p2", ticker: "NOVA", currency: "CAD", listing: "XTSE" }),
+      diff("cost_added", "average_costs[p2]", null, "12"),
+    )).toEqual([
+      ["NOVA", "TFSA · holding", "Not held", "10 shares", "added"],
+      ["NOVA", "Average cost", "Not given", "C$12", "added"],
     ]);
   });
 

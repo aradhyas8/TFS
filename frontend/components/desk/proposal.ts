@@ -21,6 +21,10 @@ const known = (value: unknown) =>
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 const shares = (value: string | null | undefined) => (value == null ? "Unknown" : `${value} shares`);
 const name = (row: Position) => (row.kind === "cash" ? `Cash ${row.currency}` : row.ticker || row.company_name || row.id);
+const benchmark = (value: unknown) => {
+  const setting = value as BenchmarkSetting | null;
+  return setting ? [setting.ticker, setting.listing, setting.currency].filter(Boolean).join(", ") : "None";
+};
 const rate = (fx: FX | null | undefined) => (fx ? `${fx.rate} (${fullDate(fx.as_of)})` : "None");
 
 /** A holding's fields in the order a reader checks them: what it is, where it is held, then how much. */
@@ -49,7 +53,11 @@ export function changeRows(proposal: Pick<PortfolioProposal, "differences">, sna
   const added = proposal.differences.filter(item => item.kind === "position_added").map(item => item.after as Position);
   const accounts = [...(snapshot?.accounts ?? []), ...proposal.differences.filter(item => item.kind === "account_added").map(item => item.after as Account)];
   const account = (id: string) => accounts.find(item => item.id === id)?.name || id;
-  const position = (id: string) => snapshot?.positions.find(row => row.id === id) || added.find(row => row.id === id);
+  // A holding as saved now, and as it would be saved after confirming, so each side of a cost is in its own currency.
+  const holdingBefore = (id: string) => snapshot?.positions.find(row => row.id === id);
+  const holdingAfter = (id: string) =>
+    (proposal.differences.find(item => item.kind === "position_changed" && (item.after as Position).id === id)?.after as Position | undefined)
+    || added.find(row => row.id === id) || holdingBefore(id);
   const rows: ChangeRow[] = [];
   const push = (item: DifferenceItem, subject: string, detail: string, before: string, after: string, change: ChangeRow["change"]) =>
     rows.push({ key: `${item.path}:${detail}:${rows.length}`, subject, detail, before, after, change });
@@ -95,9 +103,9 @@ export function changeRows(proposal: Pick<PortfolioProposal, "differences">, sna
       case "cost_removed":
       case "cost_changed": {
         const id = item.path.slice("average_costs[".length, -1);
-        const held = position(id);
-        const show = (value: unknown) => (value == null ? "Not given" : money(String(value), held?.currency || ""));
-        push(item, held ? name(held) : id, "Average cost", show(item.before), item.after == null ? "Removed" : show(item.after), changeOf(item.kind));
+        const was = holdingBefore(id), now = holdingAfter(id), held = now || was;
+        const show = (value: unknown, row: Position | undefined) => (value == null ? "Not given" : money(String(value), row?.currency || ""));
+        push(item, held ? name(held) : id, "Average cost", show(item.before, was || now), item.after == null ? "Removed" : show(item.after, now || was), changeOf(item.kind));
         break;
       }
       case "fx_added":
@@ -116,7 +124,7 @@ export function changeRows(proposal: Pick<PortfolioProposal, "differences">, sna
       }
       case "benchmark_set":
       case "benchmark_changed":
-        push(item, "Benchmark", "Rule", (item.before as BenchmarkSetting | null)?.ticker || "None", (item.after as BenchmarkSetting | null)?.ticker || "None", "changed");
+        push(item, "Benchmark", "Rule", benchmark(item.before), benchmark(item.after), "changed");
         break;
       case "date_set":
       case "date_changed":

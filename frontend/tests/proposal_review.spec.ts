@@ -288,3 +288,47 @@ for (const [device, width] of [["phone", 390], ["tablet", 768]] as const) test(`
     expect(await sheet.evaluate(node => node.contains(document.activeElement))).toBe(true);
   }
 });
+
+test("a cancel that fails from a waiting list says so there, and the proposal stays for another try", async ({ page }) => {
+  await open(page);
+  await prepareFromPortfolio(page);
+  await page.keyboard.press("Escape");
+  const [waiting] = await (await page.request.get("/api/portfolio/proposals?status=pending")).json();
+  await page.route("**/api/portfolio/proposals/*/cancel", route => route.fulfill({ status: 500, json: { detail: "The server could not cancel it." } }));
+
+  // From the Portfolio Changes tab.
+  await portfolio(page).getByRole("tab", { name: /Changes/ }).click();
+  const item = portfolio(page).getByTestId(`pending-proposal-item-${waiting.id}`);
+  await item.getByRole("button", { name: "Cancel proposal" }).click();
+  await expect(item.getByRole("alert")).toContainText("The server could not cancel it.");
+  await expect(review(page)).toHaveCount(0);
+
+  // From the list in the conversation view.
+  await rail(page).getByRole("button", { name: "New conversation" }).click();
+  const listed = page.getByRole("region", { name: "Changes waiting for you" }).getByTestId(`pending-proposal-item-${waiting.id}`);
+  await listed.getByRole("button", { name: "Cancel proposal" }).click();
+  await expect(listed.getByRole("alert")).toContainText("The server could not cancel it.");
+
+  // Retrying once the server answers cancels it and clears the error.
+  await page.unroute("**/api/portfolio/proposals/*/cancel");
+  await listed.getByRole("button", { name: "Cancel proposal" }).click();
+  await expect(listed).toHaveCount(0);
+  expect((await saved(page)).revision).toBe(1);
+});
+
+for (const width of [390, 320]) test(`at ${width}px the receipt announcement stays off screen while it is read out`, async ({ page }) => {
+  await open(page, width);
+  await page.getByRole("button", { name: "Open portfolio and decisions" }).click();
+  await prepareFromPortfolio(page);
+  await review(page).getByRole("button", { name: "Confirm changes" }).click();
+  const announcement = page.locator("p.sr-only[aria-live='polite']");
+  await expect(announcement).toHaveText(/Saved as portfolio revision 2\. No trade was placed\./);
+  const box = await announcement.boundingBox();
+  expect(box!.width).toBeLessThanOrEqual(1);
+  expect(box!.height).toBeLessThanOrEqual(1);
+  // The skip link is its own rule: hidden until keyboard focus brings it into view.
+  const skip = page.locator("a.skip");
+  expect((await skip.boundingBox())!.y).toBeLessThan(0);
+  await skip.focus();
+  expect((await skip.boundingBox())!.y).toBeGreaterThanOrEqual(0);
+});
