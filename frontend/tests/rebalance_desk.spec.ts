@@ -151,7 +151,7 @@ test("descriptive or company questions are not routed to rebalance", async ({ pa
   // A descriptive question is ordinary conversation: no rebalance, and no workflow at all.
   await send(page, "How concentrated is my portfolio?");
   await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Plain answer to: How concentrated is my portfolio?");
-  await expect(page.locator(".ctx")).toContainText("Conversation");
+  await expect(page.locator(".ctx")).toContainText("How concentrated is my portfolio?");
   await send(page, "Should I trim ACME?");
   await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
   expect(sent.map(body => [body.question, !!body.portfolio_review, !!body.stock])).toEqual([["Should I trim ACME?", false, true]]);

@@ -61,7 +61,7 @@ import { Alert } from "@/components/arc/alert/alert";
 import { Button } from "@/components/arc/button/button";
 import { Checkbox } from "@/components/arc/checkbox/checkbox";
 import { useConversation } from "../../components/desk/useConversation";
-import { clock, fullDate, newCashLabel, pct, shortDate } from "../../components/desk/format";
+import { clock, decisionLabel, fullDate, newCashLabel, pct, shortDate } from "../../components/desk/format";
 
 /** A question asked about the unsaved draft: the draft as captured, and where the question was asked. */
 type DraftQuestion = {
@@ -135,6 +135,23 @@ function workflowOf(result: Analysis): DecisionWorkflow {
   if (result.theme) return "theme";
   return result.allocation ? "new_cash" : "review";
 }
+
+const WORKFLOW_TITLE: Record<DecisionWorkflow, string> = { stock: "Stock analysis", new_cash: "New cash", review: "Portfolio review", rebalance: "Rebalance", theme: "Theme" };
+
+/** Whether a media query matches. False until mounted, like every width-dependent layout here. */
+function useMedia(query: string) {
+  const [matches, setMatches] = useState(false);
+  useEffect(() => {
+    const list = window.matchMedia(query);
+    const update = () => setMatches(list.matches);
+    update();
+    list.addEventListener("change", update);
+    return () => list.removeEventListener("change", update);
+  }, [query]);
+  return matches;
+}
+
+const FOCUSABLE = "a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
 
 function pastDurations(sent: Sent | null): number[] {
   try {
@@ -307,37 +324,74 @@ export default function DeskPage() {
   const [railOpen, setRailOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
   const detailsButton = useRef<HTMLButtonElement>(null);
+  // The control that opened the details, so closing them returns there: a citation, a result tab, the Details button.
+  const opener = useRef<HTMLElement | null>(null);
+  // Below 1024 the rail is a drawer over the page; below 1280 the details are. While one covers the page,
+  // everything behind it is inert and Tab stays inside it.
+  const railOver = useMedia("(max-width: 1023px)");
+  const detailsOver = useMedia("(max-width: 1279px)");
+  const drawer = railOpen && railOver;
+  const sheet = panelOpen && detailsOver && !drawer;
   // Details are closed until something asks for them: a citation, a result tab, holdings, or the Details button.
   // Every opening path goes through here, so the panel shows at every width.
-  const showDetails = (next?: Tab, focusId: string | null = null) => {
+  const showDetails = (next?: Tab, focusId: string | null = null, takeFocus = false) => {
+    // The latest trigger outside the details wins, so a second citation clicked beside open details is the one returned to.
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== document.body && !active.closest("#details")) opener.current = active;
+    else if (!panelOpen) opener.current = null;
     if (next) setTab(next);
     setFocus(focusId);
     setPanelOpen(true);
+    // Covering the page, the details take focus; beside the conversation they leave it where it is.
+    if (takeFocus || detailsOver)
+      requestAnimationFrame(() => document.querySelector<HTMLElement>("#details [role=tab][aria-selected=true]")?.focus());
   };
+  const restoreFocus = () =>
+    requestAnimationFrame(() => {
+      const back = opener.current;
+      opener.current = null;
+      (back?.isConnected && back.getClientRects().length && !back.closest("[inert]") ? back : detailsButton.current)?.focus();
+    });
   const closeDetails = () => {
     setPanelOpen(false);
-    requestAnimationFrame(() => detailsButton.current?.focus());
+    restoreFocus();
   };
   const closeRail = () => {
     setRailOpen(false);
     requestAnimationFrame(() => menuButton.current?.focus());
   };
-  // Escape closes the rail drawer first, then the details. The review dialog handles its own keys.
+  // Escape closes the rail drawer first, then the details. Tab cycles inside whichever covers the page.
+  // The review dialog handles its own keys.
   useEffect(() => {
     if (!railOpen && !panelOpen) return;
     const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector("[role=dialog]")) return;
+      if (event.defaultPrevented || document.querySelector("[role=dialog]")) return;
+      if (event.key === "Tab" && (drawer || sheet)) {
+        const box = document.getElementById(drawer ? "rail" : "details");
+        const items = [...(box?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].filter(item => item.getClientRects().length);
+        if (!box || !items.length) return;
+        const inside = box.contains(document.activeElement);
+        if (event.shiftKey && (!inside || document.activeElement === items[0])) {
+          event.preventDefault();
+          items.at(-1)!.focus();
+        } else if (!event.shiftKey && (!inside || document.activeElement === items.at(-1))) {
+          event.preventDefault();
+          items[0].focus();
+        }
+        return;
+      }
+      if (event.key !== "Escape") return;
       if (railOpen) {
         setRailOpen(false);
         requestAnimationFrame(() => menuButton.current?.focus());
       } else {
         setPanelOpen(false);
-        requestAnimationFrame(() => detailsButton.current?.focus());
+        restoreFocus();
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [railOpen, panelOpen]);
+  }, [railOpen, panelOpen, drawer, sheet]);
   const [notice, setNotice] = useState("");
   const [prices, setPrices] = useState<PriceRefresh | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -345,7 +399,7 @@ export default function DeskPage() {
   // Durable conversation: threads, messages and runs live in the backend, never in the cached last answer.
   const conversation = useConversation();
   // The stored result the Details panel reads while a conversation is on screen: the one the investor last opened.
-  const [threadResult, setThreadResult] = useState<{ id: string; analysis: Analysis } | null>(null);
+  const [threadResult, setThreadResult] = useState<{ id: string; analysis: Analysis; revision?: number | null } | null>(null);
   // Which decision each stored result was saved as in this session: artifact ID to decision ID. The decision
   // itself is always read from the decisions list, so a deleted decision is no longer shown as saved.
   // ponytail: kept in memory, so after a reload a result can be saved a second time. Record the artifact ID
@@ -1413,7 +1467,7 @@ export default function DeskPage() {
     : reopened
       ? `Decision · ${shortDate(reopened.saved_at)}`
       : showThread
-        ? "Conversation"
+        ? conversation.thread?.messages.find(message => message.role === "user")?.text || "Conversation"
         : sentLabel
         ? `New cash · ${sentLabel}`
         : sent
@@ -1431,6 +1485,20 @@ export default function DeskPage() {
             : workflow
               ? "New cash"
               : "New conversation";
+  const subjectOf = (analysis: Analysis) =>
+    analysis.stock ? analysis.portfolio.positions.find(row => row.supplied.id === analysis.stock!.position_id)?.supplied.ticker : null;
+  const panelTitle = reopened
+    ? decisionLabel(reopened)
+    : result
+      ? `${WORKFLOW_TITLE[workflowOf(result)]}${subjectOf(result) ? ` · ${subjectOf(result)}` : ""}`
+      : "Your portfolio";
+  const panelSubtitle = reopened
+    ? `Saved ${shortDate(reopened.saved_at)} · as it was then`
+    : result
+      ? `${(showThread ? threadResult?.revision : result.artifact_reference?.revision) ? `Portfolio revision ${showThread ? threadResult?.revision : result.artifact_reference?.revision}` : `Portfolio as of ${fullDate(result.portfolio.holdings_as_of || result.portfolio.as_of)}`} · valued ${shortDate(result.portfolio.reviewed_at)}`
+      : committedSnapshot
+        ? `Portfolio as of ${fullDate(committedSnapshot.as_of)}`
+        : "No portfolio saved yet";
   const holdingsCount =
     committedSnapshot?.positions.filter(row => row.kind !== "cash").length ?? 0;
   const hasFund =
@@ -1541,7 +1609,7 @@ export default function DeskPage() {
 
   /** A stored analysis inside the conversation: the same memo, reading the stored values, with its own save control. */
   function storedResult(analysis: Analysis, reference: ArtifactReference, source: Snapshot) {
-    const open = () => setThreadResult({ id: reference.id, analysis });
+    const open = () => setThreadResult({ id: reference.id, analysis, revision: reference.revision });
     const savedHere = decisions.find(decision => decision.id === savedResults[reference.id]) ?? null;
     return (
       <>
@@ -1567,6 +1635,15 @@ export default function DeskPage() {
           },
         })}
         <div className={threadStyles.save}>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              open();
+              openTab(analysis.reunderwriting ? "proposed" : "evidence");
+            }}
+          >
+            Open details
+          </Button>
           {savedHere ? (
             <span role="status">Saved to Decisions {clock(savedHere.saved_at)}</span>
           ) : (
@@ -1941,6 +2018,7 @@ export default function DeskPage() {
         decisions={decisions}
         registerOpen={registerOpen}
         onClose={closeRail}
+        inert={sheet}
         currentId={reopened?.id ?? saved?.id ?? null}
         threads={conversation.threads}
         threadsError={conversation.threadsError}
@@ -1995,7 +2073,7 @@ export default function DeskPage() {
         onDelete={decision => void deleteDecision(decision)}
         onClearAll={() => void clearDecisions()}
       />
-      <main className={`center${home ? " home" : ""}`}>
+      <main className={`center${home ? " home" : ""}`} inert={drawer || sheet}>
         <header className="ctx">
           <div className="ctx-left">
             <button
@@ -2059,8 +2137,7 @@ export default function DeskPage() {
               aria-expanded={panelOpen}
               aria-controls="details"
               onClick={() => {
-                showDetails();
-                requestAnimationFrame(() => document.querySelector<HTMLElement>("#details [role=tab][aria-selected=true]")?.focus());
+                showDetails(undefined, null, true);
               }}
             >
               Details
@@ -2284,6 +2361,9 @@ export default function DeskPage() {
         tab={tab}
         onTab={openTab}
         onClose={closeDetails}
+        title={panelTitle}
+        subtitle={panelSubtitle}
+        inert={drawer}
         focus={focus}
         snapshot={draftSnapshot}
         setSnapshot={setDraftSnapshot}
@@ -2326,8 +2406,8 @@ export default function DeskPage() {
       <div
         className="scrim"
         onClick={() => {
-          setPanelOpen(false);
-          setRailOpen(false);
+          if (railOpen) closeRail();
+          else closeDetails();
         }}
         aria-hidden="true"
       />

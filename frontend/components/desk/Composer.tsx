@@ -1,5 +1,5 @@
 import { ArrowUp, Slash } from "lucide-react";
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { isThemeCandidate, type NewCashInput, type Position, type Snapshot, type ThemeInput } from "../../lib/contracts";
 import { accountName, fullDate, money, newCashLabel } from "./format";
 import { isConversation, parseMoney } from "./route";
@@ -88,6 +88,14 @@ export default function Composer({
   const [tickerInput, setTickerInput] = useState("");
   const [tickerBusy, setTickerBusy] = useState(false);
   const [tickerError, setTickerError] = useState("");
+  // The question grows with what is typed, up to a few lines, then scrolls.
+  const field = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const element = field.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${element.scrollHeight}px`;
+  }, [question, workflow]);
 
   const slashOpen = !workflow && /^\/\S*$/.test(question);
   const matches = slashOpen ? WORKFLOWS.filter(item => item.cmd.startsWith(question.trim().split(" ")[0] || "/")) : [];
@@ -209,12 +217,16 @@ export default function Composer({
     }
   }
 
-  function keys(event: KeyboardEvent<HTMLInputElement>) {
+  function keys(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (slashOpen && matches.length) {
       if (event.key === "ArrowDown") { event.preventDefault(); setActive(i => (i + 1) % matches.length); }
       if (event.key === "ArrowUp") { event.preventDefault(); setActive(i => (i - 1 + matches.length) % matches.length); }
       if (event.key === "Enter") { event.preventDefault(); choose(active); }
       if (event.key === "Escape") { event.preventDefault(); onQuestion(""); }
+    } else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      // Enter sends, as it did when this was a one-line field; Shift+Enter starts a new line.
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
     } else if (event.key === "Backspace" && !question && workflow) onWorkflow(null);
   }
 
@@ -332,7 +344,7 @@ export default function Composer({
           {workflow === "new-cash" && <span className="prefix">New cash</span>}
           {workflow === "theme" && <span className="prefix">Theme</span>}
           <label htmlFor="ask" className="sr-only">{workflow ? "Question" : "Ask anything, or type / for workflows"}</label>
-          <input id="ask" autoComplete="off" maxLength={1000} value={question} disabled={running} onKeyDown={keys}
+          <textarea id="ask" ref={field} rows={1} autoComplete="off" maxLength={1000} value={question} disabled={running} onKeyDown={keys}
             aria-controls={slashOpen ? "slash-menu" : undefined} aria-expanded={slashOpen}
             placeholder={running ? "Wait for this answer to finish" : workflow === "new-cash" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?") : workflow === "theme" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "Explore a theme against your shortlist.") : inThread ? "Ask a follow-up, or type / for a workflow" : "Ask anything, or type / for a workflow"}
             onChange={event => { onQuestion(event.target.value); setActive(0); }} />

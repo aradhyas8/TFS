@@ -29,6 +29,10 @@ export function evidenceFor(result: Analysis | null, decision: SavedDecision | n
 
 type Props = {
   tab: Tab; onTab: (tab: Tab) => void; onClose: () => void; focus: string | null;
+  /** What the details belong to, and where it came from. */
+  title: string; subtitle: string;
+  /** Set while the rail drawer covers the page. */
+  inert?: boolean;
   snapshot: Snapshot | null; setSnapshot: Dispatch<SetStateAction<Snapshot | null>>; averageCosts: Record<string, string>; unresolved: UnresolvedHolding[];
   onImported: (saved: SavedPortfolio) => void; settings: PortfolioSettings; setSettings: Dispatch<SetStateAction<PortfolioSettings>>;
   benchmark: BenchmarkSetting | null; setBenchmark: Dispatch<SetStateAction<BenchmarkSetting | null>>;
@@ -51,12 +55,17 @@ export default function Panel(props: Props) {
   const { tab, onTab, onClose, result, decision, running } = props;
   const evidence = evidenceFor(result, decision);
   const waiting = running && !result;
-  return <aside className="panel" aria-label="Details" id="details">
-    <div className="tabs" role="tablist" aria-label="Detail views">
-      {tabsFor(result).map(item => <button key={item.id} type="button" role="tab" id={`tab-${item.id}`} aria-controls="tabpanel" className="tab" aria-selected={tab === item.id}
-        onClick={() => onTab(item.id)}>{item.label}{item.id === "evidence" && evidence.items.length > 0 && <span className="m n">{evidence.items.length}</span>}</button>)}
-      <button type="button" className="icon-btn panel-close" aria-label="Close details" onClick={onClose}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg></button>
+  return <aside className="panel" aria-label="Details" id="details" inert={props.inert}>
+    <div className="ptop">
+      <div className="phead">
+        <div className="phead-title"><b>{props.title}</b><span className="cap">{props.subtitle}</span></div>
+        <button type="button" className="icon-btn panel-close" aria-label="Close details" onClick={onClose}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg></button>
+      </div>
+      <div className="tabs" role="tablist" aria-label="Detail views">
+        {tabsFor(result).map(item => <button key={item.id} type="button" role="tab" id={`tab-${item.id}`} aria-controls="tabpanel" className="tab" aria-selected={tab === item.id}
+          onClick={() => onTab(item.id)}>{item.label}{item.id === "evidence" && evidence.items.length > 0 && <span className="m n">{evidence.items.length}</span>}</button>)}
+      </div>
     </div>
     <div className="pbody" role="tabpanel" id="tabpanel" aria-labelledby={`tab-${tab}`}>
       {tab === "evidence" && (waiting ? <Pending what="Evidence" /> : <EvidenceTab {...evidence} focus={props.focus} result={result} decision={decision} snapshot={props.snapshot} />)}
@@ -67,6 +76,9 @@ export default function Panel(props: Props) {
     </div>
   </aside>;
 }
+
+// Where a source came from. Filings and issuer material are retrieved by the analyst, never from a web search.
+const KIND: Record<string, string> = { sec: "SEC filing", sedar: "SEDAR+ filing", sedar_plus: "SEDAR+ filing", issuer: "Issuer material", macro: "Market data" };
 
 const Pending = ({ what }: { what: string }) => <p className="cap">{what} open{what.startsWith("The ") ? "s" : ""} when the answer arrives.</p>;
 const NotSaved = ({ what }: { what: string }) => <p className="cap">{what} weren&apos;t saved with this decision. Re-run with today&apos;s portfolio to see them.</p>;
@@ -81,17 +93,17 @@ function EvidenceTab({ items, missing, numbers, focus, result, decision, snapsho
     {decision && <p className="cap">As saved on {shortDate(decision.saved_at)}. Sources may have been updated since.</p>}
     {items.length === 0 && <p className="cap">{decision ? "No sources were saved with this decision." : result?.allocation ? "No filings were researched for this answer. The analyst used your snapshot and the screen below."
       : "No filings were researched for this answer. The values rest on the prices and rates below."}</p>}
-    {items.length > 0 && <div className="ev-list" style={{ margin: "0 -8px" }}>{items.map(item => <div ref={item.id === focus ? focused : undefined} key={item.id} className={`ev${item.id === focus ? " focus" : ""}`}>
-      <span className="num">{numbers.get(item.id)}</span>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div><div>{item.title}</div><div className="cap">{item.source} · {shortDate(item.date)}</div></div>
+    {items.length > 0 && <div className="ev-list">{items.map(item => <div ref={item.id === focus ? focused : undefined} key={item.id} className={`ev${item.id === focus ? " focus" : ""}`} aria-current={item.id === focus || undefined}>
+      <span className="ct">{numbers.get(item.id)}</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+        <div><div className="ev-title">{item.title}</div><div className="cap">{KIND[item.source] ?? item.source} · {shortDate(item.date)}</div></div>
         {item.excerpt && (item.id === focus || items.length <= 2) && <blockquote>&ldquo;{item.excerpt}&rdquo;</blockquote>}
-        {item.facts.length > 0 && item.id === focus && <ul className="cap" style={{ listStyle: "none", display: "flex", flexDirection: "column", gap: 4 }}>{item.facts.map(fact => <li key={fact}>{fact}</li>)}</ul>}
+        {item.facts.length > 0 && item.id === focus && <ul className="fx n" aria-label="Facts from this source">{item.facts.map(fact => <li key={fact} className="chip">{fact}</li>)}</ul>}
         {item.url && /^https?:\/\//.test(item.url) && <a className="cap" href={item.url} target="_blank" rel="noreferrer">Open source ↗ <span className="m">(new tab)</span></a>}
       </div>
     </div>)}</div>}
-    {missing.length > 0 && <div className="pgroup"><span className="lbl">Looked for, not found</span>
-      {missing.map(item => <div key={item.id} className="ev"><span className="m">—</span><div><div className="m">{item.title}</div><div className="cap">{item.source} · {shortDate(item.date)}</div></div></div>)}
+    {missing.length > 0 && <div className="nf"><span className="lbl">Looked for, not found</span>
+      {missing.map(item => <div key={item.id}><span>{item.title}</span> <span className="cap">· {KIND[item.source] ?? item.source} · {shortDate(item.date)}</span></div>)}
       <p className="cap">Missing sources are listed so you can judge what the answer couldn&apos;t see.</p></div>}
     {result && !decision && <Valuation result={result} />}
     {target?.mark && <div className="pgroup pnote"><span className="lbl">Your price</span>

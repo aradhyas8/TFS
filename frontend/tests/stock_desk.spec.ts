@@ -200,7 +200,8 @@ test("an unowned stock candidate runs Stock Analysis with price source, no-cash 
   // Holdings tab in details panel excludes unowned candidate row
   const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
-  await expect(details).not.toContainText("NVDA");
+  // The header names the analysis; the holdings below it must not list the candidate.
+  await expect(details.getByRole("tabpanel")).not.toContainText("NVDA");
 
   // Saved portfolio is never mutated
   await page.waitForTimeout(600);
