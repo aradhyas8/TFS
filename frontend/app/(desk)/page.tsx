@@ -37,6 +37,7 @@ import {
   type ThemeInput,
   type UnresolvedHolding,
 } from "../../lib/contracts";
+import Connection from "../../components/desk/Connection";
 import Rail, { type DeskView } from "../../components/desk/Rail";
 import Composer from "../../components/desk/Composer";
 import Register from "../../components/desk/Register";
@@ -2127,6 +2128,7 @@ export default function DeskPage() {
         onDecisions={() => openView("decisions")}
       />
       <main className={`center${home ? " home" : ""}${view !== "chat" ? " viewing" : ""}`} inert={drawer || sheet}>
+        <Connection />
         {view === "portfolio" ? (
           <PortfolioView
             menu={menuBtn}

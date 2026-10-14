@@ -12,25 +12,38 @@ python -m venv .venv
 Copy-Item backend/.env.example backend/.env
 ```
 
-Set `OPENAI_API_KEY` and `OPENAI_MODEL` in **backend/.env**. Choose a model available to your account that supports Responses API function calling and structured outputs. No model is silently selected. Never put credentials in frontend files or `NEXT_PUBLIC_*` variables.
-
-`backend/requirements-dev.lock` records the exact verified dependency versions. For a matching environment, install it with `python -m pip install -r backend/requirements-dev.lock` inside the virtualenv, then install the project with `python -m pip install --no-deps -e backend`. The frontend uses `package-lock.json` with `npm ci`.
-
-Start FastAPI in one terminal:
+Install frontend dependencies once, then start both services from the repository root:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn analyst.api:app --app-dir backend --host 127.0.0.1 --port 8000
-```
-
-Start Next.js in another:
-
-```powershell
-cd frontend
-npm ci
+npm --prefix frontend ci
 npm run dev
 ```
 
-Open http://localhost:3000. Without backend credentials, portfolio entry and CSV loading work, and question submission returns an explicit configuration error. The deployed application runs independently of Codex.
+Open http://localhost:3000. The launcher uses the existing root `.venv` and `frontend/node_modules`, starts FastAPI on **127.0.0.1:8000** and Next.js on **localhost:3000**, labels their logs, waits for `/api/health`, and announces when both services are ready. **Ctrl+C stops both.** It checks dependencies and ports before starting, reports startup failures, and shuts down its other service if one exits. It never kills a process merely because it owns a port. It does not reinstall packages. On Windows, Uvicorn drains through a private temporary stop file; the owned Next.js process tree is terminated. An unresponsive backend gets a five-second shutdown grace period before the launcher terminates its owned tree.
+
+For macOS/Linux first-time setup:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -e './backend[dev]'
+cp backend/.env.example backend/.env
+npm --prefix frontend ci
+npm run dev
+```
+
+The launcher supports those platforms, but **ChatGPT credential storage currently requires native Windows DPAPI**. Run the backend in Windows rather than WSL for ChatGPT sign-in, or use the API-key provider on macOS/Linux. Cross-platform startup has automated failure coverage; real startup was verified on Windows only.
+
+`backend/requirements-dev.lock` records verified Python dependency versions. For a matching environment, install it with the virtualenv Python and `-m pip install -r backend/requirements-dev.lock`, then install `backend` with `--no-deps -e backend`. The frontend uses its existing package lock with `npm --prefix frontend ci`.
+
+### Connect AI
+
+A new installation with no explicit provider and no API key starts with ChatGPT plan selected. Click **Continue with ChatGPT**, finish the browser authorization, choose a model from the account's supported catalog, and click **Use ChatGPT plan**. No terminal login is required. Reopening TFS recognizes the encrypted saved connection; **Refresh connection** renews an expired access token or retrieves the model catalog, and **Reconnect ChatGPT** recovers revoked/expired sessions or missing plan permission. Manage app limits and access in [ChatGPT Settings](https://chatgpt.com/#settings).
+
+The browser receives account display information, model choices and connection state only. OAuth codes, PKCE, access/refresh/ID tokens and storage stay on the backend. TFS never reads Codex CLI credentials. This enables supported ChatGPT-plan Responses inference through TFS; it does not integrate the Codex coding agent or import ChatGPT conversations.
+
+To use a backend API key, set `OPENAI_API_KEY` and `OPENAI_MODEL` in **backend/.env**, restart, and select **Use API-key provider**. Choose an account-supported Responses model with function calling and structured outputs. Never put credentials in frontend files or `NEXT_PUBLIC_*`. An explicit `LLM_PROVIDER` always determines the startup provider; without it, a saved browser selection wins over the inferred default. Browser provider/model changes take effect for subsequent AI requests without restarting and are rejected while AI work or sign-in is active. Finish or cancel it first. Signing in does not silently switch an explicitly selected API provider.
+
+Portfolio viewing, editing and proposal confirmation do not require AI authentication. Only AI requests need a configured working provider. Keep both servers bound to loopback; this workflow is for a personal local installation, not public hosting. Details, security review and test evidence: [developer connection notes](docs/dev-chatgpt/README.md).
 
 For production, set the Next.js server's `BACKEND_URL` **before building**, run `npm run build`, then `npm start`. The default is `http://127.0.0.1:8000`. Run FastAPI separately; Next.js forwards `/api/*` to it on the server. Only the backend owns OpenAI credentials. These instructions target a local personal app; remote public hosting is outside ticket 01.
 

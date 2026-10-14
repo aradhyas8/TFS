@@ -105,7 +105,7 @@ def test_llm_provider_chatgpt_plan_uses_the_oauth_token_and_keeps_openai_availab
     monkeypatch.setattr(chatgpt_plan, "access_token", lambda: "oauth-access")
     monkeypatch.setenv("LLM_PROVIDER", "chatgpt_plan")
     plan = Settings.from_environment()
-    assert (plan.provider, plan.api_key, plan.model, plan.base_url, plan.request_timeout) == ("chatgpt_plan", "oauth-access", "gpt-6-luna", "https://api.openai.com/v1", 170.0)
+    assert (plan.provider, plan.api_key, plan.model, plan.base_url, plan.request_timeout) == ("chatgpt_plan", "", "gpt-6-luna", "https://api.openai.com/v1", 170.0)
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     assert (Settings.from_environment().provider, Settings.from_environment().api_key) == ("openai", "sk-openai")
 

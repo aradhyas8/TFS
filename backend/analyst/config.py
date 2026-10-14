@@ -30,16 +30,11 @@ class Settings:
             raise ValueError("Invalid OpenAI timeout.")
         if timeout <= 0 or timeout > 170:
             raise ValueError("Invalid OpenAI timeout.")
-        provider = os.environ.get("LLM_PROVIDER", "openai").strip().lower() or "openai"
+        provider = os.environ.get("LLM_PROVIDER", "").strip().lower() or ("openai" if os.environ.get("OPENAI_API_KEY") else "chatgpt_plan")
         if provider not in {"openai", "openrouter", "chatgpt_plan"}:
             raise ValueError("Invalid LLM provider.")
         if provider == "chatgpt_plan":
-            from .chatgpt_plan import PlanError, access_token
-            try:
-                token = access_token()  # refreshed (and the refresh token rotated) when near expiry
-            except PlanError:
-                token = ""  # not signed in or the grant is unusable: the API reports the model as unconfigured
-            return cls(api_key=token, model=os.environ.get("CHATGPT_PLAN_MODEL", ""), reasoning_effort=cast(ReasoningEffort, effort),
+            return cls(api_key="", model=os.environ.get("CHATGPT_PLAN_MODEL", ""), reasoning_effort=cast(ReasoningEffort, effort),
                        request_timeout=timeout, provider="chatgpt_plan")
         if provider == "openrouter":
             return cls(api_key=os.environ.get("OPENROUTER_API_KEY", ""), model=os.environ.get("OPENROUTER_MODEL", ""),
