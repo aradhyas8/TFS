@@ -277,7 +277,7 @@ def _login(cancel: threading.Event) -> None:
             self.send_header("Cache-Control", "no-store")
             self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
-            self.wfile.write(b"TFS: sign-in received. You can close this tab.")
+            self.wfile.write(b"TFS: sign-in received. Return to TFS to check the connection and choose a model. You can close this tab.")
 
         def log_message(self, *args: Any) -> None:  # the callback query carries the code: never log it
             pass

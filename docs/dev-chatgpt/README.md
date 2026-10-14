@@ -83,3 +83,9 @@ The full browser run's source guard detected API-key configuration names in fron
 Browser tests use dedicated ChatGPT fixture storage so they cannot read the developer's saved TFS connection. The original checkout and its uncommitted UI work were left intact. Both review findings were fixed and confirmed separately by the reviewers.
 
 A final real Windows browser smoke test used empty, isolated auth/portfolio directories with `npm run dev`: both services became ready, the browser displayed Continue with ChatGPT, and the actual Next.js proxy returned HTTP 200 with disconnected ChatGPT status and no OAuth secret fields. No login or inference was attempted. [Real disconnected local app screenshot](screenshots/real-disconnected.png).
+
+## Real-account follow-up
+
+A user-driven sign-in reached the callback and saved the existing registration. The user reported an authorization-update email under the legacy Greedy registration name. The subsequent authenticated public `/v1/models` request repeatedly returned a Cloudflare HTTP 520 HTML response; an unauthenticated control request returned the expected HTTP 401. No inference success is claimed.
+
+TFS now preserves the saved login, reports the specific safe HTTP status as unavailable, and offers Refresh connection without requiring repeated sign-in. The callback text asks users to return to TFS to check connection status and select a model. A regression test covers HTTP 520, absence of response-body secrets, and recovery when the catalog becomes available. Focused auth/transport suite: 26 passed; mypy and Ruff passed. Recommendation remains CONDITIONAL GO, with live model discovery/inference blocked until the upstream failure is resolved.

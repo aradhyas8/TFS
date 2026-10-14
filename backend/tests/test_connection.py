@@ -49,6 +49,8 @@ def oauth(monkeypatch, tmp_path):
             return httpx.Response(200, json={"keys": [{"kid": "test", "kty": "RSA", "n": key['n'].replace('+', '-').replace('/', '_').rstrip('='), "e": "AQAB"}]})
         if url == f"{plan.RESOURCE}/models":
             assert kwargs["headers"]["Authorization"] == "Bearer dummy-access"
+            if state.get("catalog_status"):
+                return httpx.Response(state["catalog_status"], request=httpx.Request("GET", url), text="dummy-access dummy-refresh")
             return httpx.Response(200, request=httpx.Request("GET", url), json={"models": [
                 {"slug": "supported-test-model", "display_name": "Supported model", "visibility": "list"},
                 {"slug": "hidden-model", "visibility": "hide"}]})
@@ -264,3 +266,19 @@ def test_plan_service_errors_never_expose_provider_secrets(oauth, caplog):
         assert result['status'] == 'failed'
         for secret in ['dummy-access', 'dummy-refresh', 'dummy-id']:
             assert secret not in json.dumps(result) + caplog.text
+
+
+def test_catalog_upstream_failure_keeps_login_and_explains_safe_retry(oauth):
+    oauth['catalog_status'] = 520
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        client.post('/api/ai/login', headers=LOCAL)
+        status = wait_login(client)
+        assert status['state'] == 'unavailable'
+        assert status['account'] == 'investor@example.test'
+        assert 'HTTP 520' in status['message']
+        assert 'Refresh connection' in status['message']
+        assert 'dummy-access' not in json.dumps(status)
+        oauth['catalog_status'] = 0
+        recovered = client.post('/api/ai/refresh', headers=LOCAL).json()
+        assert recovered['state'] == 'connected'
+        assert recovered['models'][0]['slug'] == 'supported-test-model'

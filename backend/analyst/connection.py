@@ -52,6 +52,7 @@ class Connection:
         self.task: asyncio.Task[None] | None = None
         self.cancel = threading.Event()
         self.error: str | None = None
+        self.error_state = "failed"
         self.catalog: list[dict[str, Any]] = []
         try:
             saved = json.loads((plan.home() / "selection.json").read_text())
@@ -84,7 +85,7 @@ class Connection:
         if self.task and not self.task.done():
             state, message = "connecting", "Complete sign-in in the browser window."
         elif self.error:
-            state, message = "failed", self.error
+            state, message = self.error_state, self.error
         return {"provider": self.provider, "model": self.model, "state": state, "message": message,
                 "account": account, "models": self.catalog,
                 "api_provider": self.api_settings.provider, "api_key_available": bool(self.api_settings.api_key and self.api_settings.model)}
@@ -107,6 +108,7 @@ class Connection:
 
     async def refresh(self) -> dict[str, Any]:
         self.catalog = []
+        self.error_state = "failed"
         try:
             self.catalog = await asyncio.to_thread(plan.models)
             self.error = None
@@ -117,8 +119,16 @@ class Connection:
                 "invalid_grant": "Session expired or revoked. Reconnect with ChatGPT.",
                 "unsupported_storage": "Use native Windows for ChatGPT sign-in, or choose the API-key provider.",
             }.get(exc.code, "ChatGPT connection failed. Reconnect to recover.")
-        except (httpx.HTTPError, OSError, ValueError, KeyError):
-            self.error = "ChatGPT is unavailable. Retry the connection when online."
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code
+            self.error_state = "unavailable" if code >= 500 else "expired" if code == 401 else "failed"
+            self.error = (f"Your login is saved, but OpenAI's model catalog is unavailable (HTTP {code}). Use Refresh connection to retry; you do not need to sign in again."
+                          if code >= 500 else f"OpenAI rejected the model catalog request (HTTP {code}). Reconnect ChatGPT and check plan permissions.")
+        except httpx.RequestError:
+            self.error_state = "unavailable"
+            self.error = "Your login is saved, but the backend could not reach OpenAI's model catalog. Check the connection and use Refresh connection to retry."
+        except (OSError, ValueError, KeyError):
+            self.error = "The saved connection or model catalog could not be read. Use Refresh connection to retry."
         return self.status()
 
     async def sign_in(self) -> None:
