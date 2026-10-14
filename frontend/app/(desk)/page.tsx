@@ -1,6 +1,6 @@
 "use client";
 
-import { Banknote, ChartPie, Lightbulb, Menu, Scale, TrendingUp } from "lucide-react";
+import { Banknote, Bookmark, ChartPie, Lightbulb, Menu, Scale, TrendingUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   BENCHMARK_FUND,
@@ -36,11 +36,13 @@ import {
   type ThemeInput,
   type UnresolvedHolding,
 } from "../../lib/contracts";
-import Rail from "../../components/desk/Rail";
+import Rail, { type DeskView } from "../../components/desk/Rail";
 import Composer from "../../components/desk/Composer";
 import Register from "../../components/desk/Register";
 import Panel, { evidenceFor, ImportCsv } from "../../components/desk/Panel";
 import PortfolioPreview from "../../components/desk/PortfolioPreview";
+import PortfolioView from "../../components/desk/PortfolioView";
+import { draftEdits, ruleChecks, valuationFor } from "../../components/desk/portfolio";
 import {
   Answer,
   Clarify,
@@ -310,14 +312,19 @@ export default function DeskPage() {
   const [run, setRun] = useState<(Sent & { id: number; startedAt: number }) | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [past, setPast] = useState<number[]>([]);
-  const [answer, setAnswer] = useState<(Sent & { analysis: Analysis }) | null>(null);
+  // A committed answer keeps the revision it was computed from, so it never values a later revision.
+  const [answer, setAnswer] = useState<(Sent & { analysis: Analysis; revision?: number | null }) | null>(null);
   const [failure, setFailure] = useState<(Sent & { message: string }) | null>(null);
   const [clarify, setClarify] = useState<Extract<Route, { kind: "clarify" }> | null>(null);
   const [saved, setSaved] = useState<SavedDecision | null>(null);
   const [saving, setSaving] = useState(false);
   const [decisions, setDecisions] = useState<SavedDecision[]>([]);
   const [reopened, setReopened] = useState<SavedDecision | null>(null);
-  const [registerOpen, setRegisterOpen] = useState(false);
+  // Portfolio and Decisions are views of their own; the conversation is the default. Any step that starts or
+  // opens something in the conversation returns to it.
+  const [view, setView] = useState<DeskView>("chat");
+  const viewOpen = view !== "chat";
+  const [decisionsState, setDecisionsState] = useState<"loading" | "ready" | "failed">("loading");
   const [tab, setTab] = useState<Tab>("holdings");
   const [focus, setFocus] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -399,7 +406,7 @@ export default function DeskPage() {
   // Durable conversation: threads, messages and runs live in the backend, never in the cached last answer.
   const conversation = useConversation();
   // The stored result the Details panel reads while a conversation is on screen: the one the investor last opened.
-  const [threadResult, setThreadResult] = useState<{ id: string; analysis: Analysis; revision?: number | null } | null>(null);
+  const [threadResult, setThreadResult] = useState<{ id: string; analysis: Analysis; revision?: number | null; basis?: ArtifactReference["basis"] } | null>(null);
   // Which decision each stored result was saved as in this session: artifact ID to decision ID. The decision
   // itself is always read from the decisions list, so a deleted decision is no longer shown as saved.
   // ponytail: kept in memory, so after a reload a result can be saved a second time. Record the artifact ID
@@ -492,6 +499,7 @@ export default function DeskPage() {
     get<SavedDecision[]>("/api/decisions")
       .then(loaded => {
         setDecisions(loaded);
+        setDecisionsState("ready");
         const map: Record<string, string> = {};
         for (const d of loaded) {
           if (d.artifact_id) {
@@ -500,7 +508,10 @@ export default function DeskPage() {
         }
         setSavedResults(prev => ({ ...prev, ...map }));
       })
-      .catch(() => setNotice("Saved decisions couldn't be loaded."));
+      .catch(() => {
+        setDecisionsState("failed");
+        setNotice("Saved decisions couldn't be loaded.");
+      });
     refreshProposals();
   }, []);
 
@@ -586,6 +597,14 @@ export default function DeskPage() {
     }
   }
 
+  // The portfolio view's values: only an analysis of exactly the committed revision. The stored result on
+  // screen comes first, then the last desk answer, each by the revision it names.
+  // Its rule checks count only while they were made against the rules committed now.
+  const valued =
+    valuationFor(threadResult?.analysis ?? null, threadResult ?? null, committedRevision, committedSnapshot) ??
+    valuationFor(answer?.analysis ?? null, { revision: answer?.revision, basis: answer?.analysis.artifact_reference?.basis }, committedRevision, committedSnapshot);
+  const valuation = valued && { ...valued, guardrails: ruleChecks(valued, committedSettings) };
+  const edits = draftEdits(committedPortfolio, { snapshot: draftSnapshot, settings: draftSettings, benchmark: draftBenchmark });
   const isDirty = isDraftDirty(committedPortfolio, {
     snapshot: draftSnapshot,
     settings: draftSettings,
@@ -736,7 +755,7 @@ export default function DeskPage() {
   }
 
   const showThread =
-    !registerOpen && !reopened && !run && !clarify && !failure && (!!conversation.openId || !!conversation.pending);
+    !viewOpen && !reopened && !run && !clarify && !failure && (!!conversation.openId || !!conversation.pending);
   const result = (showThread ? threadResult?.analysis : answer?.analysis) ?? null;
   const evidence = evidenceFor(reopened ? null : result, reopened);
   const cite = {
@@ -748,6 +767,7 @@ export default function DeskPage() {
   /** Ordinary analysis uses COMMITTED portfolio state */
   async function analyze(sent: Sent) {
     if (!committedSnapshot) return;
+    const revision = committedRevision;
     const id = ++runId.current;
     const startedAt = Date.now();
     conversation.close();
@@ -758,7 +778,7 @@ export default function DeskPage() {
     setClarify(null);
     setSaved(null);
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
     setCollapsed(true);
     setNotice("");
     try {
@@ -819,11 +839,11 @@ export default function DeskPage() {
       });
       if (runId.current !== id) return;
       if (analysis.status !== "completed") throw new Error("The analysis was not completed.");
-      setAnswer({ ...sent, analysis });
+      setAnswer({ ...sent, analysis, revision });
       setTab(sent.rebalance ? "proposed" : "evidence");
       setFocus(null);
       try {
-        localStorage.setItem(ANSWER_KEY, JSON.stringify({ ...sent, analysis }));
+        localStorage.setItem(ANSWER_KEY, JSON.stringify({ ...sent, analysis, revision }));
       } catch {
         /* memory only */
       }
@@ -882,7 +902,7 @@ export default function DeskPage() {
     setClarify(null);
     setSaved(null);
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
     setCollapsed(true);
     setNotice("");
 
@@ -1131,10 +1151,34 @@ export default function DeskPage() {
     setFailure(null);
     setClarify(null);
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
     setWorkflow(null);
     setCollapsed(false);
     setNotice("");
+    setRailOpen(false);
+  }
+
+  /** Portfolio or Decisions in place of the conversation. What the conversation showed is kept for the way back. */
+  function openView(next: "portfolio" | "decisions") {
+    setView(next);
+    setPanelOpen(false);
+    setRailOpen(false);
+    setFocus(null);
+    requestAnimationFrame(() => document.getElementById(`${next}-title`)?.focus());
+  }
+
+  function backToChat() {
+    setView("chat");
+    requestAnimationFrame(() => document.getElementById("ask")?.focus());
+  }
+
+  /** A saved decision, as it was saved, with its evidence in the details. */
+  function openDecision(decision: SavedDecision) {
+    setView("chat");
+    setReopened(decision);
+    setClarify(null);
+    setTab("evidence");
+    setFocus(null);
     setRailOpen(false);
   }
 
@@ -1147,7 +1191,7 @@ export default function DeskPage() {
     // A question asked from another view (the register, a workflow answer) starts a new conversation
     // rather than landing in a thread that is not on screen.
     // Asked from the new conversation already on screen, it stays in that same view.
-    if (!showThread) conversation.close(registerOpen || !!reopened || !!run || !!clarify || !!failure || !!answer);
+    if (!showThread) conversation.close(viewOpen || !!reopened || !!run || !!clarify || !!failure || !!answer);
     showConversation();
     void sendToConversation(text.trim());
   }
@@ -1247,7 +1291,7 @@ export default function DeskPage() {
     setQuestion(`/stock ${position.ticker}`);
     setRailOpen(false);
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
     setCollapsed(false);
     setTimeout(() => document.getElementById("ask")?.focus(), 0);
   }
@@ -1366,7 +1410,7 @@ export default function DeskPage() {
     setClarify(null);
     setSaved(null);
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
     conversation.close();
     try {
       localStorage.removeItem(ANSWER_KEY);
@@ -1384,7 +1428,7 @@ export default function DeskPage() {
 
   function rerunDecision(decision: SavedDecision) {
     setReopened(null);
-    setRegisterOpen(false);
+    setView("chat");
 
     if (decision.workflow === "review") {
       setWorkflow(null);
@@ -1462,9 +1506,7 @@ export default function DeskPage() {
       : null;
   const sentStock = tickerOf(sent?.stock, sent?.candidate);
   const sentLabel = sent?.newCash && newCashLabel(sent.newCash, committedSnapshot);
-  const ctxLabel = registerOpen
-    ? "Decisions Register"
-    : reopened
+  const ctxLabel = reopened
       ? `Decision · ${shortDate(reopened.saved_at)}`
       : showThread
         ? conversation.thread?.messages.find(message => message.role === "user")?.text || "Conversation"
@@ -1609,7 +1651,7 @@ export default function DeskPage() {
 
   /** A stored analysis inside the conversation: the same memo, reading the stored values, with its own save control. */
   function storedResult(analysis: Analysis, reference: ArtifactReference, source: Snapshot) {
-    const open = () => setThreadResult({ id: reference.id, analysis, revision: reference.revision });
+    const open = () => setThreadResult({ id: reference.id, analysis, revision: reference.revision, basis: reference.basis });
     const savedHere = decisions.find(decision => decision.id === savedResults[reference.id]) ?? null;
     return (
       <>
@@ -1716,22 +1758,7 @@ export default function DeskPage() {
     </div>
   );
   let center;
-  if (registerOpen)
-    center = (
-      <Register
-        decisions={decisions}
-        onOpen={decision => {
-          setRegisterOpen(false);
-          setReopened(decision);
-          setClarify(null);
-          setTab("evidence");
-          setFocus(null);
-          setRailOpen(false);
-        }}
-        onClose={() => setRegisterOpen(false)}
-      />
-    );
-  else if (reopened)
+  if (reopened)
     center = (
       <Historical
         decision={reopened}
@@ -1893,7 +1920,7 @@ export default function DeskPage() {
 
   // The home screen: no answer, conversation or decision is open, so the composer sits in the middle of the page.
   const home =
-    !registerOpen && !reopened && !run && !clarify && !failure && !showThread && !answer && !restoring;
+    !viewOpen && !reopened && !run && !clarify && !failure && !showThread && !answer && !restoring;
   const blockedByIdentity = committedUnresolved.length > 0;
   const rulesSet = [
     committedSettings.single_company_cap && `Cap ${pct(committedSettings.single_company_cap)}`,
@@ -2001,6 +2028,21 @@ export default function DeskPage() {
     </div>
   );
 
+  const menuBtn = (
+    <button
+      type="button"
+      className="icon-btn menu-btn"
+      ref={menuButton}
+      aria-label="Open portfolio and decisions"
+      onClick={() => {
+        setRailOpen(true);
+        requestAnimationFrame(() => document.querySelector<HTMLElement>("#rail .rail-close")?.focus());
+      }}
+    >
+      <Menu size={18} aria-hidden="true" />
+    </button>
+  );
+
   return (
     <div
       className={`desk${panelOpen ? " panel-open" : ""}${railOpen ? " rail-open" : ""}`}
@@ -2010,16 +2052,12 @@ export default function DeskPage() {
       </a>
       <Rail
         snapshot={committedSnapshot}
-        unresolved={committedUnresolved}
-        settings={committedSettings}
-        result={result}
         revision={committedRevision}
-        pending={pendingProposals.length}
-        decisions={decisions}
-        registerOpen={registerOpen}
+        waiting={committedUnresolved.length + pendingProposals.length}
+        unconfirmed={decisions.filter(decision => !decision.confirmed_action).length}
+        view={view}
         onClose={closeRail}
         inert={sheet}
-        currentId={reopened?.id ?? saved?.id ?? null}
         threads={conversation.threads}
         threadsError={conversation.threadsError}
         threadId={showThread ? conversation.openId : null}
@@ -2050,44 +2088,58 @@ export default function DeskPage() {
             : null
         }
         onNew={startOver}
-        onHoldings={() => {
-          openTab("holdings");
-          setRailOpen(false);
-        }}
-        onOpen={decision => {
-          setRegisterOpen(false);
-          setReopened(decision);
-          setClarify(null);
-          setTab("evidence");
-          setFocus(null);
-          setRailOpen(false);
-        }}
-        onAllDecisions={() => {
-          setReopened(null);
-          setRegisterOpen(true);
-          setClarify(null);
-          setFocus(null);
-          setRailOpen(false);
-        }}
-        onStock={offerStock}
-        onDelete={decision => void deleteDecision(decision)}
-        onClearAll={() => void clearDecisions()}
+        onPortfolio={() => openView("portfolio")}
+        onDecisions={() => openView("decisions")}
       />
-      <main className={`center${home ? " home" : ""}`} inert={drawer || sheet}>
+      <main className={`center${home ? " home" : ""}${view !== "chat" ? " viewing" : ""}`} inert={drawer || sheet}>
+        {view === "portfolio" ? (
+          <PortfolioView
+            menu={menuBtn}
+            restoring={restoring}
+            notice={notice}
+            revision={committedRevision}
+            committed={committedPortfolio}
+            unresolved={committedUnresolved}
+            draft={draftSnapshot}
+            setDraft={setDraftSnapshot}
+            settings={draftSettings}
+            setSettings={setDraftSettings}
+            benchmark={draftBenchmark}
+            setBenchmark={setDraftBenchmark}
+            valuation={valuation}
+            prices={prices}
+            refreshing={refreshing}
+            onRefreshPrices={() => void refreshPrices(true)}
+            isDirty={isDirty}
+            edits={edits}
+            reviewing={reviewing}
+            running={!!run}
+            onReviewChanges={reviewChanges}
+            onDiscardDraft={discardDraft}
+            onAnalyzeDraft={() => void analyzeHypotheticalDraft()}
+            pending={pendingProposals}
+            onReopenProposal={openProposal}
+            onCancelProposal={id => void cancelPendingProposal(id)}
+            onProposal={handleProposal}
+            onError={setNotice}
+            onStock={offerStock}
+            onReview={() => review("Review my portfolio")}
+            onBack={backToChat}
+          />
+        ) : view === "decisions" ? (
+          <Register
+            menu={menuBtn}
+            decisions={decisions}
+            state={decisionsState}
+            onOpen={openDecision}
+            onDelete={decision => void deleteDecision(decision)}
+            onClearAll={() => void clearDecisions()}
+            onBack={backToChat}
+          />
+        ) : (<>
         <header className="ctx">
           <div className="ctx-left">
-            <button
-              type="button"
-              className="icon-btn menu-btn"
-              ref={menuButton}
-              aria-label="Open portfolio and decisions"
-              onClick={() => {
-                setRailOpen(true);
-                requestAnimationFrame(() => document.querySelector<HTMLElement>("#rail .rail-close")?.focus());
-              }}
-            >
-<Menu size={18} aria-hidden="true" />
-            </button>
+            {menuBtn}
             <span>{ctxLabel}</span>
           </div>
           <div className="ctx-right">
@@ -2130,6 +2182,12 @@ export default function DeskPage() {
                   {saving ? "Saving…" : "Save decision"}
                 </button>
               ))}
+            {reopened && (
+              <button type="button" className="btn ghost small" onClick={() => openView("decisions")}>
+                <Bookmark size={15} aria-hidden="true" />
+                All decisions
+              </button>
+            )}
             <button
               type="button"
               ref={detailsButton}
@@ -2214,7 +2272,7 @@ export default function DeskPage() {
             )}
             {!run && !reopened && committedUnresolved.length > 0 && committedSnapshot && (
               <p className="amber" style={{ marginBottom: 16 }}>
-                <button type="button" className="link amber" onClick={() => openTab("holdings")}>
+                <button type="button" className="link amber" onClick={() => openView("portfolio")}>
                   Identify {committedUnresolved.length} holding
                   {committedUnresolved.length === 1 ? "" : "s"}
                 </button>{" "}
@@ -2297,7 +2355,7 @@ export default function DeskPage() {
               </div>
             )}
             {center}
-            {!showThread && !run && !reopened && !registerOpen && !clarify && !failure && draftBasis}
+            {!showThread && !run && !reopened && !viewOpen && !clarify && !failure && draftBasis}
             <p className="sr-only" aria-live="polite">
               {result && !run ? "Answer ready." : ""}
             </p>
@@ -2356,6 +2414,7 @@ export default function DeskPage() {
           />
         )}
         {homeBelow}
+        </>)}
       </main>
       <Panel
         tab={tab}

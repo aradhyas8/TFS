@@ -285,7 +285,7 @@ function PriceStatus({ prices, refreshing, disabled, onRefresh }: { prices: Pric
 }
 
 /** Asks only for what is missing: the exchange, the security type, or both. */
-function Identify({
+export function Identify({
   row,
   snapshot,
   disabled,
@@ -497,19 +497,7 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
   if (!snapshot) return <p className="cap">Import a portfolio to see holdings.</p>;
   const review = result?.portfolio;
   const editable = !running;
-  function updateBaseline(category: keyof Baseline, fraction: string | null) {
-    setSettings(s => {
-      const currentBaseline = s.baseline || {};
-      const nextBaseline: Baseline = { ...currentBaseline, [category]: fraction };
-      const hasAny = Object.values(nextBaseline).some(v => v !== undefined && v !== null);
-      return { ...s, baseline: hasAny ? nextBaseline : null };
-    });
-  }
-  const baselineSum = ["stocks", "diversified_etfs", "sector_theme_etfs", "cash"].reduce((acc, key) => {
-    const v = settings.baseline?.[key as keyof Baseline];
-    return acc + (v ? Number(v) : 0);
-  }, 0);
-  const baselineOver = baselineSum > 1.00001;
+  const over = baselineOver(settings);
 
   return <>
     {decision && <p className="cap">Today&apos;s portfolio. Historical weights weren&apos;t saved with this decision.</p>}
@@ -566,7 +554,7 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
                 type="button"
                 className="btn primary small"
                 data-testid="review-changes"
-                disabled={!editable || reviewing || baselineOver}
+                disabled={!editable || reviewing || over}
                 onClick={onReviewChanges}
               >
                 {reviewing ? "Reviewing…" : "Review changes"}
@@ -604,55 +592,8 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
     <p className="cap pnote">{review ? `Valued ${shortDate(review.reviewed_at)} from your portfolio as of ${fullDate(review.as_of)}.` : `Portfolio as of ${fullDate(snapshot.as_of)}. Prices, values and weights come back with the analysis.`}
       {snapshot.fx.map(fx => ` ${fx.from_currency}/${fx.to_currency} ${fx.rate}.`)}</p>
 
-    <fieldset className="pgroup pnote" disabled={!editable} style={{ border: 0, padding: "12px 0 0" }}>
-      <legend className="lbl" style={{ padding: 0, marginBottom: 12 }}>Your rules</legend>
-      <div className="rules">
-        <PercentInput label="Single-company cap (%)" value={settings.single_company_cap} onChange={single_company_cap => setSettings(s => ({ ...s, single_company_cap }))} />
-        <PercentInput label="Active picks budget (%)" value={settings.active_budget} onChange={active_budget => setSettings(s => ({ ...s, active_budget }))} />
-      </div>
-      <label className="field"><span className="cap">Count fund holdings toward the cap</span>
-        <select className="in" value={settings.indirect_cap_policy ?? ""} onChange={event => setSettings(s => ({ ...s, indirect_cap_policy: (event.target.value || null) as PortfolioSettings["indirect_cap_policy"] }))}>
-          <option value="">Not set</option><option value="direct_only">No, direct holdings only</option><option value="include_known_indirect">Yes, where fund holdings are known</option></select></label>
-      <label className="field"><span className="cap">Cash above target is a deliberate choice</span>
-        <select className="in" value={settings.cash_is_deliberate_tilt === undefined || settings.cash_is_deliberate_tilt === null ? "" : String(settings.cash_is_deliberate_tilt)}
-          onChange={event => setSettings(s => ({ ...s, cash_is_deliberate_tilt: event.target.value === "" ? null : event.target.value === "true" }))}>
-          <option value="">Not set</option><option value="true">Yes</option><option value="false">No</option></select></label>
-      <span className="cap" style={{ display: "block", marginTop: 12, marginBottom: 6 }}>Target portfolio mix</span>
-      <div className="rules">
-        <PercentInput label="Stocks (%)" value={settings.baseline?.stocks} onChange={stocks => updateBaseline("stocks", stocks)} />
-        <PercentInput label="Diversified ETFs (%)" value={settings.baseline?.diversified_etfs} onChange={diversified_etfs => updateBaseline("diversified_etfs", diversified_etfs)} />
-        <PercentInput label="Sector/theme ETFs (%)" value={settings.baseline?.sector_theme_etfs} onChange={sector_theme_etfs => updateBaseline("sector_theme_etfs", sector_theme_etfs)} />
-        <PercentInput label="Cash (%)" value={settings.baseline?.cash} onChange={cash => updateBaseline("cash", cash)} />
-      </div>
-      {baselineOver && <span className="cap amber" role="alert">Target mix cannot exceed 100% (currently {Number((baselineSum * 100).toFixed(2))}%)</span>}
-      <BenchmarkInput benchmark={benchmark} onChange={setBenchmark} disabled={!editable} onError={onError} />
-      {isDirty && (
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
-          {onDiscardDraft && (
-            <button
-              type="button"
-              className="btn secondary small"
-              data-testid="discard-draft-rules"
-              disabled={!editable || reviewing}
-              onClick={onDiscardDraft}
-            >
-              Discard
-            </button>
-          )}
-          {onReviewChanges && (
-            <button
-              type="button"
-              className="btn primary small"
-              data-testid="review-changes-rules"
-              disabled={!editable || reviewing || baselineOver}
-              onClick={onReviewChanges}
-            >
-              {reviewing ? "Reviewing…" : "Review changes"}
-            </button>
-          )}
-        </div>
-      )}
-    </fieldset>
+    <RulesEditor settings={settings} setSettings={setSettings} benchmark={benchmark} setBenchmark={setBenchmark} editable={editable} onError={onError}
+      actions={isDirty ? { reviewing, onReviewChanges, onDiscardDraft } : undefined} />
     <ImportCsv snapshot={snapshot} baseRevision={baseRevision} onProposal={onProposal} onImported={onImported} onError={onError} disabled={!editable} label="Replace with a new CSV" />
   </>;
 }
@@ -705,4 +646,65 @@ export function ImportCsv({ snapshot, baseRevision, onProposal, onImported, onEr
     </label>
     <span className="cap">Columns: account, ticker, shares, and optionally average_cost, currency (USD or CAD) and type. Exchange, name and current price are looked up; currency avoids a question when a ticker trades in both countries. Cash rows are optional. <a href="/api/portfolio/holdings-template" download>Template</a> · the <a href="/api/portfolio/template" download>full template</a> also works.</span>
   </div>;
+}
+
+const baselineSum = (settings: PortfolioSettings) =>
+  (["stocks", "diversified_etfs", "sector_theme_etfs", "cash"] as const).reduce((total, key) => total + Number(settings.baseline?.[key] ?? 0), 0);
+
+/** True when the target mix adds up to more than 100%, which can't be reviewed. */
+export const baselineOver = (settings: PortfolioSettings) => baselineSum(settings) > 1.00001;
+
+/** The investor's rules and benchmark, edited in the draft. Nothing here is saved until the draft is reviewed and confirmed. */
+export function RulesEditor({ settings, setSettings, benchmark, setBenchmark, editable, onError, actions }: {
+  settings: PortfolioSettings; setSettings: Dispatch<SetStateAction<PortfolioSettings>>;
+  benchmark: BenchmarkSetting | null; setBenchmark: Dispatch<SetStateAction<BenchmarkSetting | null>>;
+  editable: boolean; onError: (message: string) => void;
+  /** Draft actions under the rules, while the draft differs. */
+  actions?: { reviewing?: boolean; onReviewChanges?: () => void; onDiscardDraft?: () => void };
+}) {
+  function updateBaseline(category: keyof Baseline, fraction: string | null) {
+    setSettings(s => {
+      const nextBaseline: Baseline = { ...(s.baseline || {}), [category]: fraction };
+      const hasAny = Object.values(nextBaseline).some(v => v !== undefined && v !== null);
+      return { ...s, baseline: hasAny ? nextBaseline : null };
+    });
+  }
+  const over = baselineOver(settings);
+  return <fieldset className="pgroup pnote" disabled={!editable} style={{ border: 0, padding: "12px 0 0" }}>
+      <legend className="lbl" style={{ padding: 0, marginBottom: 12 }}>Your rules</legend>
+      <div className="rules">
+        <PercentInput label="Single-company cap (%)" value={settings.single_company_cap} onChange={single_company_cap => setSettings(s => ({ ...s, single_company_cap }))} />
+        <PercentInput label="Active picks budget (%)" value={settings.active_budget} onChange={active_budget => setSettings(s => ({ ...s, active_budget }))} />
+      </div>
+      <label className="field"><span className="cap">Count fund holdings toward the cap</span>
+        <select className="in" value={settings.indirect_cap_policy ?? ""} onChange={event => setSettings(s => ({ ...s, indirect_cap_policy: (event.target.value || null) as PortfolioSettings["indirect_cap_policy"] }))}>
+          <option value="">Not set</option><option value="direct_only">No, direct holdings only</option><option value="include_known_indirect">Yes, where fund holdings are known</option></select></label>
+      <label className="field"><span className="cap">Cash above target is a deliberate choice</span>
+        <select className="in" value={settings.cash_is_deliberate_tilt === undefined || settings.cash_is_deliberate_tilt === null ? "" : String(settings.cash_is_deliberate_tilt)}
+          onChange={event => setSettings(s => ({ ...s, cash_is_deliberate_tilt: event.target.value === "" ? null : event.target.value === "true" }))}>
+          <option value="">Not set</option><option value="true">Yes</option><option value="false">No</option></select></label>
+      <span className="cap" style={{ display: "block", marginTop: 12, marginBottom: 6 }}>Target portfolio mix</span>
+      <div className="rules">
+        <PercentInput label="Stocks (%)" value={settings.baseline?.stocks} onChange={stocks => updateBaseline("stocks", stocks)} />
+        <PercentInput label="Diversified ETFs (%)" value={settings.baseline?.diversified_etfs} onChange={diversified_etfs => updateBaseline("diversified_etfs", diversified_etfs)} />
+        <PercentInput label="Sector/theme ETFs (%)" value={settings.baseline?.sector_theme_etfs} onChange={sector_theme_etfs => updateBaseline("sector_theme_etfs", sector_theme_etfs)} />
+        <PercentInput label="Cash (%)" value={settings.baseline?.cash} onChange={cash => updateBaseline("cash", cash)} />
+      </div>
+      {over && <span className="cap amber" role="alert">Target mix cannot exceed 100% (currently {Number((baselineSum(settings) * 100).toFixed(2))}%)</span>}
+      <BenchmarkInput benchmark={benchmark} onChange={setBenchmark} disabled={!editable} onError={onError} />
+      {actions && (
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+          {actions.onDiscardDraft && (
+            <button type="button" className="btn secondary small" data-testid="discard-draft-rules" disabled={!editable || actions.reviewing} onClick={actions.onDiscardDraft}>
+              Discard
+            </button>
+          )}
+          {actions.onReviewChanges && (
+            <button type="button" className="btn primary small" data-testid="review-changes-rules" disabled={!editable || actions.reviewing || over} onClick={actions.onReviewChanges}>
+              {actions.reviewing ? "Reviewing…" : "Review changes"}
+            </button>
+          )}
+        </div>
+      )}
+    </fieldset>;
 }

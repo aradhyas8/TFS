@@ -43,7 +43,13 @@ const SAVED = {
   unresolved: [],
 };
 
-import { seedPortfolio } from "./test_helpers";
+import { openDecisions, seedPortfolio } from "./test_helpers";
+
+/** A saved decision is listed under Decisions; the conversation is restored afterwards. */
+async function expectDecision(page: Page, label: string | RegExp) {
+  await expect((await openDecisions(page)).getByTestId("decision-row").filter({ hasText: label })).toBeVisible();
+  await page.getByRole("button", { name: "Back to chat" }).click();
+}
 
 async function open(page: Page) {
   await page.route("**/*", route =>
@@ -56,7 +62,7 @@ async function open(page: Page) {
     if (request.url().endsWith("/api/analyze")) sent.push(request.postDataJSON());
   });
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   return sent;
 }
 
@@ -75,7 +81,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await expect(page.getByRole("region", { name: "Analyst memo" })).toBeVisible();
     await page.getByRole("button", { name: "Save decision" }).click();
     await expect(page.getByText(/Saved \d\d?:\d\d/)).toBeVisible();
-    await expect(rail(page).getByTestId("decision-item").filter({ hasText: "Portfolio review" })).toBeVisible();
+    await expectDecision(page, "Portfolio review");
 
     // 2. Run and save a Stock decision
     await ask(page).fill("/stock ACME");
@@ -83,7 +89,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
     await page.getByRole("button", { name: "Save decision" }).click();
     await expect(page.getByText(/Saved \d\d?:\d\d/)).toBeVisible();
-    await expect(rail(page).getByTestId("decision-item").filter({ hasText: "Stock analysis · ACME" })).toBeVisible();
+    await expectDecision(page, "Stock analysis · ACME");
 
     // 3. Run and save a Rebalance decision
     await ask(page).fill("Should I rebalance my portfolio?");
@@ -91,7 +97,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await expect(page.getByRole("region", { name: "Rebalance" })).toBeVisible();
     await page.getByRole("button", { name: "Save decision" }).click();
     await expect(page.getByText(/Saved \d\d?:\d\d/)).toBeVisible();
-    await expect(rail(page).getByTestId("decision-item").filter({ hasText: "Rebalance" })).toBeVisible();
+    await expectDecision(page, "Rebalance");
 
     // 4. Seed a legacy decision without workflow or subject directly via backend
     const legacyResp = await page.request.post("/api/decisions", {
@@ -122,16 +128,16 @@ test.describe("Decisions workflow, re-run, and register", () => {
 
     // Reload page to reflect all saved decisions in the rail
     await page.reload();
-    await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+    await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
 
     // Verify all 4 decisions in the rail with their workflow · subject labels
-    await expect(rail(page).getByTestId("decision-item").filter({ hasText: "Portfolio review" })).toBeVisible();
-    await expect(rail(page).getByTestId("decision-item").filter({ hasText: "Stock analysis · ACME" })).toBeVisible();
-    await expect(rail(page).getByTestId("decision-item").filter({ hasText: "Rebalance" })).toBeVisible();
-    await expect(rail(page).getByTestId("decision-item").filter({ hasText: "Unknown workflow" })).toBeVisible();
+    await expectDecision(page, "Portfolio review");
+    await expectDecision(page, "Stock analysis · ACME");
+    await expectDecision(page, "Rebalance");
+    await expectDecision(page, "Unknown workflow");
 
     // 5. Open legacy decision and verify "Unknown workflow" display
-    await rail(page).getByTestId("decision-item").filter({ hasText: "Unknown workflow" }).click();
+    await (await openDecisions(page)).getByTestId("decision-row").filter({ hasText: "Unknown workflow" }).click();
     const historicalView = page.getByRole("region", { name: "Reopened decision" });
     await expect(historicalView).toBeVisible();
     await expect(historicalView.getByTestId("decision-workflow")).toHaveText("Unknown workflow");
@@ -147,7 +153,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await rail(page).getByTestId("all-decisions-link").click();
     const register = page.getByRole("region", { name: "Decisions register" });
     await expect(register).toBeVisible();
-    await expect(register.getByRole("heading", { name: "Decisions Register" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Decisions", level: 1 })).toBeVisible();
     await expect(register).toContainText("Showing 4 of 4 decisions");
 
     // Filter by workflow: Stock analysis
@@ -187,13 +193,12 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await expect(register.getByText("You did: held")).toBeVisible();
 
     // Filter by "Not confirmed"
-    const notConfirmedCheckbox = register.getByLabel("Filter not confirmed");
-    await notConfirmedCheckbox.check();
+    await register.getByRole("radio", { name: "Not confirmed" }).check();
     await expect(register).toContainText("Showing 3 of 4 decisions");
     await expect(register.getByText("Stock analysis · ACME")).not.toBeVisible();
 
     // Uncheck "Not confirmed"
-    await notConfirmedCheckbox.uncheck();
+    await register.getByRole("radio", { name: "All" }).check();
     await expect(register).toContainText("Showing 4 of 4 decisions");
     await expect(register.getByText("Stock analysis · ACME")).toBeVisible();
 
@@ -206,7 +211,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     expect(sent[0].stock).toEqual({ position_id: "p1" });
 
     // 9. Test Rebalance Re-run
-    await rail(page).getByTestId("decision-item").filter({ hasText: "Rebalance" }).click();
+    await (await openDecisions(page)).getByTestId("decision-row").filter({ hasText: "Rebalance" }).click();
     await expect(historicalView).toBeVisible();
     await expect(historicalView.getByTestId("decision-workflow")).toHaveText("Rebalance");
     sent.length = 0;
@@ -215,7 +220,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     expect(sent[0].portfolio_review).toEqual({ prior_theses: [], risk_context: null });
 
     // 10. Test Review Re-run
-    await rail(page).getByTestId("decision-item").filter({ hasText: "Portfolio review" }).click();
+    await (await openDecisions(page)).getByTestId("decision-row").filter({ hasText: "Portfolio review" }).click();
     await expect(historicalView).toBeVisible();
     await expect(historicalView.getByTestId("decision-workflow")).toHaveText("Portfolio review");
     sent.length = 0;
@@ -241,7 +246,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await expect(page.getByRole("region", { name: "Analyst memo" })).toBeVisible();
     await page.getByRole("button", { name: "Save decision" }).click();
     await expect(page.getByText(/Saved \d\d?:\d\d/)).toBeVisible();
-    await expect(rail(page).getByTestId("decision-item").filter({ hasText: /New cash · US\$2,500 → RRSP/ })).toBeVisible();
+    await expectDecision(page, /New cash · US\$2,500 → RRSP/);
 
     // 2. Create and save a Theme decision
     await page.getByRole("button", { name: "New conversation" }).click();
@@ -258,10 +263,10 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await expect(memo).toContainText("Completed theme research");
     await page.getByRole("button", { name: "Save decision" }).click();
     await expect(page.getByText(/Saved \d\d?:\d\d/)).toBeVisible();
-    await expect(rail(page).getByTestId("decision-item").filter({ hasText: "Theme · Robotics" })).toBeVisible();
+    await expectDecision(page, "Theme · Robotics");
 
     // 3. Test New Cash Re-run
-    await rail(page).getByTestId("decision-item").filter({ hasText: /New cash · US\$2,500 → RRSP/ }).click();
+    await (await openDecisions(page)).getByTestId("decision-row").filter({ hasText: /New cash · US\$2,500 → RRSP/ }).click();
     const historicalView = page.getByRole("region", { name: "Reopened decision" });
     await expect(historicalView).toBeVisible();
     await expect(historicalView.getByTestId("decision-workflow")).toHaveText(/New cash · US\$2,500 → RRSP/);
@@ -276,7 +281,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await expect(page.getByRole("button", { name: "Analyze", exact: true })).toBeDisabled();
 
     // 4. Test Theme Re-run
-    await rail(page).getByTestId("decision-item").filter({ hasText: "Theme · Robotics" }).click();
+    await (await openDecisions(page)).getByTestId("decision-row").filter({ hasText: "Theme · Robotics" }).click();
     await expect(historicalView).toBeVisible();
     await expect(historicalView.getByTestId("decision-workflow")).toHaveText("Theme · Robotics");
 

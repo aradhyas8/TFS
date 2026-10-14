@@ -68,7 +68,7 @@ async function open(page: Page, portfolio: object) {
   );
   await seedPortfolio(page, portfolio);
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
 }
 
 const ask = (page: Page) => page.getByRole("textbox", { name: /type \/ for workflows/ });

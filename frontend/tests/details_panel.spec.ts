@@ -25,7 +25,7 @@ async function open(page: Page) {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
   await seedPortfolio(page, SAVED);
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
 }
 
 for (const [name, width, height] of [["desktop", 1440, 900], ["tablet", 768, 1024], ["phone", 390, 844]] as const)
@@ -52,12 +52,12 @@ test("details stay closed after a reload, and an explicit action still opens the
   await detailsButton(page).click();
   await details(page).getByRole("button", { name: "Close details" }).click();
   await page.reload();
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   await expect(details(page)).toBeHidden();
-  await rail(page).getByRole("button", { name: /^Portfolio/ }).click();
+  await detailsButton(page).click();
   await expect(details(page).getByRole("tab", { name: "Holdings" })).toHaveAttribute("aria-selected", "true");
   await page.reload();
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   await expect(details(page)).toBeHidden();
 });
 

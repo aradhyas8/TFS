@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
-import { openDetails, seedPortfolio } from "./test_helpers";
+import { checkPortfolio, openDetails, seedPortfolio } from "./test_helpers";
 
 // A portfolio saved earlier: the app should open straight into it.
 const SAVED = {
@@ -29,10 +29,13 @@ test("portfolio review: the app opens on the saved portfolio and /review runs a 
 
   await page.goto("/");
   const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
-  await expect(rail).toContainText("ACME");
-  await expect(rail).toContainText("BROAD");
-  await expect(rail).toContainText("Rules · cap 15% · active 30%");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("row", { name: /ACME/ })).toBeVisible();
+    await expect(view.getByRole("row", { name: /BROAD/ })).toBeVisible();
+    await expect(view.getByRole("group", { name: "Rules" })).toContainText("Company cap 15%");
+    await expect(view.getByRole("group", { name: "Rules" })).toContainText("Active budget 30%");
+  });
   await expect(page.getByRole("heading", { name: "Start with what you own." })).toHaveCount(0);
   await expect(page.locator(".ctx")).toContainText("Portfolio as of Sep 30, 2026");
 
@@ -55,7 +58,10 @@ test("portfolio review: the app opens on the saved portfolio and /review runs a 
   await expect(memo).toContainText("Largest companies you own directly: Acme Corp 36.5%");
   await expect(memo).toContainText("Inside your funds: unknown");
   await expect(memo).toContainText("configured limits cannot be waived by conviction");
-  await expect(rail).toContainText(/Weights · .* analysis/);
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("group", { name: "Total value" })).toContainText("C$3,700");
+    await expect(view.getByRole("row", { name: /ACME/ })).toContainText("36.5%");
+  });
 
   const details = await openDetails(page);
   await details.getByRole("tab", { name: "Evidence" }).click();
@@ -98,7 +104,7 @@ test("portfolio review: /review is a shortcut, and unidentified holdings block t
 test("portfolio review: without rules the analyst's own answer is shown and nothing is checked", async ({ page }) => {
   await seedPortfolio(page, { ...SAVED, settings: {} });
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
   await ask.fill("/review How concentrated am I across accounts?");
   await ask.press("Enter");
@@ -132,7 +138,7 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   await seedPortfolio(page, stockOnly);
 
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
 
   // Open details panel on Holdings tab
   const details = await openDetails(page);
@@ -168,10 +174,12 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   });
   expect(stored.settings.benchmark).toBeUndefined();
 
-  // Benchmark is absent from rail
-  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
-  await expect(rail).not.toContainText("SPY");
-  await expect(rail).toContainText("ACME");
+  // The benchmark is a rule, not a holding
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("table", { name: "Holdings" })).not.toContainText("SPY");
+    await expect(view.getByRole("row", { name: /ACME/ })).toBeVisible();
+    await expect(view.getByRole("group", { name: "Rules" })).toContainText("SPY");
+  });
 
   // Run stock analysis for ACME
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
@@ -185,10 +193,14 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   const optionsCompared = memo.getByRole("list", { name: "Options compared" });
   await expect(optionsCompared.getByRole("listitem").filter({ hasText: "SPY" })).toContainText("Unknown");
 
-  // Rail shows updated weights from analysis, which sum ACME and cash only (SPY is absent)
-  await expect(rail).not.toContainText("SPY");
-  await expect(rail).toContainText("57.4%");
-  await expect(rail).toContainText("42.6%");
+  // The portfolio shows the weights from the analysis, which sum ACME and cash only (SPY is absent)
+  await checkPortfolio(page, async view => {
+    const table = view.getByRole("table", { name: "Holdings" });
+    await expect(table).not.toContainText("SPY");
+    await expect(table).toContainText("57.4%");
+    await expect(table).toContainText("42.6%");
+  });
+  await openDetails(page);
 
   // Check scenarios tab: benchmark SPY is present as comparison alternative
   await details.getByRole("tab", { name: "Scenarios" }).click();

@@ -65,7 +65,7 @@ async function open(page: Page, saved: object = SAVED) {
   );
   await seedPortfolio(page, saved);
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
 }
 
 test.describe("Ticket 08: Immutable hypothetical draft analysis", () => {

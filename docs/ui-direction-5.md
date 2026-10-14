@@ -51,10 +51,10 @@ Values live in `frontend/app/theme.css`, loaded after Arc's `foundation.css`.
 
 ## Layout
 
-- Rail 252 wide: new conversation, Portfolio, Decisions, conversations, saved decisions, and what the portfolio is.
+- Rail 252 wide: new conversation, Portfolio, Decisions, conversations, and what the portfolio is (its revision and
+  holdings date). Holdings and saved decisions have their own views and are not listed in the rail again.
 - One conversation column, 720 wide.
-- Details are closed at every width until something asks for them: a citation, a result tab, Portfolio in the rail,
-  or the Details button. Nothing remembers them open across a reload.
+- Details are closed at every width until something asks for them: a citation, a result tab, or the Details button. Nothing remembers them open across a reload.
 - On screens 1280 and wider open details are a third column. Below 1280 they slide over the page. Below 1024 the rail
   becomes a drawer. Below 768 the details are a bottom sheet.
 - Below 1024 everything a finger has to hit is at least 44px.
@@ -65,7 +65,7 @@ Values live in `frontend/app/theme.css`, loaded after Arc's `foundation.css`.
 
 1. Foundation and main workspace: tokens, type, rail, home, composer, responsive shell. Done.
 2. Conversation and analysis results. Done.
-3. Portfolio and decisions.
+3. Portfolio and decisions. Done.
 4. Proposal review and confirmation.
 
 Until a surface reaches its phase it keeps its structure and takes only the new tokens.
@@ -95,6 +95,43 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
   line. Slash commands, the workflow forms and their keys are unchanged.
 - The header shows the conversation's first question as its title.
 
+## Portfolio and decisions (phase 3)
+
+- Portfolio and Decisions in the rail open views of their own in place of the conversation. Each has its own header
+  (the menu button below 1024, the title, Back to chat) and no composer. Back to chat returns to whatever the
+  conversation showed. The rail marks the open view with `aria-current="page"`, keeps the amber count of what waits
+  on the investor (holdings to identify and prepared changes) and the count of decisions not confirmed.
+- Portfolio follows the mockup: title, a chip with the green live dot naming the committed revision and holdings date,
+  Refresh prices and Import CSV, then Holdings, Rules and benchmark, and Changes tabs.
+- Holdings: three oat summary cards (total value, allocation, rules), amber notices for holdings to identify and
+  changes waiting, an account filter, then the holdings table: holding, account, shares, average cost, value, weight
+  against the cap and status. A supported stock has Analyze, which puts `/stock TICKER` in the composer. A fund's
+  type is edited in its row. Below 768 each holding is a two-line row; nothing scrolls sideways.
+- Values, weights, allocation and the rule checks come only from an analysis of exactly the committed revision: a
+  stored result or desk answer that names this revision (a desk answer keeps the revision it was asked against). A
+  result that names no revision counts only when its inputs are demonstrably the committed ones: every holding
+  field the analysis reads (account, kind, currency, ticker, listing, company, fund type, shares, cash, mark), the
+  reporting currency, the holdings date and each exchange rate on file. A hypothetical draft analysis never counts,
+  whether the result or its stored reference says so. Rule checks made under any other guardrail setting (cap,
+  budget, fund policy, cash tilt or any target weight; unset and absent read alike) are dropped and read "Not
+  checked yet". Without one, the total says "Not valued yet" and points to a review, the
+  allocation is a count by kind, and the rules say "Not checked yet". A holding the analysis could not value says
+  "Not valued"; cash before a valuation is its own amount in its own currency, so a zero balance reads C$0.
+- The freshness line under the table says when it was valued, the holdings date, the quote dates, the exchange rates
+  and how many delayed quotes are cached. Nothing is called live.
+- Draft edits (fund types, rules, benchmark) are named in the white draft bar that floats at the foot of the page,
+  and a fund type edit also tints its row green: Discard, Analyze this draft, Review changes. Review opens the existing review
+  dialog; nothing is saved until it is confirmed. Import and identify also go through that dialog.
+- Changes lists prepared changes waiting for review, each with Review and Discard; a change prepared from an older
+  revision says so.
+- Decisions: a list of oat cards, each with its workflow tile, label, question, the date saved, the date of the
+  portfolio it was computed from and its source count, the analyst's conclusion, and what the investor did: an amber
+  "Not confirmed" chip, or a neutral "You did: held" chip with the date. Filters by workflow and by what was
+  recorded. Opening one shows it as it was saved, with its evidence in the details and an All decisions button back.
+  A note says decisions do not change when holdings do.
+- The Details panel keeps its Holdings tab as the quick editor inside a conversation. Both read and write the same
+  draft; there is no second copy of the portfolio.
+
 ## Where the app differs from the mockup on purpose
 
 - Muted text is `#6B655C`, not `#756F66`, and amber and green text use the `-strong` values. The mockup values fall
@@ -112,6 +149,17 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
   Result and source cards carry their icon in a tinted tile, as the mockup does, which Arc's own rules avoid.
 - The case line uses a soft red to blue to green fill under the cases. It carries meaning (downside to upside), so it is
   kept although Arc reserves gradients for marketing.
+- The mockup's draft edits a share count. The app edits shares only through an import or an identity correction, so
+  the draft bar names fund type, rule and benchmark edits instead.
+- The mockup shows "Funds" in the allocation. The app splits stocks, ETFs and cash, the kinds a holding has.
+- The holdings table has an eighth column for Analyze. The mockup's "Against cap" column is headed Status, because
+  it also holds a fund's type, as a select, where the mockup writes "Fund".
+- The header has Back to chat, which the mockup does not show. Below 768 the revision chip and Refresh prices leave
+  the header; the revision is written at the top of the page instead.
+- Sizes taken from the mockup outside the 15, 14 and 12 scale: the view title 17, the portfolio total 38 (32 on a
+  phone), the not-valued total 26, 13.5 in the table, notices and the draft bar, 12.5 in summary captions, legends
+  and chips, 10.5 in holding initials. The empty states use 17 for their heading.
+- Buttons in the portfolio and decisions views are Arc buttons at their small size, which is fully round at 36px.
 - The summary strip shows holdings and accounts, the rules as set, and what is waiting. A portfolio value and a count of
   companies over the cap need a valuation, which exists only after an analysis.
 
@@ -125,3 +173,6 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
 - Closing them returns focus to the control that opened them (a citation, a result tab, Open details, the Details
   button), or to the Details button when that control is gone.
 - Covered by `tests/details_panel.spec.ts` and `tests/conversation_phase2.spec.ts` at 390, 768 and 1440.
+- Opening Portfolio or Decisions moves focus to the view's title; Back to chat moves it to the composer. The view
+  tabs follow the tab pattern (arrow keys move between them). The account and status filters are radio groups.
+  Below 1024 the view's controls, filters and fund-type selects are 44px.
