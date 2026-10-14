@@ -116,10 +116,9 @@ export function useConversation() {
       try {
         for (let attempt = 0; ; attempt++) {
           try {
-            if (!threadId) {
-              // A creation whose response was lost leaves an empty thread behind. It never receives the
-              // message, so the message is accepted only in the thread recorded here.
-              threadId = (await createThread()).id;
+            if (!threadId || !send.view.startsWith("thread:")) {
+              if (!threadId) threadId = `th-${send.clientRequestId.replace(/-/g, "").slice(0, 12)}`;
+              await createThread(threadId);
               const asked = send.view;
               // From here on the message belongs to its thread, wherever that is opened.
               hold({ ...send, threadId, view: `thread:${threadId}` });
@@ -156,8 +155,7 @@ export function useConversation() {
    *  (a chosen stock, a confirmed new-cash or theme form) travel with it and start a new run; they are
    *  never inferred from the text. A stored hypothetical portfolio is analyzed only when its ID is given here.
    *  ponytail: one unacknowledged send at a time; a new send replaces an earlier one that failed and was left behind.
-   *  ponytail: two tabs reloaded with the same thread-less send each create a thread; a client-supplied thread ID
-   *  on POST /api/threads would make creation idempotent too. */
+   *  A client-supplied thread ID makes thread creation and multi-tab reload recovery idempotent. */
   const send = (
     text: string,
     workflowInput?: Record<string, unknown>,

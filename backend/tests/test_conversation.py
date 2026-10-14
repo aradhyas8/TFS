@@ -175,9 +175,11 @@ def test_database_thread_and_run_uniqueness(tmp_path: Path) -> None:
     db = Database(tmp_path / "test.db")
     db.initialize()
 
-    # Thread creation
+    # Thread creation is idempotent
     thread = db.create_thread("th-1")
     assert thread.id == "th-1"
+    thread_dup = db.create_thread("th-1")
+    assert thread_dup.id == "th-1"
 
     req1 = SubmitMessageRequest(
         client_request_id="req-1",

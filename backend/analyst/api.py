@@ -61,6 +61,7 @@ from .schemas import (
     ConfirmActionRequest,
     ConfirmationResult,
     CreateArtifactRequest,
+    CreateThreadRequest,
     CSVRequest,
     FinancialEvidence,
     IdentifyHoldingRequest,
@@ -589,14 +590,23 @@ def create_app(
     @app.post("/api/decisions", response_model=SavedDecision)
     def save_decision(request: SaveDecisionRequest) -> SavedDecision:
         if request.result is not None:
+            if request.artifact_id:
+                existing = decisions.get_by_artifact_id(request.artifact_id)
+                if existing is not None:
+                    return existing
             record = extract_decision(
                 request.result,
                 confirmed_action=request.confirmed_action,
                 workflow=request.workflow,
                 subject=request.subject,
+                artifact_id=request.artifact_id,
             )
         elif request.decision is not None:
             record = request.decision
+            if request.artifact_id:
+                existing = decisions.get_by_artifact_id(request.artifact_id)
+                if existing is not None and existing.id != record.id:
+                    return existing
             updates: dict[str, Any] = {}
             if request.confirmed_action is not None:
                 updates["confirmed_action"] = request.confirmed_action
@@ -604,6 +614,8 @@ def create_app(
                 updates["workflow"] = request.workflow
             if request.subject is not None:
                 updates["subject"] = request.subject
+            if request.artifact_id is not None:
+                updates["artifact_id"] = request.artifact_id
             if updates:
                 record = record.model_copy(update=updates)
         else:
@@ -638,8 +650,9 @@ def create_app(
     # =========================================================================
 
     @app.post("/api/threads", response_model=ThreadSummary, status_code=201)
-    def create_thread() -> ThreadSummary:
-        return portfolios.db.create_thread()
+    def create_thread(request: CreateThreadRequest | None = None) -> ThreadSummary:
+        tid = request.id if request else None
+        return portfolios.db.create_thread(thread_id=tid)
 
     @app.get("/api/threads", response_model=list[ThreadSummary])
     def list_threads() -> list[ThreadSummary]:

@@ -253,6 +253,7 @@ export type SavedDecision = {
   confirmed_action: UserConfirmedAction | null;
   workflow?: DecisionWorkflow | null;
   subject?: DecisionSubject | null;
+  artifact_id?: string | null;
 };
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -607,8 +608,8 @@ export type SubmitMessageRequest = {
   hypothetical_artifact_id?: string | null;
 };
 
-export async function createThread(): Promise<ThreadSummary> {
-  return postEmpty<ThreadSummary>("/api/threads");
+export async function createThread(id?: string): Promise<ThreadSummary> {
+  return id ? post<ThreadSummary>("/api/threads", { id }) : postEmpty<ThreadSummary>("/api/threads");
 }
 
 export async function listThreads(): Promise<ThreadSummary[]> {

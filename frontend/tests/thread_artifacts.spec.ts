@@ -380,6 +380,13 @@ test("a stored result is saved as a decision with its workflow and subject, jour
   expect((await holdings(page)).revision).toBe(1);
   expect(commits).toHaveLength(0);
 
+  // A reload retains the saved decision marker and prevents duplicate decisions
+  await page.reload();
+  const reloadedResult = thread(page).getByRole("article", { name: "Stock Analysis result" });
+  await expect(reloadedResult).toContainText(/Saved to Decisions \d\d?:\d\d/);
+  await expect(reloadedResult.getByRole("button", { name: "Save decision" })).toHaveCount(0);
+  expect(await (await page.request.get("/api/decisions")).json()).toHaveLength(1);
+
   // The register still filters by workflow, and the saved decision reopens read-only.
   await rail.getByRole("button", { name: "All decisions" }).click();
   const register = page.getByRole("region", { name: "Decisions register" });
