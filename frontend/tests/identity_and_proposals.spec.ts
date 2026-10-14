@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { seedPortfolio } from "./test_helpers";
+import { openDetails, seedPortfolio } from "./test_helpers";
 
 const INITIAL_UNRESOLVED_PORTFOLIO = {
   snapshot: {
@@ -81,7 +81,7 @@ test("browser unresolved holding: partial correction -> preview -> confirm -> co
   await openDesk(page, UNRESOLVED_UNKNOWN_PORTFOLIO);
 
   // Initial state has 1 unresolved holding
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   const needsGroup = details.getByRole("group", { name: "Holdings to identify" });
@@ -154,7 +154,7 @@ test("reload discovers pending proposal and stale state is identified when commi
 }) => {
   await openDesk(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   // Select exchange for BMO

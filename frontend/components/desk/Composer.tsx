@@ -247,7 +247,7 @@ export default function Composer({
           <legend className="sr-only">New cash inputs</legend>
           <div className="nc-grid">
             <label className="field"><span className="cap">Amount</span>
-              <input className="in n" inputMode="decimal" placeholder={snapshot ? snapshot.reporting_currency : ""} value={newCash.amount || ""}
+              <input className="in n" inputMode="decimal" placeholder="e.g. 2,000" value={newCash.amount || ""}
                 onChange={event => updateCash({ amount: event.target.value.replace(/[^0-9.]/g, "") || null })} /></label>
             <label className="field"><span className="cap">Currency</span>
               <select className="in" value={newCash.currency || ""} onChange={event => updateCash({ currency: event.target.value })}>

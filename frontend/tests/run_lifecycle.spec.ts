@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { seedPortfolio } from "./test_helpers";
+import { openDetails, seedPortfolio } from "./test_helpers";
 
 const SAVED = {
   snapshot: {
@@ -161,7 +161,7 @@ test("a question about the unsaved draft runs as a labeled hypothetical, and ord
   await open(page);
   const bodies: { hypothetical_artifact_id?: string }[] = [];
   page.on("request", request => { if (/\/api\/threads\/[^/]+\/messages$/.test(request.url())) bodies.push(request.postDataJSON()); });
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   const cap = details.getByLabel("Single-company cap (%)");
   const useDraft = page.getByRole("checkbox", { name: "Ask about my unsaved draft" });
 
@@ -223,7 +223,7 @@ async function twoTopics(page: Page, outcome: "stored" | "fails") {
   await rail(page).getByRole("button", { name: "New conversation" }).click();
   await send(page, "Second topic");
   await expect(thread(page)).toContainText("Plain answer to: Second topic");
-  await page.getByRole("complementary", { name: "Details" }).getByLabel("Single-company cap (%)").fill("20");
+  await (await openDetails(page)).getByLabel("Single-company cap (%)").fill("20");
   let settle = () => {};
   const held = new Promise<void>(resolve => { settle = resolve; });
   await page.route("**/api/portfolio/artifacts", async route => {
@@ -344,7 +344,7 @@ test("a slow draft capture from one new conversation does not replace a differen
 
 test("a failed draft question asked in a new conversation stays with it once that conversation has its thread", async ({ page }) => {
   await open(page);
-  await page.getByRole("complementary", { name: "Details" }).getByLabel("Single-company cap (%)").fill("20");
+  await (await openDetails(page)).getByLabel("Single-company cap (%)").fill("20");
   await page.route("**/api/portfolio/artifacts", route => route.fulfill({ status: 503, json: { detail: "offline" } }));
   await useDraft(page).check();
   await send(page, "Draft question for a new topic");

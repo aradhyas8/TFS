@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
-import { seedPortfolio } from "./test_helpers";
+import { openDetails, seedPortfolio } from "./test_helpers";
 
 // A portfolio saved earlier: the app should open straight into it.
 const SAVED = {
@@ -57,7 +57,7 @@ test("portfolio review: the app opens on the saved portfolio and /review runs a 
   await expect(memo).toContainText("configured limits cannot be waived by conviction");
   await expect(rail).toContainText(/Weights · .* analysis/);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Evidence" }).click();
   await expect(details.getByRole("list", { name: "Prices and rates used" })).toContainText("ACME");
   await expect(details.getByRole("list", { name: "Prices and rates used" })).toContainText("Broker display");
@@ -135,7 +135,7 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
 
   // Open details panel on Holdings tab
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   // Benchmark fund rule input
@@ -285,7 +285,7 @@ test("existing analysis journey works without saving", async ({ page }) => {
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
 
   // Details panel can be navigated without saving
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
   await expect(details.getByRole("group", { name: "Holdings to identify" })).toHaveCount(0);
 

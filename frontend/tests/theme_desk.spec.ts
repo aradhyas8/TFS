@@ -42,7 +42,7 @@ const SAVED = {
   unresolved: [],
 };
 
-import { seedPortfolio } from "./test_helpers";
+import { openDetails, seedPortfolio } from "./test_helpers";
 
 async function open(page: Page, saved: object = SAVED) {
   await page.route("**/*", route =>
@@ -182,7 +182,7 @@ test("theme discovery full flow: form, agreement card, edit clearing, agreed res
 
   // 7. Check Scenarios tab renders company cases
   await memo.getByRole("button", { name: /Scenarios/ }).click();
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await expect(details.getByRole("tab", { name: "Scenarios" })).toHaveAttribute("aria-selected", "true");
   await expect(details).toContainText("Acme Corp · per share, discounted to today");
   await expect(details.locator(".case")).toHaveCount(3);

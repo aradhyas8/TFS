@@ -109,7 +109,6 @@ const durationsKey = (sent: Sent | null) =>
           : "desk.reviewDurations";
 const TITLE = "Analyst";
 // The last answer, so a reload doesn't lose it. Per-browser convenience; Save puts it in Decisions.
-const PANEL_KEY = "tfs.details-panel";
 const ANSWER_KEY = "desk.lastAnswer";
 
 /** Only rules the user actually set; an all-unset rule set is sent and saved as none. */
@@ -306,20 +305,39 @@ export default function DeskPage() {
   const [focus, setFocus] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
-  // Wide screens dock the details beside the conversation. Closing them there is remembered on this computer.
-  const [panelDocked, setPanelDocked] = useState(true);
-  useEffect(() => {
-    try {
-      if (localStorage.getItem(PANEL_KEY) === "closed") setPanelDocked(false);
-    } catch {}
-  }, []);
-  const showPanel = (open: boolean) => {
-    setPanelOpen(open);
-    setPanelDocked(open);
-    try {
-      localStorage.setItem(PANEL_KEY, open ? "open" : "closed");
-    } catch {}
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const detailsButton = useRef<HTMLButtonElement>(null);
+  // Details are closed until something asks for them: a citation, a result tab, holdings, or the Details button.
+  // Every opening path goes through here, so the panel shows at every width.
+  const showDetails = (next?: Tab, focusId: string | null = null) => {
+    if (next) setTab(next);
+    setFocus(focusId);
+    setPanelOpen(true);
   };
+  const closeDetails = () => {
+    setPanelOpen(false);
+    requestAnimationFrame(() => detailsButton.current?.focus());
+  };
+  const closeRail = () => {
+    setRailOpen(false);
+    requestAnimationFrame(() => menuButton.current?.focus());
+  };
+  // Escape closes the rail drawer first, then the details. The review dialog handles its own keys.
+  useEffect(() => {
+    if (!railOpen && !panelOpen) return;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector("[role=dialog]")) return;
+      if (railOpen) {
+        setRailOpen(false);
+        requestAnimationFrame(() => menuButton.current?.focus());
+      } else {
+        setPanelOpen(false);
+        requestAnimationFrame(() => detailsButton.current?.focus());
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [railOpen, panelOpen]);
   const [notice, setNotice] = useState("");
   const [prices, setPrices] = useState<PriceRefresh | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -669,18 +687,9 @@ export default function DeskPage() {
   const evidence = evidenceFor(reopened ? null : result, reopened);
   const cite = {
     numbers: evidence.numbers,
-    onCite: (id: string) => {
-      setTab("evidence");
-      setFocus(id);
-      setPanelOpen(true);
-    },
+    onCite: (id: string) => showDetails("evidence", id),
   };
-  const openTab = (next: Tab) => {
-    setTab(next);
-    setFocus(null);
-    setPanelOpen(true);
-    setPanelDocked(true);
-  };
+  const openTab = (next: Tab) => showDetails(next);
 
   /** Ordinary analysis uses COMMITTED portfolio state */
   async function analyze(sent: Sent) {
@@ -1917,7 +1926,7 @@ export default function DeskPage() {
 
   return (
     <div
-      className={`desk${panelOpen ? " panel-open" : ""}${railOpen ? " rail-open" : ""}${panelDocked ? "" : " panel-off"}`}
+      className={`desk${panelOpen ? " panel-open" : ""}${railOpen ? " rail-open" : ""}`}
     >
       <a className="skip" href="#details">
         Skip to details
@@ -1931,7 +1940,7 @@ export default function DeskPage() {
         pending={pendingProposals.length}
         decisions={decisions}
         registerOpen={registerOpen}
-        onClose={() => setRailOpen(false)}
+        onClose={closeRail}
         currentId={reopened?.id ?? saved?.id ?? null}
         threads={conversation.threads}
         threadsError={conversation.threadsError}
@@ -1992,8 +2001,12 @@ export default function DeskPage() {
             <button
               type="button"
               className="icon-btn menu-btn"
+              ref={menuButton}
               aria-label="Open portfolio and decisions"
-              onClick={() => setRailOpen(true)}
+              onClick={() => {
+                setRailOpen(true);
+                requestAnimationFrame(() => document.querySelector<HTMLElement>("#rail .rail-close")?.focus());
+              }}
             >
 <Menu size={18} aria-hidden="true" />
             </button>
@@ -2041,8 +2054,14 @@ export default function DeskPage() {
               ))}
             <button
               type="button"
+              ref={detailsButton}
               className="btn secondary small details-btn"
-              onClick={() => showPanel(true)}
+              aria-expanded={panelOpen}
+              aria-controls="details"
+              onClick={() => {
+                showDetails();
+                requestAnimationFrame(() => document.querySelector<HTMLElement>("#details [role=tab][aria-selected=true]")?.focus());
+              }}
             >
               Details
             </button>
@@ -2264,7 +2283,7 @@ export default function DeskPage() {
       <Panel
         tab={tab}
         onTab={openTab}
-        onClose={() => showPanel(false)}
+        onClose={closeDetails}
         focus={focus}
         snapshot={draftSnapshot}
         setSnapshot={setDraftSnapshot}

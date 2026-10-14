@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { openDetails } from "./test_helpers";
 
 const SAVED = {
   snapshot: {
@@ -73,7 +74,7 @@ test("typing changes draft state only without autosave; review opens differences
   await open(page);
 
   // Open details panel on Holdings tab
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   const stocksInput = details.getByRole("textbox", { name: "Stocks (%)" });
@@ -132,7 +133,7 @@ test("typing changes draft state only without autosave; review opens differences
 test("cancel leaves committed state unchanged and preserves draft", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   const divEtfInput = details.getByRole("textbox", { name: "Diversified ETFs (%)" });
@@ -162,7 +163,7 @@ test("cancel leaves committed state unchanged and preserves draft", async ({ pag
 test("enforces target mix sum <= 100% and disables review", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   const stocksInput = details.getByRole("textbox", { name: "Stocks (%)" });
@@ -184,7 +185,7 @@ test("enforces target mix sum <= 100% and disables review", async ({ page }) => 
 test("rules, benchmark, and ETF-role edits follow the same action model", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   // 1. Edit ETF role
@@ -229,7 +230,7 @@ test("rules, benchmark, and ETF-role edits follow the same action model", async 
 test("ordinary analysis uses committed state while draft differs", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   // Edit single company cap to 15% (committed is 50%)
@@ -268,7 +269,7 @@ test("ordinary analysis uses committed state while draft differs", async ({ page
 test("stale previews preserve draft work and require fresh review", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   const stocksInput = details.getByRole("textbox", { name: "Stocks (%)" });
@@ -313,7 +314,7 @@ test("stale previews preserve draft work and require fresh review", async ({ pag
 test("confirmation controls support keyboard operation", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   const stocksInput = details.getByRole("textbox", { name: "Stocks (%)" });

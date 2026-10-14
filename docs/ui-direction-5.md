@@ -53,8 +53,11 @@ Values live in `frontend/app/theme.css`, loaded after Arc's `foundation.css`.
 
 - Rail 252 wide: new conversation, Portfolio, Decisions, conversations, saved decisions, and what the portfolio is.
 - One conversation column, 720 wide.
-- Details beside the conversation on screens 1280 and wider. They can be closed there, and the choice is remembered.
-- Below 1280 the details slide over the page. Below 1024 the rail becomes a drawer. Below 768 the details are a bottom sheet.
+- Details are closed at every width until something asks for them: a citation, a result tab, Portfolio in the rail,
+  or the Details button. Nothing remembers them open across a reload.
+- On screens 1280 and wider open details are a third column. Below 1280 they slide over the page. Below 1024 the rail
+  becomes a drawer. Below 768 the details are a bottom sheet.
+- Below 1024 everything a finger has to hit is at least 44px.
 - Home: greeting, composer, the five workflows as starters, one summary strip. Centered. On a phone it is top aligned
   and the starters become a list.
 
@@ -74,3 +77,17 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
 - The send button is dimmed while there is nothing to send.
 - The summary strip shows holdings and accounts, the rules as set, and what is waiting. A portfolio value and a count of
   companies over the cap need a valuation, which exists only after an analysis.
+
+## Accessibility follow-up
+
+Phase 1 covers: Escape closes the rail drawer, then the details. Opening the drawer moves focus to its close button,
+opening the details from the Details button moves focus to the selected tab, and closing either returns focus to the
+button that opened it. Closed off-canvas layers are hidden, so focus and screen readers never land in them.
+
+Not done yet: focus is not trapped inside the drawer or the details sheet while they cover the page. Done when:
+
+- With the rail drawer open below 1024, Tab and Shift+Tab cycle only through the drawer.
+- With the details open below 1280, Tab and Shift+Tab cycle only through the details.
+- The page behind an open drawer or sheet is inert to pointer, keyboard and screen reader.
+- On 1280 and wider, open details stay a normal region and do not trap focus.
+- A Playwright test covers each case at 390 and 768.

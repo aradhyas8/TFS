@@ -20,7 +20,7 @@ const SAVED = {
   unresolved: [],
 };
 
-import { seedPortfolio } from "./test_helpers";
+import { openDetails, seedPortfolio } from "./test_helpers";
 
 /** Opens the desk on a saved portfolio and records every analysis request the page sends. */
 async function open(page: Page, saved: object = SAVED) {
@@ -80,7 +80,7 @@ test("a natural ticker question becomes Stock Analysis with every section, and n
   await expect(memo).toContainText("Review the supplied settings and missing inputs");
 
   // Right panel: Evidence | Scenarios | Holdings | Guardrails.
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await expect(details.getByRole("tab")).toHaveText([/^Evidence/, "Scenarios", "Holdings", "Guardrails"]);
   await details.getByRole("tab", { name: /Evidence/ }).click();
   await expect(details.getByRole("list", { name: "Prices and rates used" })).toContainText("ACME");
@@ -198,7 +198,7 @@ test("an unowned stock candidate runs Stock Analysis with price source, no-cash 
   await expect(rail.locator(".holdings-mini")).not.toContainText("NVDA");
 
   // Holdings tab in details panel excludes unowned candidate row
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
   await expect(details).not.toContainText("NVDA");
 
@@ -267,7 +267,7 @@ test("named Canadian stock completes SEDAR+ research, company cases and cash com
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
   await expect(memo).toContainText("SEDAR+");
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: /Evidence/ }).click();
   await expect(details).toContainText("Acme Canadian annual filing (SEDAR+)");
   const sedarLink = details.locator('a[href*="sedarplus.ca/csa-party/records"]');
@@ -307,7 +307,7 @@ test("missing Canadian stock research returns a completed conditional answer wit
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
   await expect(memo).toContainText("Clarify missing inputs");
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Scenarios" }).click();
   await expect(details).toContainText("Unknown");
 });

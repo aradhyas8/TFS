@@ -12,7 +12,7 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
   --sage: var(--success-strong); --amber: var(--warning-strong);
   --sans: var(--font-body); --serif: var(--font-serif);
   --focus-outline: var(--accent);
-  min-height: 100vh; display: grid; grid-template-columns: 252px minmax(0, 1fr) 400px;
+  min-height: 100vh; display: grid;
   background: var(--ground); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 20px;
   -webkit-font-smoothing: antialiased;
 }
@@ -260,29 +260,36 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .matrix thead th { color: var(--muted); font-size: 12px; }
 .desk .rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .desk .scrim { display: none; }
-.desk .menu-btn, .desk .details-btn { display: none; }
+.desk .menu-btn { display: none; }
 
-/* Responsive: the conversation keeps the space; the details give way first, then the rail. */
+/* Responsive. Details are closed until asked for. On a wide screen they open as a third column;
+   below 1280 they slide over the page, and below 768 they are a bottom sheet. Closed off-canvas layers are hidden,
+   so neither keyboard focus nor a screen reader lands in them. */
+.desk { grid-template-columns: 252px minmax(0, 1fr); }
+.desk .details-btn { display: inline-flex; }
 @media (min-width: 1280px) {
-  /* Details closed on a wide screen: the conversation takes their column and the header offers them again. */
-  .desk.panel-off { grid-template-columns: 252px minmax(0, 1fr); }
-  .desk.panel-off .panel { display: none; }
-  .desk.panel-off .details-btn { display: inline-flex; }
+  .desk.panel-open { grid-template-columns: 252px minmax(0, 1fr) 400px; }
+  .desk .panel { display: none; }
+  .desk.panel-open .panel { display: flex; }
+  .desk.panel-open .details-btn { display: none; }
 }
 @media (max-width: 1279px) {
-  .desk { grid-template-columns: 252px minmax(0, 1fr); }
-  .desk .panel { position: fixed; right: 0; top: 0; bottom: 0; width: min(400px, 100vw); height: auto; z-index: 30; transform: translateX(100%); transition: transform var(--duration-standard) var(--ease-standard); box-shadow: none; }
-  .desk.panel-open .panel { transform: none; box-shadow: var(--shadow-floating); }
+  .desk .panel { position: fixed; right: 0; top: 0; bottom: 0; width: min(400px, 100vw); height: auto; z-index: 30; transform: translateX(100%); visibility: hidden; transition: transform var(--duration-standard) var(--ease-standard), visibility 0s linear var(--duration-standard); box-shadow: none; }
+  .desk.panel-open .panel { transform: none; visibility: visible; transition: transform var(--duration-standard) var(--ease-standard); box-shadow: var(--shadow-floating); }
   .desk.panel-open .scrim { display: block; position: fixed; inset: 0; background: var(--scrim); z-index: 20; }
-  .desk .details-btn { display: inline-flex; }
 }
 @media (max-width: 1023px) {
   .desk { grid-template-columns: minmax(0, 1fr); }
   /* With the menu and Details buttons in the header, the workflow title gets the room, not the portfolio date. */
   .desk .ctx .hide-sm { display: none; }
   .desk .ctx { padding: 0 16px 0 8px; }
-  .desk .rail { position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(300px, 88vw); z-index: 30; transform: translateX(-100%); transition: transform var(--duration-standard) var(--ease-standard); overflow-y: auto; }
-  .desk.rail-open .rail { transform: none; box-shadow: var(--shadow-floating); }
+  .desk .rail { position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(300px, 88vw); z-index: 30; transform: translateX(-100%); visibility: hidden; transition: transform var(--duration-standard) var(--ease-standard), visibility 0s linear var(--duration-standard); overflow-y: auto; }
+  .desk.rail-open .rail { transform: none; visibility: visible; transition: transform var(--duration-standard) var(--ease-standard); box-shadow: var(--shadow-floating); }
+  /* Touch layouts: everything a finger has to hit is at least 44px. */
+  .desk .btn, .desk .btn.small, .desk .icon-btn, .desk .tab, .desk .nav-item, .desk .thread-item, .desk .rail-new, .desk .pill, .desk .ditem, .desk .link { min-height: 44px; }
+  .desk .icon-btn { width: 44px; }
+  .desk .send { width: 44px; height: 44px; }
+  .desk .ddel { width: 44px; height: 44px; top: 0; right: 0; }
   .desk.rail-open .scrim { display: block; position: fixed; inset: 0; background: var(--scrim); z-index: 20; }
   .desk .menu-btn, .desk .rail .rail-close { display: inline-flex; }
   .desk .panel { width: min(480px, 100vw); }
@@ -308,8 +315,6 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
   .desk .alt, .desk .nc-grid, .desk .setup, .desk .opt { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .desk .opt .cap:last-child { display: none; }
   .desk .panel { top: auto; left: 0; right: 0; width: 100%; height: 85vh; border-left: 0; border-radius: 24px 24px 0 0; transform: translateY(100%); }
-  .desk .btn, .desk .icon-btn, .desk .tab, .desk .nav-item, .desk .thread-item, .desk .rail-new, .desk .pill { min-height: 44px; }
-  .desk .send { width: 44px; height: 44px; }
   .desk .rules { grid-template-columns: minmax(0, 1fr); }
   /* Home on a phone: top aligned, starters as a list, the strip stacked. */
   .desk .center.home .scroll { margin-top: 0; padding: 20px 16px 0; }
