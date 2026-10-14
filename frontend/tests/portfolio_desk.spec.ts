@@ -158,6 +158,78 @@ test("a valuation of this exact revision fills in value, weight and the rules", 
   await expect(view.getByRole("group", { name: "Rules" })).toContainText("Company cap 15%");
 });
 
+/** Asks for a review of the committed portfolio and returns to the portfolio view once the answer is in. */
+async function valueIt(page: Page) {
+  await page.getByRole("button", { name: "Back to chat" }).click();
+  await ask(page).fill("/review Review my portfolio");
+  await page.getByRole("button", { name: "Ask", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Analyst memo" })).toBeVisible();
+  await rail(page).getByRole("button", { name: /^Portfolio/ }).click();
+}
+
+/** Prepares the draft for review and confirms it, then waits for the new committed revision. */
+async function commit(page: Page, revision: number) {
+  await portfolio(page).getByRole("region", { name: "Unsaved draft" }).getByRole("button", { name: "Review changes" }).click();
+  const dialog = page.getByRole("dialog", { name: "Review portfolio changes" });
+  await dialog.getByTestId("confirm-proposal").click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(async () => (await (await page.request.get("/api/portfolio")).json()).revision).toBe(revision);
+}
+
+/** The view shows no valuation and no rule verdict: nothing older is passed off as current. */
+async function expectNotValued(page: Page) {
+  const view = portfolio(page);
+  await expect(view.getByRole("group", { name: "Total value" })).toContainText("Not valued yet");
+  const rules = view.getByRole("group", { name: "Rules" });
+  await expect(rules).toContainText("Not checked yet");
+  await expect(rules).not.toContainText("Within");
+  await expect(rules).not.toContainText("over");
+  await expect(view.getByRole("row", { name: /ACME/ })).not.toContainText(/Within|Over/);
+}
+
+test("a committed change makes an earlier valuation stale, through navigation and a reload", async ({ page }) => {
+  await open(page, IDENTIFIED);
+  const start = (await (await page.request.get("/api/portfolio")).json()).revision;
+  await valueIt(page);
+  const view = portfolio(page);
+  await expect(view.getByRole("group", { name: "Total value" })).toContainText(/C\$[\d,]+/);
+
+  // The fund type changes what the active budget counts; the older answer no longer describes the portfolio.
+  await view.getByLabel("Fund type for BROAD").selectOption("sector_theme");
+  await commit(page, start + 1);
+  await expectNotValued(page);
+
+  await page.getByRole("button", { name: "Back to chat" }).click();
+  // The answer itself keeps its original figures in the conversation.
+  await expect(page.getByRole("region", { name: "Analyst memo" })).toBeVisible();
+  await rail(page).getByRole("button", { name: /^Portfolio/ }).click();
+  await expectNotValued(page);
+
+  await page.reload();
+  await rail(page).getByRole("button", { name: /^Portfolio/ }).click();
+  await expectNotValued(page);
+});
+
+test("older rule checks never read Within after a committed rule change", async ({ page }) => {
+  await open(page, { ...IDENTIFIED, settings: { single_company_cap: "0.5", active_budget: "0.5", indirect_cap_policy: "direct_only" } });
+  const start = (await (await page.request.get("/api/portfolio")).json()).revision;
+  await valueIt(page);
+  const view = portfolio(page);
+  const rules = view.getByRole("group", { name: "Rules" });
+  await expect(rules).toContainText("All within");
+
+  // Only the fund policy changes; the cap and budget numbers stay the same.
+  await view.getByRole("tab", { name: "Rules and benchmark" }).click();
+  await view.getByLabel("Count fund holdings toward the cap").selectOption("include_known_indirect");
+  await commit(page, start + 1);
+  await view.getByRole("tab", { name: "Holdings" }).click();
+  await expectNotValued(page);
+
+  await page.reload();
+  await rail(page).getByRole("button", { name: /^Portfolio/ }).click();
+  await expectNotValued(page);
+});
+
 test("the portfolio fits a phone without sideways scrolling", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route("**/*", route =>

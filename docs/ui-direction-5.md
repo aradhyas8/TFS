@@ -108,9 +108,13 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
   against the cap and status. A supported stock has Analyze, which puts `/stock TICKER` in the composer. A fund's
   type is edited in its row. Below 768 each holding is a two-line row; nothing scrolls sideways.
 - Values, weights, allocation and the rule checks come only from an analysis of exactly the committed revision: a
-  stored result that names this revision, or the last desk answer when it valued exactly these holdings. A
-  hypothetical draft analysis never counts, whether the result or its stored reference says so. Rule checks made
-  against another cap or budget than the committed one are dropped and read "Not checked yet". Without one, the total says "Not valued yet" and points to a review, the
+  stored result or desk answer that names this revision (a desk answer keeps the revision it was asked against). A
+  result that names no revision counts only when its inputs are demonstrably the committed ones: every holding
+  field the analysis reads (account, kind, currency, ticker, listing, company, fund type, shares, cash, mark), the
+  reporting currency, the holdings date and each exchange rate on file. A hypothetical draft analysis never counts,
+  whether the result or its stored reference says so. Rule checks made under any other guardrail setting (cap,
+  budget, fund policy, cash tilt or any target weight; unset and absent read alike) are dropped and read "Not
+  checked yet". Without one, the total says "Not valued yet" and points to a review, the
   allocation is a count by kind, and the rules say "Not checked yet". A holding the analysis could not value says
   "Not valued"; cash before a valuation is its own amount in its own currency, so a zero balance reads C$0.
 - The freshness line under the table says when it was valued, the holdings date, the quote dates, the exchange rates

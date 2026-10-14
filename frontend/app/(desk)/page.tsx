@@ -312,7 +312,8 @@ export default function DeskPage() {
   const [run, setRun] = useState<(Sent & { id: number; startedAt: number }) | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [past, setPast] = useState<number[]>([]);
-  const [answer, setAnswer] = useState<(Sent & { analysis: Analysis }) | null>(null);
+  // A committed answer keeps the revision it was computed from, so it never values a later revision.
+  const [answer, setAnswer] = useState<(Sent & { analysis: Analysis; revision?: number | null }) | null>(null);
   const [failure, setFailure] = useState<(Sent & { message: string }) | null>(null);
   const [clarify, setClarify] = useState<Extract<Route, { kind: "clarify" }> | null>(null);
   const [saved, setSaved] = useState<SavedDecision | null>(null);
@@ -597,11 +598,11 @@ export default function DeskPage() {
   }
 
   // The portfolio view's values: only an analysis of exactly the committed revision. The stored result on
-  // screen comes first, then the last desk answer.
+  // screen comes first, then the last desk answer, each by the revision it names.
   // Its rule checks count only while they were made against the rules committed now.
   const valued =
     valuationFor(threadResult?.analysis ?? null, threadResult ?? null, committedRevision, committedSnapshot) ??
-    valuationFor(answer?.analysis ?? null, answer?.analysis.artifact_reference ?? null, committedRevision, committedSnapshot);
+    valuationFor(answer?.analysis ?? null, { revision: answer?.revision, basis: answer?.analysis.artifact_reference?.basis }, committedRevision, committedSnapshot);
   const valuation = valued && { ...valued, guardrails: ruleChecks(valued, committedSettings) };
   const edits = draftEdits(committedPortfolio, { snapshot: draftSnapshot, settings: draftSettings, benchmark: draftBenchmark });
   const isDirty = isDraftDirty(committedPortfolio, {
@@ -766,6 +767,7 @@ export default function DeskPage() {
   /** Ordinary analysis uses COMMITTED portfolio state */
   async function analyze(sent: Sent) {
     if (!committedSnapshot) return;
+    const revision = committedRevision;
     const id = ++runId.current;
     const startedAt = Date.now();
     conversation.close();
@@ -837,11 +839,11 @@ export default function DeskPage() {
       });
       if (runId.current !== id) return;
       if (analysis.status !== "completed") throw new Error("The analysis was not completed.");
-      setAnswer({ ...sent, analysis });
+      setAnswer({ ...sent, analysis, revision });
       setTab(sent.rebalance ? "proposed" : "evidence");
       setFocus(null);
       try {
-        localStorage.setItem(ANSWER_KEY, JSON.stringify({ ...sent, analysis }));
+        localStorage.setItem(ANSWER_KEY, JSON.stringify({ ...sent, analysis, revision }));
       } catch {
         /* memory only */
       }

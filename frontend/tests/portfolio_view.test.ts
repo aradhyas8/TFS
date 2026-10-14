@@ -113,3 +113,92 @@ test.describe("ruleChecks", () => {
     expect(ruleChecks(null, { single_company_cap: "0.15" })).toBeNull();
   });
 });
+
+test.describe("valuationFor, without a revision, after a committed change", () => {
+  const XEQT: Position = { id: "e1", account_id: "tfsa", kind: "etf", currency: "CAD", ticker: "XEQT", listing: "XTSE", shares: "5", etf_role: "diversified",
+    mark: { value: "30", as_of: "2026-09-30", source: "Broker display" } };
+  const RATE = { from_currency: "USD", to_currency: "CAD", rate: "1.35", as_of: "2026-09-30", source: "Broker display" };
+  const committed: Snapshot = { ...SNAPSHOT, positions: [ACME, XEQT, CASH], fx: [RATE] };
+  const answer = (snapshot: Snapshot, fx: typeof RATE | null = RATE) => {
+    const result = valued(snapshot.positions);
+    result.portfolio.reporting_currency = snapshot.reporting_currency;
+    result.portfolio.holdings_as_of = snapshot.as_of;
+    for (const row of result.portfolio.positions) row.fx_used = row.supplied.currency === "USD" ? fx : null;
+    return result;
+  };
+  const changed = (positions: Position[], extra: Partial<Snapshot> = {}): Snapshot => ({ ...committed, positions, ...extra });
+
+  test("the same inputs, written differently, still value the portfolio", () => {
+    const result = answer(committed);
+    expect(valuationFor(result, null, 15, committed)).toBe(result.portfolio);
+    const rewritten = changed([{ ...ACME, shares: "10.00", company_id: undefined }, { ...XEQT, mark: { ...XEQT.mark!, value: "30.0" } }, { ...CASH, cash: "500.00" }]);
+    expect(valuationFor(result, null, 15, rewritten)).toBe(result.portfolio);
+  });
+
+  test("a fund type change", () => {
+    expect(valuationFor(answer(committed), null, 15, changed([ACME, { ...XEQT, etf_role: "sector_theme" }, CASH]))).toBeNull();
+  });
+
+  test("an identity or listing correction", () => {
+    expect(valuationFor(answer(committed), null, 15, changed([{ ...ACME, listing: "XNYS" }, XEQT, CASH]))).toBeNull();
+    expect(valuationFor(answer(committed), null, 15, changed([{ ...ACME, ticker: "ACMX" }, XEQT, CASH]))).toBeNull();
+    expect(valuationFor(answer(committed), null, 15, changed([{ ...ACME, company_id: "acme-inc" }, XEQT, CASH]))).toBeNull();
+  });
+
+  test("a new price or mark", () => {
+    expect(valuationFor(answer(committed), null, 15, changed([ACME, { ...XEQT, mark: { ...XEQT.mark!, value: "31" } }, CASH]))).toBeNull();
+    expect(valuationFor(answer(committed), null, 15, changed([ACME, { ...XEQT, mark: { ...XEQT.mark!, as_of: "2026-10-01" } }, CASH]))).toBeNull();
+    expect(valuationFor(answer(committed), null, 15, changed([{ ...ACME, mark: { value: "100", as_of: "2026-09-30", source: "Broker display" } }, XEQT, CASH]))).toBeNull();
+  });
+
+  test("an exchange rate change, or a rate the analysis did not use", () => {
+    expect(valuationFor(answer(committed), null, 15, changed(committed.positions, { fx: [{ ...RATE, rate: "1.40" }] }))).toBeNull();
+    expect(valuationFor(answer(committed), null, 15, changed(committed.positions, { fx: [{ ...RATE, as_of: "2026-10-01" }] }))).toBeNull();
+    const before: Snapshot = { ...committed, fx: [] };
+    expect(valuationFor(answer(before, null), null, 15, before)).not.toBeNull();
+    expect(valuationFor(answer(before, null), null, 15, committed)).toBeNull();
+  });
+
+  test("a holdings, holdings date or reporting currency change", () => {
+    expect(valuationFor(answer(committed), null, 15, changed([ACME, XEQT, { ...CASH, cash: "600" }]))).toBeNull();
+    expect(valuationFor(answer(committed), null, 15, changed([ACME, XEQT, { ...CASH, account_id: "rrsp" }]))).toBeNull();
+    expect(valuationFor(answer(committed), null, 15, changed(committed.positions, { as_of: "2026-10-01" }))).toBeNull();
+    expect(valuationFor(answer(committed), null, 15, changed(committed.positions, { reporting_currency: "USD" }))).toBeNull();
+  });
+
+  test("a revision-bound answer counts only for its own revision, whatever the holdings say", () => {
+    const result = answer(committed);
+    expect(valuationFor(result, { revision: 14 }, 15, committed)).toBeNull();
+    expect(valuationFor(result, { revision: 15 }, 15, committed)).toBe(result.portfolio);
+  });
+});
+
+test.describe("ruleChecks, after any guardrail setting changes", () => {
+  const RULES = { single_company_cap: "0.15", active_budget: "0.3", indirect_cap_policy: "direct_only" as const, cash_is_deliberate_tilt: true,
+    baseline: { stocks: "0.3", diversified_etfs: "0.5", sector_theme_etfs: "0.1", cash: "0.1" } };
+  const checkedUnder = (settings: object) =>
+    ({ guardrails: { settings, companies: [{ company_id: "acme", status: "within_limit" }], active: { status: "within_limit" } } }) as unknown as Review;
+
+  test("the same rules, written differently, keep the checks", () => {
+    const review = checkedUnder(RULES);
+    expect(ruleChecks(review, { ...RULES, single_company_cap: "0.150", active_budget: "0.30" })).toBe(review.guardrails);
+    const unset = checkedUnder({ single_company_cap: "0.15", baseline: null });
+    expect(ruleChecks(unset, { single_company_cap: "0.15", active_budget: undefined, baseline: {} })).toBe(unset.guardrails);
+    expect(ruleChecks(unset, { single_company_cap: "0.15", indirect_cap_policy: null, baseline: { cash: null } })).toBe(unset.guardrails);
+  });
+
+  test("any changed rule drops the older checks", () => {
+    const review = checkedUnder(RULES);
+    for (const settings of [
+      { ...RULES, indirect_cap_policy: "include_known_indirect" as const },
+      { ...RULES, indirect_cap_policy: null },
+      { ...RULES, cash_is_deliberate_tilt: false },
+      { ...RULES, cash_is_deliberate_tilt: null },
+      { ...RULES, baseline: { ...RULES.baseline, stocks: "0.35" } },
+      { ...RULES, baseline: { ...RULES.baseline, diversified_etfs: "0.45" } },
+      { ...RULES, baseline: { ...RULES.baseline, sector_theme_etfs: null } },
+      { ...RULES, baseline: { ...RULES.baseline, cash: "0.05" } },
+      { ...RULES, baseline: null },
+    ]) expect(ruleChecks(review, settings), JSON.stringify(settings)).toBeNull();
+  });
+});

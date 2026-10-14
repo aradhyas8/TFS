@@ -4,24 +4,46 @@ import { pct } from "./format";
 /** Rows an analysis adds for its own purposes: the benchmark fund, a new-cash destination, a candidate. */
 export const isSynthetic = (id: string) => id === BENCHMARK_FUND || id === NEW_CASH_DESTINATION || id.startsWith("candidate-");
 
+/** Unset, empty and absent read alike; numbers compare by value, so "10" and "10.00" are the same holding. */
+const text = (value: string | null | undefined) => value || null;
+const amount = (value: string | null | undefined) => (value == null || value === "" ? null : Number(value));
+const sameMark = (a: Position["mark"], b: Position["mark"]) =>
+  !a || !b ? !a === !b
+    : amount(a.value) === amount(b.value) && a.as_of === b.as_of && text(a.source) === text(b.source) && text(a.basis) === text(b.basis);
+/** Every field of a holding the analysis reads to value, classify or check it: where it is held, what it is, how
+ *  much of it and its own price. A change to any of them makes an older valuation stale. */
 const sameHolding = (a: Position, b: Position) =>
-  a.account_id === b.account_id && a.kind === b.kind && a.currency === b.currency && (a.shares ?? null) === (b.shares ?? null) && (a.cash ?? null) === (b.cash ?? null);
+  a.account_id === b.account_id && a.kind === b.kind && a.currency === b.currency &&
+  text(a.ticker) === text(b.ticker) && text(a.listing) === text(b.listing) && text(a.company_id) === text(b.company_id) &&
+  text(a.etf_role) === text(b.etf_role) && amount(a.shares) === amount(b.shares) && amount(a.cash) === amount(b.cash) && sameMark(a.mark, b.mark);
+
+/** Without a revision, a result counts only when it shows it was made from exactly these inputs: the same holdings
+ *  in every field above, the same reporting currency and holdings date, and, for each foreign currency held, the
+ *  exchange rate on file now. A rate the analysis used that is not on file, or one on file it did not use, can not
+ *  be shown to be the same input, so the result is not used. */
+function sameInputs(review: Review, snapshot: Snapshot): boolean {
+  if (review.reporting_currency !== snapshot.reporting_currency) return false;
+  if (review.holdings_as_of && review.holdings_as_of !== snapshot.as_of) return false;
+  const valued = review.positions.filter(row => !isSynthetic(row.supplied.id));
+  const held = snapshot.positions.filter(row => !isSynthetic(row.id));
+  if (valued.length !== held.length || !held.every(row => valued.some(item => item.supplied.id === row.id && sameHolding(row, item.supplied)))) return false;
+  return valued.every(row => {
+    if (row.supplied.currency === snapshot.reporting_currency) return true;
+    const onFile = snapshot.fx.find(rate => rate.from_currency === row.supplied.currency && rate.to_currency === snapshot.reporting_currency);
+    const used = row.fx_used;
+    return !onFile || !used ? !onFile && !used : amount(onFile.rate) === amount(used.rate) && onFile.as_of === used.as_of;
+  });
+}
 
 /** The valuation the portfolio page may show for the committed portfolio: an analysis of exactly this revision.
- *  A stored result names its revision; a desk answer names none, so it counts only when it valued exactly these
- *  holdings. A hypothetical draft analysis never values the committed portfolio, whether the result or its stored
- *  reference says so. Nothing is estimated. */
+ *  A result bound to a revision counts only for that revision. A result with none counts only when its inputs are
+ *  demonstrably the committed ones. A hypothetical draft analysis never values the committed portfolio, whether the
+ *  result or its stored reference says so. Nothing is estimated. */
 export function valuationFor(result: Analysis | null, stored: Partial<Pick<ArtifactReference, "revision" | "basis">> | null, revision: number | null, snapshot: Snapshot | null): Review | null {
   if (!result || !snapshot) return null;
   if (result.artifact_reference?.basis === "hypothetical" || stored?.basis === "hypothetical") return null;
   if (stored?.revision != null) return stored.revision === revision ? result.portfolio : null;
-  const valuedRows = result.portfolio.positions.map(row => row.supplied).filter(row => !isSynthetic(row.id));
-  const held = snapshot.positions.filter(row => !isSynthetic(row.id));
-  const matches = valuedRows.length === held.length && held.every(row => {
-    const other = valuedRows.find(item => item.id === row.id);
-    return !!other && sameHolding(row, other);
-  });
-  return matches ? result.portfolio : null;
+  return sameInputs(result.portfolio, snapshot) ? result.portfolio : null;
 }
 
 const ROLE: Record<string, string> = { diversified: "Diversified", sector_theme: "Sector or theme" };
@@ -80,11 +102,18 @@ export function allocation(review: Review): { stocks: number; etfs: number; cash
   return { stocks: sum("stock"), etfs: sum("etf"), cash: sum("cash") };
 }
 
-/** The analysis rule checks, only while they were made against the rules committed now: an older answer checked
- *  against another cap or budget would put its verdict beside the new rule. */
+/** Every setting the guardrail checks read, in one form: unset and absent read alike, an empty target mix is no
+ *  mix, and numbers compare by value. A policy or tilt left unset is not the same as one set to No: the checks
+ *  treat them differently. */
+const guardrailSettings = (s: PortfolioSettings) => {
+  const mix = [s.baseline?.stocks, s.baseline?.diversified_etfs, s.baseline?.sector_theme_etfs, s.baseline?.cash].map(amount);
+  return JSON.stringify([amount(s.single_company_cap), amount(s.active_budget), s.indirect_cap_policy ?? null, s.cash_is_deliberate_tilt ?? null,
+    mix.every(value => value === null) ? null : mix]);
+};
+
+/** The analysis rule checks, only while they were made under every rule committed now: an older answer checked
+ *  under another cap, budget, fund policy, cash tilt or target mix would put its verdict beside the new rules. */
 export function ruleChecks(review: Review | null, settings: PortfolioSettings): GuardrailReview | null {
   const checks = review?.guardrails;
-  if (!checks) return null;
-  const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? null) === (b ?? null);
-  return same(checks.settings.single_company_cap, settings.single_company_cap) && same(checks.settings.active_budget, settings.active_budget) ? checks : null;
+  return checks && guardrailSettings(checks.settings) === guardrailSettings(settings) ? checks : null;
 }
