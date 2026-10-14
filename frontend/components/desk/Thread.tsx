@@ -21,7 +21,7 @@ import {
 } from "../../lib/contracts";
 import { linkOnly, placeCitations, webAddress, type Source } from "./citations";
 import { fullDate } from "./format";
-import { changeRows } from "./proposal";
+import { changeRows, isStale } from "./proposal";
 import type { PendingSend } from "./useConversation";
 import styles from "./Thread.module.css";
 
@@ -436,7 +436,7 @@ function Proposal({ id, shared }: { id: string; shared: Shared }) {
         Ask again to prepare a new preview from your saved portfolio.
       </Alert>
     );
-  const outdated = proposal.status === "stale" || (proposal.status === "pending" && committedRevision != null && proposal.base_revision != null && proposal.base_revision !== committedRevision);
+  const outdated = isStale(proposal, committedRevision);
   const [label, tone] = PROPOSAL_STATE[outdated ? "stale" : proposal.status];
   const changes = proposal.differences.length;
   return (
@@ -450,7 +450,7 @@ function Proposal({ id, shared }: { id: string; shared: Shared }) {
       {proposal.status === "pending" && !outdated && (
         <ul className={styles.proposalChanges} aria-label="Changes, before and after">
           {changeRows(proposal, shared.snapshot).slice(0, 3).map(row => (
-            <li key={row.key}><span>{row.subject} <small>{row.detail.split(" · ").pop()}</small></span><b>{row.before} → {row.after}</b></li>
+            <li key={row.key}><span>{row.subject} <small>{row.detail}</small></span><b>{row.before} <span aria-hidden="true">→</span><span className="sr-only">to</span> {row.after}</b></li>
           ))}
         </ul>
       )}

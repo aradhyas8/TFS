@@ -71,6 +71,11 @@ test("prepare, review before and after, confirm: a new revision and its receipt"
   await expect(changes(page).getByRole("row", { name: /BROAD/ })).toHaveText(/BROAD.*RRSP · fund type.*Diversified.*Sector or theme/);
   await expect(sheet.getByRole("list", { name: "Left as they are" })).toContainText("Holdings date");
   await expect(sheet).toContainText("It updates your records only. It does not place a trade.");
+  // Focus stays inside the review.
+  for (let step = 0; step < 10; step++) {
+    await page.keyboard.press("Tab");
+    expect(await sheet.evaluate(node => node.contains(document.activeElement))).toBe(true);
+  }
   expect((await saved(page)).revision).toBe(1);
 
   await sheet.getByRole("button", { name: "Confirm changes" }).click();
@@ -178,13 +183,65 @@ test("a confirmation that gets no reply can be retried, and applies once", async
   expect((await saved(page)).revision).toBe(2);
 });
 
+test("cancelling after a confirmation lost its reply reports the saved revision, not a cancellation", async ({ page }) => {
+  await open(page);
+  await prepareFromPortfolio(page);
+  await page.route("**/api/portfolio/proposals/*/confirm", async route => { await route.fetch(); await route.abort("failed"); }, { times: 1 });
+  await review(page).getByRole("button", { name: "Confirm changes" }).click();
+  await expect(review(page).getByRole("alert")).toContainText("The confirmation got no reply");
+
+  // The confirmation did reach the server: the cancel is refused, and the page says what was saved.
+  await review(page).getByRole("button", { name: "Cancel proposal" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Saved as portfolio revision 2" })).toBeVisible();
+  await expect(review(page)).toHaveCount(0);
+  expect((await saved(page)).revision).toBe(2);
+  await expect(page.getByTestId("portfolio-date")).toBeAttached();
+  await expect(rail(page)).toContainText("Portfolio revision 2");
+});
+
+test("two tabs confirming from the same revision: the second is refused", async ({ page, context }) => {
+  await open(page);
+  await prepareFromPortfolio(page);
+  const other = await context.newPage();
+  await other.setViewportSize({ width: 1440, height: 900 });
+  await other.goto("/");
+  await rail(other).getByRole("button", { name: /^Portfolio/ }).click();
+  await portfolio(other).getByRole("tab", { name: "Rules and benchmark" }).click();
+  await portfolio(other).getByLabel("Single-company cap (%)").fill("40");
+  await portfolio(other).getByRole("region", { name: "Unsaved draft" }).getByRole("button", { name: "Review changes" }).click();
+
+  await review(other).getByRole("button", { name: "Confirm changes" }).click();
+  await expect(other.getByRole("status").filter({ hasText: "Saved as portfolio revision 2" })).toBeVisible();
+  await review(page).getByRole("button", { name: "Confirm changes" }).click();
+  await expect(review(page).getByRole("alert")).toContainText("This proposal is out of date");
+  expect((await saved(page)).revision).toBe(2);
+  expect((await saved(page)).portfolio.snapshot.positions.find(row => row.id === "rrsp-broad")?.etf_role).toBe("diversified");
+});
+
+test("a change from the open conversation is offered once, by its card, and shows when it goes out of date", async ({ page }) => {
+  await open(page);
+  await page.getByRole("textbox", { name: /type \/ for workflows/ }).fill("Set my ACME shares to 12");
+  await page.getByRole("button", { name: "Ask", exact: true }).click();
+  const card = page.getByRole("log", { name: "Conversation" }).getByRole("article", { name: "Proposed portfolio changes" });
+  await expect(card.getByRole("button", { name: "Review changes" })).toBeVisible();
+  // Its card already offers the review, so the waiting list doesn't repeat it.
+  await expect(page.getByRole("region", { name: "Changes waiting for you" })).toHaveCount(0);
+
+  // The portfolio moves on elsewhere: the card says so and offers nothing to confirm.
+  await commitElsewhere(page, 1);
+  await page.reload();
+  await expect(card).toContainText("Out of date");
+  await expect(card.getByRole("button")).toHaveCount(0);
+  expect((await saved(page)).revision).toBe(2);
+});
+
 test("a change asked for in the conversation is reviewed with its origin, before and after", async ({ page }) => {
   await open(page);
   await page.getByRole("textbox", { name: /type \/ for workflows/ }).fill("Set my ACME shares to 12");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   const card = page.getByRole("log", { name: "Conversation" }).getByRole("article", { name: "Proposed portfolio changes" });
   await expect(card).toContainText("ACME");
-  await expect(card).toContainText("10 → 12");
+  await expect(card.getByRole("list", { name: "Changes, before and after" })).toHaveText(/ACME.*shares.*10 →\s*to 12/);
   await card.getByRole("button", { name: "Review changes" }).click();
   await expect(review(page)).toContainText("From a conversation · prepared from revision 1");
   await expect(changes(page).getByRole("row", { name: /ACME/ })).toHaveText(/ACME.*TFSA · shares.*10.*12/);
@@ -208,19 +265,19 @@ test("an import shows the holdings it adds and removes", async ({ page }) => {
   expect((await saved(page)).revision).toBe(1);
 });
 
-test("the review fits a phone: every change and both actions are reachable without sideways scrolling", async ({ page }) => {
-  await open(page, 390);
+for (const [device, width] of [["phone", 390], ["tablet", 768]] as const) test(`the review fits a ${device}: every change and both actions are reachable without sideways scrolling`, async ({ page }) => {
+  await open(page, width);
   await page.getByRole("button", { name: "Open portfolio and decisions" }).click();
   await prepareFromPortfolio(page);
   const sheet = review(page);
   // Measured once the panel has finished sliding in.
-  await expect.poll(async () => (await sheet.boundingBox())!.x + (await sheet.boundingBox())!.width).toBeLessThanOrEqual(390);
-  const width = await page.evaluate(() => document.documentElement.scrollWidth);
-  expect(width).toBeLessThanOrEqual(390);
+  await expect.poll(async () => (await sheet.boundingBox())!.x + (await sheet.boundingBox())!.width).toBeLessThanOrEqual(width);
+  const scroll = await page.evaluate(() => document.documentElement.scrollWidth);
+  expect(scroll).toBeLessThanOrEqual(width);
   for (const name of ["Confirm changes", "Cancel proposal"]) {
     const box = (await sheet.getByRole("button", { name }).boundingBox())!;
     expect(box.y + box.height).toBeLessThanOrEqual(900);
-    expect(box.x + box.width).toBeLessThanOrEqual(390);
+    expect(box.x + box.width).toBeLessThanOrEqual(width);
     expect(box.height).toBeGreaterThanOrEqual(44);
   }
   await expect(changes(page).getByRole("row", { name: /BROAD/ })).toBeInViewport();

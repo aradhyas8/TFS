@@ -24,6 +24,8 @@ export type PortfolioPreviewProps = {
   error?: string | null;
   /** The backend refused to confirm it because the portfolio moved on. */
   refused?: boolean;
+  /** Where focus goes on closing when the control that opened the review is gone. */
+  fallbackFocus?: () => HTMLElement | null;
 };
 
 const prepared = (proposal: PortfolioProposal) =>
@@ -32,7 +34,7 @@ const prepared = (proposal: PortfolioProposal) =>
 /** The review of a prepared portfolio change: what changes, as saved now and after confirming, the revision it was
  *  prepared from, and an explicit Confirm that saves a new revision. Closing leaves the proposal waiting; only Cancel
  *  proposal cancels it. A stale proposal can't be confirmed and is never moved onto the newer revision. */
-export default function PortfolioPreview({ proposal, snapshot, committedRevision, onConfirm, onCancel, onClose, confirming = false, cancelling = false, error = null, refused = false }: PortfolioPreviewProps) {
+export default function PortfolioPreview({ proposal, snapshot, committedRevision, onConfirm, onCancel, onClose, confirming = false, cancelling = false, error = null, refused = false, fallbackFocus }: PortfolioPreviewProps) {
   // The last proposal stays on screen while the panel slides out.
   const shown = useDrawerItem(proposal);
   const busy = confirming || cancelling;
@@ -49,31 +51,31 @@ export default function PortfolioPreview({ proposal, snapshot, committedRevision
   const giveBack = (event: Event) => {
     event.preventDefault();
     const target = opener.current;
-    const fallback = document.getElementById("portfolio-title") || document.getElementById("decisions-title") || document.getElementById("ask");
-    (target?.isConnected && !target.matches(":disabled") ? target : fallback)?.focus();
+    (target?.isConnected && !target.matches(":disabled") ? target : fallbackFocus?.())?.focus();
   };
   if (!shown) return null;
 
   // The page may not have loaded the newer revision yet when the backend refuses; then it is not named.
-  const known = isStale(shown, committedRevision);
-  const stale = refused || known;
+  const behind = isStale(shown, committedRevision);
+  const stale = refused || behind;
   const rows = changeRows(shown, snapshot);
-  const same = unchangedGroups(shown);
+  const untouched = unchangedGroups(shown);
+  const changes = shown.differences.length;
   const base = shown.base_revision;
-  const hold = (event: Event) => { if (busy) event.preventDefault(); };
+  const stayWhileBusy = (event: Event) => { if (busy) event.preventDefault(); };
 
   return <Drawer open={!!proposal} onOpenChange={open => { if (!open && !busy) onClose(); }}>
     <DrawerContent title="Review portfolio changes" description={`${ORIGIN[shown.origin] || "Change"} · ${prepared(shown)}`}
-      className="review-sheet" onEscapeKeyDown={hold} onInteractOutside={hold} onCloseAutoFocus={giveBack}>
+      className="review-sheet" onEscapeKeyDown={stayWhileBusy} onInteractOutside={stayWhileBusy} onCloseAutoFocus={giveBack}>
       <div className="review">
         <p className="review-rev">
-          {refused && !known ? "Your saved portfolio changed after this was prepared"
+          {refused && !behind ? "Your saved portfolio changed after this was prepared"
             : committedRevision != null ? `Your portfolio is at revision ${committedRevision}` : "No portfolio is saved yet"}
-          {" · "}{rows.length} change{rows.length === 1 ? "" : "s"}
+          {" · "}{changes} change{changes === 1 ? "" : "s"}
         </p>
 
-        {stale && <Alert tone="danger" title="This proposal is out of date">
-          It was {prepared(shown)}{known && committedRevision != null ? `, and your portfolio is now revision ${committedRevision}` : ", and the saved portfolio has changed since"}. It can&apos;t be
+        {stale && <Alert tone="danger" title="This proposal is out of date" id="review-stale">
+          It was {prepared(shown)}{behind && committedRevision != null ? `, and your portfolio is now revision ${committedRevision}` : ", and the saved portfolio has changed since"}. It can&apos;t be
           confirmed. It won&apos;t be moved onto the newer portfolio. Cancel it, then review your changes again. Edits you haven&apos;t saved are kept.
         </Alert>}
         {error && !stale && <Alert tone="danger" title="Not confirmed">{error}</Alert>}
@@ -84,13 +86,13 @@ export default function PortfolioPreview({ proposal, snapshot, committedRevision
           </div>
           {rows.map(row => <div role="row" className="review-row" data-change={row.change} key={row.key}>
             <span role="cell" className="what"><b>{row.subject}</b><small>{row.detail}</small></span>
-            <span role="cell" className="was"><span className="sr-only">Before: </span>{row.before}</span>
-            <span role="cell" className="now"><span className="sr-only">After: </span>{row.after}</span>
+            <span role="cell" className="was">{row.before}</span>
+            <span role="cell" className="now">{row.after}</span>
           </div>)}
         </div>
 
-        {same.length > 0 && <ul className="review-same" aria-label="Left as they are">
-          {same.map(label => <li key={label}><span>{label}</span><b>Unchanged</b></li>)}
+        {untouched.length > 0 && <ul className="review-same" aria-label="Left as they are">
+          {untouched.map(label => <li key={label}><span>{label}</span><b>Unchanged</b></li>)}
         </ul>}
 
         {shown.warnings.length > 0 && <section className="review-warn" aria-labelledby="review-warn-title">
@@ -114,7 +116,7 @@ export default function PortfolioPreview({ proposal, snapshot, committedRevision
           </p>
           <div className="review-actions">
             <Button variant="primary" data-testid="confirm-proposal" onClick={onConfirm} loading={confirming}
-              disabled={stale || cancelling}>
+              disabled={stale || cancelling} aria-describedby={stale ? "review-stale" : undefined}>
               {!confirming && <Check size={16} aria-hidden="true" />}{confirming ? "Confirming…" : "Confirm changes"}
             </Button>
             <Button variant="ghost" data-testid="cancel-proposal" onClick={onCancel} loading={cancelling} disabled={confirming}>

@@ -34,8 +34,7 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .sage { color: var(--sage); }
 .desk .amber { color: var(--amber); }
 .desk .brass { color: var(--brass); }
-.desk .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-.desk .skip { position: absolute; left: 8px; top: -48px; z-index: 50; background: var(--text); color: var(--ground); padding: 8px 14px; border-radius: 999px; }
+.desk .sr-only, .desk .skip { position: absolute; left: 8px; top: -48px; z-index: 50; background: var(--text); color: var(--ground); padding: 8px 14px; border-radius: 999px; }
 .desk .skip:focus { top: 8px; }
 .desk sup { line-height: 1; font-size: 11px; margin-left: 2px; }
 /* Adjacent source markers stay separate numbers, not one underlined run. */
@@ -377,14 +376,14 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 
 /* Proposal review (phase 4): an Arc drawer from the right, portaled outside .desk, so it uses the theme tokens.
    Before is struck through in muted text, after is set on the green draft tint; the footer stays in view. */
-.review-sheet[data-side] { --drawer-size: min(34rem, calc(100vw - 12px)); background: var(--background); font-family: var(--font-body); color: var(--foreground); }
-.review-sheet .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.review-sheet[data-side] { --drawer-size: min(34rem, calc(100vw - 12px)); font-family: var(--font-body); color: var(--foreground); }
 .review-more summary { cursor: pointer; margin-top: 6px; font-weight: 500; }
 .review { display: flex; flex-direction: column; gap: 14px; min-height: 100%; color: var(--foreground); }
 .review-rev { margin: 0; color: var(--text-secondary); font-size: 13px; }
 .review-table { border-radius: 12px; overflow: hidden; background: var(--surface); }
 .review-row { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 10px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--border-subtle); font-size: 13.5px; overflow-wrap: anywhere; }
 .review-row.head { border-top: 0; padding: 7px 14px; background: var(--surface-muted); color: var(--text-muted); font-size: 12px; }
+.review-row .what b { font-weight: 600; }
 .review-row .what small { display: block; color: var(--text-muted); font-size: 12px; }
 .review-row .was { color: var(--text-muted); text-decoration: line-through; text-decoration-color: var(--border-strong); }
 .review-row .now { justify-self: start; padding: 2px 8px; border-radius: 7px; background: var(--success-subtle); color: var(--success-strong); font-weight: 600; }
@@ -400,14 +399,14 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .review-warnings { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
 .review-note { margin: 0; color: var(--text-muted); font-size: 12.5px; }
 .review-foot { position: sticky; bottom: calc(-1 * var(--space-6)); margin: auto calc(-1 * var(--space-6)) calc(-1 * var(--space-6)); padding: 14px var(--space-6) var(--space-6);
-  display: flex; flex-direction: column; gap: 12px; background: var(--background); border-top: 1px solid var(--border-subtle); }
+  display: flex; flex-direction: column; gap: 12px; background: var(--surface-raised); border-top: 1px solid var(--border-subtle); }
 .review-foot p { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
 .review-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 @media (max-width: 40rem) {
   .review-foot { bottom: calc(-1 * var(--space-5)); margin: auto calc(-1 * var(--space-5)) calc(-1 * var(--space-5)); padding: 12px var(--space-5) var(--space-5); }
   .review-row { grid-template-columns: 1fr 1fr; }
   .review-row .what { grid-column: 1 / -1; }
-  .review-row.head span:first-child { display: none; }
+  .review-row.head span:first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .review-actions > * { flex: 1 1 auto; min-height: 44px; }
 }
 /* Below the header, clear of the composer and its send button. */
@@ -420,7 +419,9 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .waiting-sub { margin: -6px 0 0; color: var(--text-2); font-size: 13px; }
 .desk .waiting-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-top: 10px; border-top: 1px solid var(--rule); }
 .desk .waiting-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 14rem; font-size: 14px; }
+.desk .waiting-text b { font-weight: 600; }
 .desk .waiting-actions { display: flex; gap: 8px; }
+@media (max-width: 1023px) { .desk .waiting-actions > * { min-height: 44px; } }
 
 /* Portfolio and Decisions (phase 3): views of their own in place of the conversation, with their own header. */
 .desk .btn.ghost { background: transparent; border-color: transparent; color: var(--text-2); }

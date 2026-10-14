@@ -273,7 +273,7 @@ export default function DeskPage() {
   const [confirming, setConfirming] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   // The backend refused to confirm the open proposal because the portfolio moved on since it was prepared.
-  const [isProposalStale, setIsProposalStale] = useState(false);
+  const [proposalRefused, setProposalRefused] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   // The receipt of the last confirmation, shown once; the revision itself is shown wherever the portfolio is.
   const [receipt, setReceipt] = useState<ProposalReceipt | null>(null);
@@ -303,7 +303,7 @@ export default function DeskPage() {
 
   function openProposal(proposal: PortfolioProposal) {
     setActiveProposal(proposal);
-    setIsProposalStale(false);
+    setProposalRefused(false);
     setPreviewError(null);
   }
 
@@ -662,13 +662,13 @@ export default function DeskPage() {
         return;
       }
       setActiveProposal(res.proposal);
-      setIsProposalStale(false);
+      setProposalRefused(false);
       refreshProposals();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to prepare portfolio review.";
       if (msg.includes("409") || msg.toLowerCase().includes("stale")) {
         setNotice(
-          "The saved portfolio was updated. Your draft edits are preserved — please review again against current state."
+          "The saved portfolio was updated. Your draft edits are kept. Review them again against the current portfolio."
         );
       } else {
         setNotice(msg);
@@ -680,24 +680,52 @@ export default function DeskPage() {
 
   function handleProposal(proposal: PortfolioProposal) {
     setActiveProposal(proposal);
-    setIsProposalStale(false);
+    setProposalRefused(false);
     setPreviewError(null);
     setPendingProposals(prev => [proposal, ...prev.filter(p => p.id !== proposal.id)]);
   }
 
-  async function cancelPendingProposal(proposalId: string) {
+  /** Takes in a confirmation the server already holds: the new committed portfolio and its receipt. */
+  function adoptConfirmation(res: ConfirmationResult, proposal: PortfolioProposal) {
+    adoptCommitted(res, proposal);
+    setReceipt(res.receipt);
+    setActiveProposal(null);
+    setProposalRefused(false);
+    setPreviewError(null);
+    setPendingProposals(prev => prev.filter(p => p.id !== proposal.id));
+    refreshProposals();
+  }
+
+  /** Cancels a proposal. If the server says it was already applied (a confirmation whose reply was lost), the
+   *  receipt is fetched instead, since confirming an applied proposal returns it, and the page shows what was saved.
+   *  Any other failure is reported and the proposal stays where it was. */
+  async function cancelOnServer(proposal: PortfolioProposal): Promise<boolean> {
     try {
-      await cancelProposal(proposalId);
-    } catch {
-      // Ignored if network issue or already cancelled
-    } finally {
-      setPendingProposals(prev => prev.filter(p => p.id !== proposalId));
-      if (activeProposal?.id === proposalId) {
-        setActiveProposal(null);
-        setIsProposalStale(false);
-        setPreviewError(null);
-      }
+      await cancelProposal(proposal.id);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
+      if (/already been applied/i.test(msg)) {
+        try {
+          adoptConfirmation(await confirmProposal(proposal.id), proposal);
+        } catch {
+          setNotice("This change was already saved. Reload the page to see it.");
+        }
+      } else if (/cancelled/i.test(msg)) return true;
+      else setPreviewError(msg || "The proposal couldn't be cancelled. Try again.");
+      return false;
     }
+  }
+
+  async function cancelPendingProposal(proposalId: string) {
+    const proposal = pendingProposals.find(p => p.id === proposalId);
+    if (!proposal) return;
+    if (!(await cancelOnServer(proposal))) {
+      return;
+    }
+    setPendingProposals(prev => prev.filter(p => p.id !== proposalId));
+    if (activeProposal?.id === proposalId) closeProposal();
+    refreshProposals();
   }
 
   async function confirmActiveProposal() {
@@ -707,18 +735,12 @@ export default function DeskPage() {
     setConfirming(true);
     setPreviewError(null);
     try {
-      const res = await confirmProposal(confirmed.id);
-      adoptCommitted(res, confirmed);
-      setReceipt(res.receipt);
-      setActiveProposal(null);
-      setIsProposalStale(false);
-      setPendingProposals(prev => prev.filter(p => p.id !== confirmed.id));
-      refreshProposals();
+      adoptConfirmation(await confirmProposal(confirmed.id), confirmed);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
       if (/stale|409|conflict/i.test(msg)) {
         // Refused, never rebased: the proposal stays as it was prepared and the draft is untouched.
-        setIsProposalStale(true);
+        setProposalRefused(true);
         refreshProposals();
       } else if (!(err instanceof Error) || err instanceof TypeError || err.name === "TimeoutError" || err.name === "AbortError") {
         // The request may have reached the server. Confirming again is safe: an applied proposal returns its receipt.
@@ -734,26 +756,21 @@ export default function DeskPage() {
 
   async function cancelActiveProposal() {
     if (!activeProposal || confirmingRef.current) return;
+    const cancelling = activeProposal;
     setCancelling(true);
-    const cancellingId = activeProposal.id;
-    try {
-      await cancelProposal(cancellingId);
-    } catch {
-      // Ignored if network issue or already cancelled
-    } finally {
-      setActiveProposal(null);
-      setCancelling(false);
-      setIsProposalStale(false);
-      setPreviewError(null);
-      setPendingProposals(prev => prev.filter(p => p.id !== cancellingId));
-      refreshProposals();
-    }
+    setPreviewError(null);
+    const done = await cancelOnServer(cancelling);
+    setCancelling(false);
+    if (!done) return;
+    setPendingProposals(prev => prev.filter(p => p.id !== cancelling.id));
+    closeProposal();
+    refreshProposals();
   }
 
   /** Closes the review and leaves the proposal waiting, to be reviewed again from the list of changes. */
   function closeProposal() {
     setActiveProposal(null);
-    setIsProposalStale(false);
+    setProposalRefused(false);
     setPreviewError(null);
   }
 
@@ -767,10 +784,12 @@ export default function DeskPage() {
     setNotice("");
   }
 
-  // Changes waiting for confirmation. One prepared in the open conversation is already shown there, with its review.
-  const waitingHere = pendingProposals.filter(p => !(view === "chat" && p.thread_id && p.thread_id === conversation.openId));
   const showThread =
     !viewOpen && !reopened && !run && !clarify && !failure && (!!conversation.openId || !!conversation.pending);
+  // Changes waiting for confirmation. One prepared in the conversation on screen is shown by its own card, which
+  // offers its review; an out-of-date one stays listed here so it can still be opened and cancelled.
+  const waitingHere = pendingProposals.filter(p =>
+    !(showThread && p.thread_id && p.thread_id === conversation.openId && !isStale(p, committedRevision)));
   const result = (showThread ? threadResult?.analysis : answer?.analysis) ?? null;
   const evidence = evidenceFor(reopened ? null : result, reopened);
   const cite = {
@@ -2267,6 +2286,7 @@ export default function DeskPage() {
             {!showThread && !run && !reopened && !viewOpen && !clarify && !failure && draftBasis}
             <p className="sr-only" aria-live="polite">
               {result && !run ? "Answer ready." : ""}
+              {receipt ? ` Saved as portfolio revision ${receipt.new_revision}. No trade was placed.` : ""}
             </p>
           </div>
         </div>
@@ -2370,7 +2390,8 @@ export default function DeskPage() {
         confirming={confirming}
         cancelling={cancelling}
         error={previewError}
-        refused={isProposalStale}
+        refused={proposalRefused}
+        fallbackFocus={() => document.getElementById(view === "chat" ? "ask" : `${view}-title`)}
       />
       {receipt && (
         <div className="receipt-toast">

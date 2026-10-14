@@ -14,6 +14,10 @@ export const ORIGIN: Record<PortfolioProposal["origin"], string> = {
 export const isStale = (proposal: Pick<PortfolioProposal, "status" | "base_revision">, revision: number | null) =>
   proposal.status === "stale" || (proposal.status === "pending" && revision != null && (proposal.base_revision ?? null) !== revision);
 
+/** Whether a difference adds, removes or changes something, from the suffix of its kind. */
+const changeOf = (kind: string): ChangeRow["change"] => (kind.endsWith("_added") ? "added" : kind.endsWith("_removed") ? "removed" : "changed");
+const known = (value: unknown) =>
+  value == null || (Array.isArray(value) && !value.length) ? "Not known" : Array.isArray(value) ? value.join(", ") : String(value);
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 const shares = (value: string | null | undefined) => (value == null ? "Unknown" : `${value} shares`);
 const name = (row: Position) => (row.kind === "cash" ? `Cash ${row.currency}` : row.ticker || row.company_name || row.id);
@@ -36,7 +40,7 @@ const FIELDS: [keyof Position, string, (row: Position) => string][] = [
 
 /** What an identity correction can learn about a holding still to identify. */
 const UNRESOLVED_FIELDS: [keyof UnresolvedHolding, string][] = [
-  ["listing", "exchange"], ["kind", "type"], ["currency", "currency"], ["shares", "shares"], ["average_cost", "average cost"],
+  ["listing", "exchange"], ["kind", "type"], ["currency", "currency"], ["shares", "shares"], ["average_cost", "average cost"], ["candidates", "possible listings"],
 ];
 
 /** The proposal's differences as rows a person can read, from the backend's own before and after values. Nothing
@@ -83,8 +87,8 @@ export function changeRows(proposal: Pick<PortfolioProposal, "differences">, sna
           push(item, row.ticker, where, shares(before.shares), identified ? "Identified" : "Removed", "removed");
         } else
           for (const [field, label] of UNRESOLVED_FIELDS)
-            if ((before[field] ?? null) !== (after[field] ?? null))
-              push(item, row.ticker, `${where}, ${label}`, before[field] == null ? "Not known" : String(before[field]), after[field] == null ? "Not known" : String(after[field]), "changed");
+            if (JSON.stringify(before[field] ?? null) !== JSON.stringify(after[field] ?? null))
+              push(item, row.ticker, `${where}, ${label}`, known(before[field]), known(after[field]), "changed");
         break;
       }
       case "cost_added":
@@ -93,16 +97,14 @@ export function changeRows(proposal: Pick<PortfolioProposal, "differences">, sna
         const id = item.path.slice("average_costs[".length, -1);
         const held = position(id);
         const show = (value: unknown) => (value == null ? "Not given" : money(String(value), held?.currency || ""));
-        push(item, held ? name(held) : id, "Average cost", show(item.before), item.after == null ? "Removed" : show(item.after),
-          item.kind === "cost_added" ? "added" : item.kind === "cost_removed" ? "removed" : "changed");
+        push(item, held ? name(held) : id, "Average cost", show(item.before), item.after == null ? "Removed" : show(item.after), changeOf(item.kind));
         break;
       }
       case "fx_added":
       case "fx_removed":
       case "fx_changed": {
         const fx = (item.after ?? item.before) as FX;
-        push(item, `${fx.from_currency} to ${fx.to_currency}`, "Exchange rate", rate(item.before as FX | null), item.after ? rate(item.after as FX) : "Removed",
-          item.kind === "fx_added" ? "added" : item.kind === "fx_removed" ? "removed" : "changed");
+        push(item, `${fx.from_currency} to ${fx.to_currency}`, "Exchange rate", rate(item.before as FX | null), item.after ? rate(item.after as FX) : "Removed", changeOf(item.kind));
         break;
       }
       case "settings_set":

@@ -58,6 +58,9 @@ test.describe("changeRows: what changes, before and after", () => {
       ["XYZ", "TFSA · to identify, exchange", "Not known", "XTSE", "changed"],
       ["XYZ", "TFSA · to identify, currency", "Not known", "CAD", "changed"],
     ]);
+    expect(rows(diff("unresolved_changed", "unresolved[tfsa:XYZ]", XYZ, { ...XYZ, candidates: ["XTSE", "XNAS"] }))).toEqual([
+      ["XYZ", "TFSA · to identify, possible listings", "Not known", "XTSE, XNAS", "changed"],
+    ]);
   });
 
   test("average costs, exchange rates, the holdings date and the reporting currency", () => {

@@ -150,13 +150,16 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
 - Closing (the X, Escape or outside the panel) leaves the proposal waiting. Only Cancel proposal cancels it. While a
   confirmation or cancellation is in flight neither can close the panel, and a second click sends nothing.
 - A proposal prepared from an older revision, or refused by the backend as stale, shows a red "This proposal is out of
-  date" alert and a disabled Confirm. It is never moved onto the newer revision, and unsaved edits are kept.
+  date" alert and a disabled Confirm, described by that alert. It is never moved onto the newer revision, and unsaved edits are kept.
 - A confirmation that gets no reply says so and can be confirmed again; the backend returns the receipt of a proposal
   already applied, so nothing is applied twice.
 - After confirming, an Arc toast below the header gives the new revision, the one before and the time, and that no
-  trade was placed. The conversation card keeps "Your portfolio moved from revision 1 to revision 2".
+  trade was placed; the page's polite live region announces it. The conversation card keeps "Your portfolio moved
+  from revision 1 to revision 2".
+- A cancel the server refuses because the proposal was already applied (a confirmation whose reply was lost) fetches
+  its receipt and shows the saved revision; any other cancel failure is shown and the proposal stays.
 - Changes waiting for confirmation are listed above the conversation with Review and Cancel proposal, except one
-  prepared in the conversation that is open, which its own card shows. That card previews up to three changes as
+  prepared in the conversation that is open, which its own card shows while it is current. That card previews up to three changes as
   before → after. The portfolio's Changes tab lists the same proposals.
 
 ## Where the app differs from the mockup on purpose
