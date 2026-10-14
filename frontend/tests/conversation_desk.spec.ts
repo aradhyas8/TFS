@@ -187,7 +187,7 @@ test("slash shortcuts, natural workflow routes and the decision register still w
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
   await expect(page.locator(".ctx")).toContainText("Portfolio review");
   await page.getByRole("button", { name: "Save decision" }).click();
-  await expect(rail(page).getByTestId("decision-item")).toHaveCount(1);
+  await expect(rail(page).getByTestId("all-decisions-link")).toContainText("1 open");
 
   // The cached last answer and the saved decision come back after a reload; neither becomes a conversation.
   await page.reload();
@@ -199,10 +199,12 @@ test("slash shortcuts, natural workflow routes and the decision register still w
   await expect(page.locator(".ctx")).toContainText("Stock analysis · ACME");
   await expect(page.getByRole("main").getByRole("heading", { level: 2 })).toContainText("ACME");
   await rail(page).getByTestId("all-decisions-link").click();
-  await expect(page.getByRole("heading", { name: "Decisions Register" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Decisions", level: 1 })).toBeVisible();
   expect(await (await page.request.get("/api/threads")).json()).toEqual([]);
 
-  // From a conversation, a shortcut still opens its workflow and the conversation stays in the list.
+  // Back from Decisions to the answer on screen, a question starts its own conversation; a shortcut there still
+  // opens its workflow and the conversation stays in the list.
+  await page.getByRole("button", { name: "Back to chat" }).click();
   await send(page, "What is a stock split?");
   await expect(thread(page)).toContainText("Plain answer to: What is a stock split?");
   await ask(page).fill("/new-cash");
@@ -250,13 +252,16 @@ test("ordinary questions stay in the conversation when a portfolio exists, and a
   expect(lookups).toEqual([]);
   expect(await threads(page)).toHaveLength(1);
 
-  // Asked from the decision register, a question starts its own conversation.
+  // Decisions take the place of the conversation and have no composer; nothing can be sent to the hidden thread.
+  // Back to chat returns to the same conversation, which the next question continues.
   await rail(page).getByTestId("all-decisions-link").click();
-  await expect(page.getByRole("heading", { name: "Decisions Register" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Decisions", level: 1 })).toBeVisible();
+  await expect(ask(page)).toBeHidden();
+  await page.getByRole("button", { name: "Back to chat" }).click();
+  await expect(thread(page)).toContainText("What is an ETF?");
   await send(page, "What is a bond?");
   await expect(thread(page)).toContainText("Plain answer to: What is a bond?");
-  await expect(thread(page)).not.toContainText("What is an ETF?");
-  expect(await threads(page)).toHaveLength(2);
+  expect(await threads(page)).toHaveLength(1);
 });
 
 test("a send that was never acknowledged is recovered after a reload without running twice", async ({ page }) => {

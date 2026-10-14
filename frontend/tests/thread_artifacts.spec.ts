@@ -34,7 +34,7 @@ async function open(page: Page, saved: object | null = SAVED) {
   if (saved) await seedPortfolio(page, saved);
   else await page.request.delete("/api/test/portfolio");
   await page.goto("/");
-  if (saved) await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  if (saved) await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
 }
 
 async function send(page: Page, question: string) {
@@ -366,7 +366,7 @@ test("a stored result is saved as a decision with its workflow and subject, jour
   await result.getByRole("button", { name: "Save decision" }).click();
   await expect(result).toContainText(/Saved to Decisions \d\d?:\d\d/);
   await expect(result.getByRole("button", { name: "Save decision" })).toHaveCount(0);
-  await expect(rail.getByTestId("decision-item").filter({ hasText: "Stock analysis · ACME" })).toBeVisible();
+  await expect(rail.getByTestId("all-decisions-link")).toContainText("1 open");
   const [decision] = await (await page.request.get("/api/decisions")).json();
   expect(decision.workflow).toBe("stock");
   expect(decision.subject).toMatchObject({ label: "ACME", ticker: "ACME", listing: "XNAS" });
@@ -388,7 +388,7 @@ test("a stored result is saved as a decision with its workflow and subject, jour
   expect(await (await page.request.get("/api/decisions")).json()).toHaveLength(1);
 
   // The register still filters by workflow, and the saved decision reopens read-only.
-  await rail.getByRole("button", { name: "All decisions" }).click();
+  await rail.getByTestId("all-decisions-link").click();
   const register = page.getByRole("region", { name: "Decisions register" });
   await register.getByLabel("Filter by workflow").selectOption("stock");
   await expect(register.getByTestId("decision-row")).toHaveCount(1);
@@ -480,8 +480,11 @@ test("a deleted decision no longer shows its stored result as saved, one at a ti
   await expect(result).toContainText(/Saved to Decisions \d\d?:\d\d/);
   await expect(result.getByRole("button", { name: "Record action" })).toBeVisible();
 
-  await rail.getByRole("button", { name: /^Delete decision: / }).click();
-  await expect(rail.getByTestId("decision-item")).toHaveCount(0);
+  await rail.getByTestId("all-decisions-link").click();
+  const register = page.getByRole("region", { name: "Decisions register" });
+  await register.getByRole("button", { name: /^Delete decision: / }).click();
+  await expect(register.getByTestId("decision-row")).toHaveCount(0);
+  await page.getByRole("button", { name: "Back to chat" }).click();
   // Nothing is saved any more, so nothing can be journaled against it.
   await expect(result).not.toContainText("Saved to Decisions");
   await expect(result.getByRole("button", { name: "Record action" })).toHaveCount(0);
@@ -491,8 +494,10 @@ test("a deleted decision no longer shows its stored result as saved, one at a ti
   // Saved again, then every decision cleared at once.
   await result.getByRole("button", { name: "Save decision" }).click();
   await expect(result.getByRole("button", { name: "Record action" })).toBeVisible();
-  await rail.getByRole("button", { name: "Clear all" }).click();
-  await expect(rail.getByTestId("decision-item")).toHaveCount(0);
+  await rail.getByTestId("all-decisions-link").click();
+  await register.getByRole("button", { name: "Delete all decisions" }).click();
+  await expect(register).toContainText("No saved decisions yet.");
+  await page.getByRole("button", { name: "Back to chat" }).click();
   await expect(result).not.toContainText("Saved to Decisions");
   await expect(result.getByRole("button", { name: "Record action" })).toHaveCount(0);
   await expect(result.getByRole("button", { name: "Save decision" })).toBeVisible();
@@ -589,7 +594,8 @@ test("a stored stock result is saved under its own listing, and a re-run never s
   expect(decision.subject).toMatchObject({ label: "ACME", ticker: "ACME", listing: "XNAS" });
 
   // Re-running never analyzes the XNYS holding under a decision made about XNAS: the recorded listing is looked up.
-  await rail.getByTestId("decision-item").click();
+  await rail.getByTestId("all-decisions-link").click();
+  await page.getByRole("region", { name: "Decisions register" }).getByTestId("decision-row").click();
   await page.getByRole("button", { name: "Re-run with today's portfolio" }).click();
   await expect.poll(() => analyses.length).toBeGreaterThan(0);
   expect(analyses[0]).toEqual({ ticker: "ACME", listing: "XNAS" });
@@ -600,7 +606,8 @@ test("a stored stock result is saved under its own listing, and a re-run never s
   // Once the holding is back on the decision's listing, the same re-run goes ahead for that holding.
   await commit(page, SAVED, 2);
   await page.reload();
-  await rail.getByTestId("decision-item").click();
+  await rail.getByTestId("all-decisions-link").click();
+  await page.getByRole("region", { name: "Decisions register" }).getByTestId("decision-row").click();
   await page.getByRole("button", { name: "Re-run with today's portfolio" }).click();
   await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
   expect(analyses).toEqual([expect.objectContaining({ stock: { position_id: "tfsa-acme" } })]);

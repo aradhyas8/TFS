@@ -20,7 +20,7 @@ const SAVED = {
   unresolved: [],
 };
 
-import { openDetails, seedPortfolio } from "./test_helpers";
+import { checkPortfolio, openDetails, seedPortfolio } from "./test_helpers";
 
 /** Opens the desk on a saved portfolio and records every analysis request the page sends. */
 async function open(page: Page, saved: object = SAVED) {
@@ -29,7 +29,7 @@ async function open(page: Page, saved: object = SAVED) {
   const sent: { question: string; stock?: { position_id: string } }[] = [];
   page.on("request", request => { if (request.url().endsWith("/api/analyze")) sent.push(request.postDataJSON()); });
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   return sent;
 }
 
@@ -120,11 +120,12 @@ test("/stock with a ticker runs Stock Analysis", async ({ page }) => {
   expect(sent.map(body => body.stock?.position_id)).toEqual(["tfsa-acme"]);
 });
 
-test("clicking a holding in the rail offers its Stock Analysis", async ({ page }) => {
+test("a holding in the portfolio offers its Stock Analysis", async ({ page }) => {
   const sent = await open(page);
-  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
-  await expect(rail.getByRole("button", { name: "Analyze BROAD" })).toHaveCount(0); // funds aren't single companies
-  await rail.getByRole("button", { name: "Analyze ACME" }).click();
+  await page.getByRole("navigation", { name: "Portfolio, conversations and decisions" }).getByRole("button", { name: /^Portfolio/ }).click();
+  const view = page.getByRole("region", { name: "Portfolio" });
+  await expect(view.getByRole("button", { name: "Analyze BROAD" })).toHaveCount(0); // funds aren't single companies
+  await view.getByRole("button", { name: "Analyze ACME" }).click();
   await expect(ask(page)).toHaveValue("/stock ACME");
   await expect(ask(page)).toBeFocused();
   expect(sent).toEqual([]); // offered, not sent
@@ -193,9 +194,10 @@ test("an unowned stock candidate runs Stock Analysis with price source, no-cash 
   // Zero-cash comparison message
   await expect(memo).toContainText("No cash to compare on. Use /new-cash with an amount to compare against the fund and cash.");
 
-  // Rail excludes unowned candidate row
-  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
-  await expect(rail.locator(".holdings-mini")).not.toContainText("NVDA");
+  // The portfolio excludes the unowned candidate row
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("table", { name: "Holdings" })).not.toContainText("NVDA");
+  });
 
   // Holdings tab in details panel excludes unowned candidate row
   const details = await openDetails(page);

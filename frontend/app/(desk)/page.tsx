@@ -1,6 +1,6 @@
 "use client";
 
-import { Banknote, ChartPie, Lightbulb, Menu, Scale, TrendingUp } from "lucide-react";
+import { Banknote, Bookmark, ChartPie, Lightbulb, Menu, Scale, TrendingUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   BENCHMARK_FUND,
@@ -41,6 +41,8 @@ import Composer from "../../components/desk/Composer";
 import Register from "../../components/desk/Register";
 import Panel, { evidenceFor, ImportCsv } from "../../components/desk/Panel";
 import PortfolioPreview from "../../components/desk/PortfolioPreview";
+import PortfolioView from "../../components/desk/PortfolioView";
+import { draftEdits, valuationFor } from "../../components/desk/portfolio";
 import {
   Answer,
   Clarify,
@@ -317,7 +319,12 @@ export default function DeskPage() {
   const [saving, setSaving] = useState(false);
   const [decisions, setDecisions] = useState<SavedDecision[]>([]);
   const [reopened, setReopened] = useState<SavedDecision | null>(null);
-  const [registerOpen, setRegisterOpen] = useState(false);
+  // Portfolio and Decisions are views of their own; the conversation is the default. Any step that starts or
+  // opens something in the conversation returns to it.
+  const [view, setView] = useState<"chat" | "portfolio" | "decisions">("chat");
+  const registerOpen = view !== "chat";
+  const setRegisterOpen = (open: boolean) => setView(open ? "decisions" : "chat");
+  const [decisionsState, setDecisionsState] = useState<"loading" | "ready" | "failed">("loading");
   const [tab, setTab] = useState<Tab>("holdings");
   const [focus, setFocus] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -492,6 +499,7 @@ export default function DeskPage() {
     get<SavedDecision[]>("/api/decisions")
       .then(loaded => {
         setDecisions(loaded);
+        setDecisionsState("ready");
         const map: Record<string, string> = {};
         for (const d of loaded) {
           if (d.artifact_id) {
@@ -500,7 +508,10 @@ export default function DeskPage() {
         }
         setSavedResults(prev => ({ ...prev, ...map }));
       })
-      .catch(() => setNotice("Saved decisions couldn't be loaded."));
+      .catch(() => {
+        setDecisionsState("failed");
+        setNotice("Saved decisions couldn't be loaded.");
+      });
     refreshProposals();
   }, []);
 
@@ -586,6 +597,12 @@ export default function DeskPage() {
     }
   }
 
+  // The portfolio view's values: only an analysis of exactly the committed revision. The stored result on
+  // screen comes first, then the last desk answer.
+  const valuation =
+    valuationFor(threadResult?.analysis ?? null, threadResult?.revision, committedRevision, committedSnapshot) ??
+    valuationFor(answer?.analysis ?? null, answer?.analysis.artifact_reference?.revision, committedRevision, committedSnapshot);
+  const edits = draftEdits(committedPortfolio, { snapshot: draftSnapshot, settings: draftSettings, benchmark: draftBenchmark });
   const isDirty = isDraftDirty(committedPortfolio, {
     snapshot: draftSnapshot,
     settings: draftSettings,
@@ -1135,6 +1152,30 @@ export default function DeskPage() {
     setWorkflow(null);
     setCollapsed(false);
     setNotice("");
+    setRailOpen(false);
+  }
+
+  /** Portfolio or Decisions in place of the conversation. What the conversation showed is kept for the way back. */
+  function openView(next: "portfolio" | "decisions") {
+    setView(next);
+    setPanelOpen(false);
+    setRailOpen(false);
+    setFocus(null);
+    requestAnimationFrame(() => document.getElementById(`${next}-title`)?.focus());
+  }
+
+  function backToChat() {
+    setView("chat");
+    requestAnimationFrame(() => document.getElementById("ask")?.focus());
+  }
+
+  /** A saved decision, as it was saved, with its evidence in the details. */
+  function openDecision(decision: SavedDecision) {
+    setView("chat");
+    setReopened(decision);
+    setClarify(null);
+    setTab("evidence");
+    setFocus(null);
     setRailOpen(false);
   }
 
@@ -1716,22 +1757,7 @@ export default function DeskPage() {
     </div>
   );
   let center;
-  if (registerOpen)
-    center = (
-      <Register
-        decisions={decisions}
-        onOpen={decision => {
-          setRegisterOpen(false);
-          setReopened(decision);
-          setClarify(null);
-          setTab("evidence");
-          setFocus(null);
-          setRailOpen(false);
-        }}
-        onClose={() => setRegisterOpen(false)}
-      />
-    );
-  else if (reopened)
+  if (reopened)
     center = (
       <Historical
         decision={reopened}
@@ -2001,6 +2027,21 @@ export default function DeskPage() {
     </div>
   );
 
+  const menuBtn = (
+    <button
+      type="button"
+      className="icon-btn menu-btn"
+      ref={menuButton}
+      aria-label="Open portfolio and decisions"
+      onClick={() => {
+        setRailOpen(true);
+        requestAnimationFrame(() => document.querySelector<HTMLElement>("#rail .rail-close")?.focus());
+      }}
+    >
+      <Menu size={18} aria-hidden="true" />
+    </button>
+  );
+
   return (
     <div
       className={`desk${panelOpen ? " panel-open" : ""}${railOpen ? " rail-open" : ""}`}
@@ -2010,16 +2051,12 @@ export default function DeskPage() {
       </a>
       <Rail
         snapshot={committedSnapshot}
-        unresolved={committedUnresolved}
-        settings={committedSettings}
-        result={result}
         revision={committedRevision}
-        pending={pendingProposals.length}
-        decisions={decisions}
-        registerOpen={registerOpen}
+        waiting={committedUnresolved.length + pendingProposals.length}
+        open={decisions.filter(decision => !decision.confirmed_action).length}
+        view={view}
         onClose={closeRail}
         inert={sheet}
-        currentId={reopened?.id ?? saved?.id ?? null}
         threads={conversation.threads}
         threadsError={conversation.threadsError}
         threadId={showThread ? conversation.openId : null}
@@ -2050,44 +2087,58 @@ export default function DeskPage() {
             : null
         }
         onNew={startOver}
-        onHoldings={() => {
-          openTab("holdings");
-          setRailOpen(false);
-        }}
-        onOpen={decision => {
-          setRegisterOpen(false);
-          setReopened(decision);
-          setClarify(null);
-          setTab("evidence");
-          setFocus(null);
-          setRailOpen(false);
-        }}
-        onAllDecisions={() => {
-          setReopened(null);
-          setRegisterOpen(true);
-          setClarify(null);
-          setFocus(null);
-          setRailOpen(false);
-        }}
-        onStock={offerStock}
-        onDelete={decision => void deleteDecision(decision)}
-        onClearAll={() => void clearDecisions()}
+        onPortfolio={() => openView("portfolio")}
+        onDecisions={() => openView("decisions")}
       />
-      <main className={`center${home ? " home" : ""}`} inert={drawer || sheet}>
+      <main className={`center${home ? " home" : ""}${view !== "chat" ? " viewing" : ""}`} inert={drawer || sheet}>
+        {view === "portfolio" ? (
+          <PortfolioView
+            menu={menuBtn}
+            restoring={restoring}
+            notice={notice}
+            revision={committedRevision}
+            committed={committedPortfolio}
+            unresolved={committedUnresolved}
+            draft={draftSnapshot}
+            setDraft={setDraftSnapshot}
+            settings={draftSettings}
+            setSettings={setDraftSettings}
+            benchmark={draftBenchmark}
+            setBenchmark={setDraftBenchmark}
+            valuation={valuation}
+            prices={prices}
+            refreshing={refreshing}
+            onRefreshPrices={() => void refreshPrices(true)}
+            isDirty={isDirty}
+            edits={edits}
+            reviewing={reviewing}
+            running={!!run}
+            onReviewChanges={reviewChanges}
+            onDiscardDraft={discardDraft}
+            onAnalyzeDraft={() => void analyzeHypotheticalDraft()}
+            pending={pendingProposals}
+            onReopenProposal={openProposal}
+            onCancelProposal={id => void cancelPendingProposal(id)}
+            onProposal={handleProposal}
+            onError={setNotice}
+            onStock={offerStock}
+            onReview={() => review("Review my portfolio")}
+            onBack={backToChat}
+          />
+        ) : view === "decisions" ? (
+          <Register
+            menu={menuBtn}
+            decisions={decisions}
+            state={decisionsState}
+            onOpen={openDecision}
+            onDelete={decision => void deleteDecision(decision)}
+            onClearAll={() => void clearDecisions()}
+            onBack={backToChat}
+          />
+        ) : (<>
         <header className="ctx">
           <div className="ctx-left">
-            <button
-              type="button"
-              className="icon-btn menu-btn"
-              ref={menuButton}
-              aria-label="Open portfolio and decisions"
-              onClick={() => {
-                setRailOpen(true);
-                requestAnimationFrame(() => document.querySelector<HTMLElement>("#rail .rail-close")?.focus());
-              }}
-            >
-<Menu size={18} aria-hidden="true" />
-            </button>
+            {menuBtn}
             <span>{ctxLabel}</span>
           </div>
           <div className="ctx-right">
@@ -2130,6 +2181,12 @@ export default function DeskPage() {
                   {saving ? "Saving…" : "Save decision"}
                 </button>
               ))}
+            {reopened && (
+              <button type="button" className="btn ghost small" onClick={() => openView("decisions")}>
+                <Bookmark size={15} aria-hidden="true" />
+                All decisions
+              </button>
+            )}
             <button
               type="button"
               ref={detailsButton}
@@ -2214,7 +2271,7 @@ export default function DeskPage() {
             )}
             {!run && !reopened && committedUnresolved.length > 0 && committedSnapshot && (
               <p className="amber" style={{ marginBottom: 16 }}>
-                <button type="button" className="link amber" onClick={() => openTab("holdings")}>
+                <button type="button" className="link amber" onClick={() => openView("portfolio")}>
                   Identify {committedUnresolved.length} holding
                   {committedUnresolved.length === 1 ? "" : "s"}
                 </button>{" "}
@@ -2356,6 +2413,7 @@ export default function DeskPage() {
           />
         )}
         {homeBelow}
+        </>)}
       </main>
       <Panel
         tab={tab}

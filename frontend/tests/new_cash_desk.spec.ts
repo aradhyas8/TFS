@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openDetails } from "./test_helpers";
+import { checkPortfolio, openDecisions, openDetails } from "./test_helpers";
 
 const RICH_CSV = `row_type,id,account_id,account_name,ticker,listing,company_id,company_name,shares,cash,currency,mark,mark_date,mark_source,to_currency,fx_rate,fx_date,fx_source
 etf,fund,broker,Brokerage,BROAD,XNYS,,,80,,USD,100,2026-09-30,Fixture allocation,,,,
@@ -74,8 +74,10 @@ async function newCash(page: Page, riskContext: string | null) {
 async function setUp(page: Page, riskContext: string | null) {
   await start(page);
   await importCsv(page, RICH_CSV);
-  await expect(rail(page)).toContainText("BROAD");
-  await expect(rail(page)).toContainText("Values and weights appear after the first analysis.");
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("row", { name: /BROAD/ })).toBeVisible();
+    await expect(view.getByRole("group", { name: "Total value" })).toContainText("Not valued yet");
+  });
   await setRules(page);
   await reviewAndConfirmRules(page);
   await newCash(page, riskContext);
@@ -96,7 +98,9 @@ test("new cash: required inputs gate the run, then a cited recommendation with s
   await expect(memo).toContainText("Within your rules");
   await expect(memo).toContainText("A conditional fund addition offers diversified exposure");
   await expect(memo).toContainText("no company cap applies");
-  await expect(rail(page)).toContainText(/Weights · .* analysis/);
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("group", { name: "Total value" })).toContainText(/valued [A-Z][a-z]{2} \d+/);
+  });
 
   await openDetails(page);
   await expect(details(page)).toContainText("No filings were researched for this answer");
@@ -114,7 +118,7 @@ test("new cash: required inputs gate the run, then a cited recommendation with s
   await page.getByRole("button", { name: "Record action" }).click();
   await expect(memo).toContainText("Saved and recorded");
 
-  await rail(page).getByRole("button", { name: /I have this portfolio and \$6,000/ }).first().click();
+  await (await openDecisions(page)).getByTestId("decision-row").filter({ hasText: /I have this portfolio and \$6,000/ }).first().click();
   const reopened = page.getByRole("region", { name: "Reopened decision" });
   await expect(reopened.getByTestId("historical-band")).toContainText("Historical");
   await expect(reopened).toContainText("Add US$800–2,400");
@@ -141,10 +145,11 @@ test("portfolio: simple import asks only what's unknown, then holdings and rules
   await page.clock.setFixedTime(new Date(2026, 8, 30, 12));
   await start(page);
   await importCsv(page, SIMPLE_CSV);
-  await expect(rail(page)).toContainText("BROAD");
-  await expect(rail(page)).toContainText("needs exchange");
-  await expect(rail(page)).not.toContainText("Cash");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("status").filter({ hasText: "holding needs you" })).toContainText("BROAD needs an exchange");
+    await expect(view.getByRole("row", { name: /Cash/ })).toHaveCount(0);
+  });
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
 
   // A bare ticker is never assumed to be a US stock: the type came from the CSV, so only the exchange is asked.
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
@@ -161,7 +166,11 @@ test("portfolio: simple import asks only what's unknown, then holdings and rules
   await preview.getByTestId("confirm-proposal").click();
   await expect(preview).toHaveCount(0);
   await expect(needs).toHaveCount(0);
-  await expect(rail(page)).not.toContainText("needs exchange");
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("status").filter({ hasText: "holding needs you" })).toHaveCount(0);
+  });
+  await openDetails(page);
+  await details(page).getByRole("tab", { name: "Holdings" }).click();
 
   await expect(details(page)).toContainText("Average cost US$92.10");
   await details(page).getByRole("combobox", { name: "Fund type for BROAD" }).selectOption("diversified");
@@ -174,9 +183,12 @@ test("portfolio: simple import asks only what's unknown, then holdings and rules
   }).toEqual(["diversified", "0.15", "0.3", null]);
 
   await page.reload();
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
-  await expect(rail(page)).toContainText("BROAD");
-  await expect(rail(page)).toContainText("Rules · cap 15% · active 30%");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("row", { name: /BROAD/ })).toBeVisible();
+    await expect(view.getByRole("group", { name: "Rules" })).toContainText("Company cap 15%");
+    await expect(view.getByRole("group", { name: "Rules" })).toContainText("Active budget 30%");
+  });
   await expect(page.locator(".ctx")).toContainText("Portfolio as of Sep 30, 2026");
   await openDetails(page);
   await details(page).getByRole("tab", { name: "Holdings" }).click();
@@ -196,28 +208,34 @@ test("portfolio: simple import asks only what's unknown, then holdings and rules
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo.getByRole("heading", { level: 2 })).toHaveText("Add US$400–1,800 to BROAD. Keep the rest as cash.");
   await expect(page.locator(".ctx")).toContainText("New cash · US$6,000 → Brokerage");
-  await expect(rail(page)).not.toContainText("Cash");
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("row", { name: /Cash/ })).toHaveCount(0);
+  });
   expect(await (await page.request.get("/api/portfolio")).json()).toEqual(before);
 });
 
 test("portfolio: importing again replaces the saved holdings and date and keeps the rules", async ({ page }) => {
   await start(page);
   await importCsv(page, "account,ticker,shares,type\nBrokerage,BROAD,80,etf\n");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   await setRules(page, false);
   await reviewAndConfirmRules(page);
   await expect.poll(async () => (await (await page.request.get("/api/portfolio")).json())?.portfolio?.settings?.single_company_cap).toBe("0.15");
 
   await importCsv(page, "account,ticker,shares,type\nTFSA,XEQT.TO,120,etf\nTFSA,CASH,500,\n", "2026-10-05");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Oct 5, 2026");
-  await expect(rail(page)).toContainText("XEQT");
-  await expect(rail(page)).not.toContainText("BROAD");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Oct 5, 2026");
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("row", { name: /XEQT/ })).toBeVisible();
+    await expect(view.getByRole("row", { name: /BROAD/ })).toHaveCount(0);
+  });
 
   await page.reload();
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Oct 5, 2026");
-  await expect(rail(page)).toContainText("XEQT");
-  await expect(rail(page)).toContainText("Cash USD");
-  await expect(rail(page)).toContainText("Rules · cap 15% · active 30%");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Oct 5, 2026");
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("row", { name: /XEQT/ })).toBeVisible();
+    await expect(view.getByRole("row", { name: /Cash USD/ })).toBeVisible();
+    await expect(view.getByRole("group", { name: "Rules" })).toContainText("Company cap 15%");
+  });
   const res = await (await page.request.get("/api/portfolio")).json();
   const saved = res.portfolio;
   expect(saved.snapshot.accounts).toEqual([{ id: "tfsa", name: "TFSA" }]);
