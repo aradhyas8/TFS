@@ -347,6 +347,9 @@ export default function DeskPage() {
   const railOver = useMedia("(max-width: 1023px)");
   const detailsOver = useMedia("(max-width: 1279px)");
   const drawer = railOpen && railOver;
+  // The rail drawer belongs to narrow layouts. Widening the window puts the rail back in its column and closes the
+  // drawer, so narrowing again never reopens it over the page by itself.
+  useEffect(() => { if (!railOver) setRailOpen(false); }, [railOver]);
   const sheet = panelOpen && detailsOver && !drawer;
   // Details are closed until something asks for them: a citation, a result tab, holdings, or the Details button.
   // Every opening path goes through here, so the panel shows at every width.

@@ -142,7 +142,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await expect(historicalView).toBeVisible();
     await expect(historicalView.getByTestId("decision-workflow")).toHaveText("Unknown workflow");
     await expect(historicalView).toContainText("Saved Sep 15");
-    await expect(historicalView).toContainText("as of the Sep 15 snapshot");
+    await expect(historicalView).toContainText("An analysis as of Sep 15");
 
     // Test legacy Re-run: "Unknown workflow pre-fills the question in the composer"
     await historicalView.getByRole("button", { name: "Re-run with today's portfolio" }).click();

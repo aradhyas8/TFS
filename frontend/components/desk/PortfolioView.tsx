@@ -71,7 +71,7 @@ export default function PortfolioView(props: Props) {
         {revision != null ? `Revision ${revision} · holdings` : "Holdings"} as of {fullDate(snapshot.as_of)}</span>}
     </div>
     <div className="ctx-right">
-      <Button variant="ghost" size="sm" onClick={props.onBack}><ArrowLeft size={15} aria-hidden="true" />Back to chat</Button>
+      <Button variant="ghost" size="sm" onClick={props.onBack}><ArrowLeft size={15} aria-hidden="true" /><span className="back-label">Back to chat</span></Button>
       {snapshot && <Button variant="ghost" size="sm" className="hide-sm" disabled={props.refreshing || props.running} onClick={props.onRefreshPrices}>
         <RefreshCw size={15} aria-hidden="true" />{props.refreshing ? "Refreshing…" : "Refresh prices"}</Button>}
       {snapshot && <Button variant="secondary" size="sm" aria-expanded={importing} aria-controls="portfolio-import"
@@ -128,7 +128,7 @@ export default function PortfolioView(props: Props) {
     </div>
     <div className="pview-body" role="tabpanel" id="ptabpanel" aria-labelledby={`ptab-${tab}`}>
       {props.notice && <Alert tone="warning" title={props.notice} />}
-      {/* The header chip names the revision; on a phone it has no room, so it is said here. */}
+      {/* The header chip names the revision; where the header has no room for it, it is said here. */}
       <p className="cap n show-sm">{revision != null ? `Revision ${revision} · holdings` : "Holdings"} as of {fullDate(snapshot.as_of)}</p>
 
       {tab === "holdings" && <>

@@ -9,7 +9,7 @@ type Cite = { numbers: Map<string, number>; onCite: (id: string) => void };
 // Holdings keep the date they were last confirmed; prices carry their own (newer) date.
 function valuationDates(review: Analysis["portfolio"]): string {
   const prices = review.positions.map(row => row.quote_used?.as_of).filter((day): day is string => !!day).sort().at(-1);
-  return `Holdings last confirmed ${fullDate(review.holdings_as_of || review.as_of)}${prices ? ` · Prices ${fullDate(prices)}` : ""}`;
+  return `${review.holdings_as_of ? `Holdings last confirmed ${fullDate(review.holdings_as_of)}` : `Analysis as of ${fullDate(review.as_of)}`}${prices ? ` · Prices ${fullDate(prices)}` : ""}`;
 }
 
 export function Row({ label, kind = "", children }: { label: string; kind?: string; children: ReactNode }) {
@@ -982,10 +982,10 @@ export function Historical({ decision, snapshot, cite, onRerun, onConfirm }: His
         : CASH_CHOICES(target);
       return <div aria-label="Reopened decision" role="region">
         <div className="historical-band" data-testid="historical-band" style={{ background: "var(--raised)", border: "1px solid var(--rule)", borderRadius: 8, padding: "10px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
-          <span style={{ color: "var(--text-2)" }}>Historical. Prices, filings and your rules are as of the {shortDate(decision.as_of)} snapshot and are not updated.</span>
+          <span style={{ color: "var(--text-2)" }}>Historical. An analysis as of {shortDate(decision.as_of)}; its prices, filings and rules are as they were then and are not updated.</span>
           <button type="button" className="btn secondary small" onClick={onRerun}>Re-run with today&apos;s portfolio</button>
         </div>
-        <div className="echo"><span className="q">{decision.question}</span><span className="cap"><span data-testid="decision-workflow">{decisionLabel(decision)}</span> · Saved {shortDate(decision.saved_at)} · snapshot {shortDate(decision.as_of)}</span></div>
+        <div className="echo"><span className="q">{decision.question}</span><span className="cap"><span data-testid="decision-workflow">{decisionLabel(decision)}</span> · Saved {shortDate(decision.saved_at)} · analysis as of {shortDate(decision.as_of)}</span></div>
         <div className="memo">
           <Row label="Recommendation" kind="rec">
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
