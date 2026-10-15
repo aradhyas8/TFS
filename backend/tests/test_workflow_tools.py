@@ -10,8 +10,15 @@ from fastapi.testclient import TestClient
 from analyst.api import create_app
 from analyst.config import Settings
 from analyst.financial_data import FakeFinancialProvider
+from analyst.pipeline import InvalidReview
 from analyst.portfolio import PortfolioStore
-from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
+from analyst.providers import (
+    FakeDataProvider,
+    ModelIncomplete,
+    ModelServiceError,
+    ModelTurn,
+    ToolCall,
+)
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import AnalysisRequest, CompanyResearch, Identity, SavedPortfolio
 from tests.test_allocation import (
@@ -465,3 +472,35 @@ def test_conflicting_workflow_call_can_recover_with_the_explicitly_selected_work
         assert [(outcome["name"], outcome["status"]) for outcome in outcomes] == [
             ("run_portfolio_reunderwriting", "error"), ("run_exposure_review", "success"),
         ]
+
+
+@pytest.mark.parametrize("error,category", [
+    (ModelIncomplete("The model response is incomplete (reason: max_output_tokens).", reason="max_output_tokens"),
+     "ran out of output space"),
+    (InvalidReview("Invalid mixed or parallel model response."), "did not produce a valid result"),
+    (ModelServiceError("OpenRouter vendor/model:free: rate limit reached. Nothing was retried; try again later.",
+                       kind="rate_limit"), "rate limit reached"),
+])
+def test_nested_model_failures_keep_their_category(tmp_path, error, category):
+    class Failing(CapturingTransport):
+        async def respond(self, messages, **kwargs):
+            if kwargs.get("output_schema") is not None or "require_tool" in kwargs:
+                self.requests.append(kwargs)
+                raise error
+            return await super().respond(messages, **kwargs)
+
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
+    model = Failing([call("run_exposure_review"), ModelTurn(text="The review could not finish.")])
+    with TestClient(create_app(model=model, data=FakeDataProvider(), financial=FakeFinancialProvider(),
+                              portfolio_store=store, settings=Settings(api_key="sk-test", model="test", request_timeout=5))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Review exposure.")
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+    assert run["status"] == "completed", run
+    assert run["artifact_ids"] == []
+    outcome = messages[1]["tool_outcomes"][0]
+    assert outcome["status"] == "error" and category in outcome["error"]
+    assert "unavailable" not in outcome["error"]
+    # The failed workflow is never presented as a successful result.
+    assert messages[-1]["text"].endswith(f"Exposure review did not complete: {outcome['error']}")

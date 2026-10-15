@@ -23,6 +23,7 @@ from .config import Settings
 from .connection import Connection, ProviderChoice, local_request, openrouter_problem
 from .csv_input import COLUMNS, load_csv
 from .decisions import DecisionStore, extract_decision
+from .failures import describe_failure
 from .financial_data import (
     SOURCE_ERRORS,
     FinancialProvider,
@@ -56,9 +57,7 @@ from .portfolio_actions import (
 )
 from .providers import (
     DataProvider,
-    ModelIncomplete,
     ModelProvider,
-    ModelServiceError,
     OpenAIModel,
     SuppliedDataProvider,
 )
@@ -99,7 +98,7 @@ from .schemas import (
     ThreadSummary,
     UpdatePortfolioRequest,
 )
-from .sec_research import SecResearchProvider
+from .sec_research import SecResearchProvider, SecUnavailable
 
 # The same whole-run budget as a conversation run; on expiry the in-flight model request is cancelled.
 ANALYZE_DEADLINE_SECONDS = MAX_DEADLINE_SECONDS
@@ -692,7 +691,11 @@ def create_app(
             provider = OpenAIModel(config)
         budget = asyncio.timeout(ANALYZE_DEADLINE_SECONDS)
         try:
-            financial_source = financial or PersonalFinancialProvider.from_environment()
+            try:
+                financial_source = financial or PersonalFinancialProvider.from_environment()
+            except (ValueError, OSError):
+                # Only source construction reads the configuration; later failures have their own causes.
+                raise HTTPException(503, "Backend financial source configuration is invalid.") from None
             # Stock Analysis, portfolio review, new cash, and confirmed theme read SEC EDGAR live
             # (cached) and issuer material; the reviewed file stays optional extra evidence.
             needs_research = (
@@ -720,33 +723,21 @@ def create_app(
                 result = result.model_copy(update={"ai_provider": config.provider, "ai_model": config.model or None})
                 save_analysis(request, result)
             return result
-        except TimeoutError:
+        except TimeoutError as exc:
             if not budget.expired():
-                raise HTTPException(503, "Backend financial source configuration is invalid.") from None
+                failure = describe_failure(exc)
+                raise HTTPException(failure.status, failure.message) from None
             raise HTTPException(504, f"The analysis did not finish within its {ANALYZE_DEADLINE_SECONDS:g}-second deadline and was "
                                      "stopped. No recommendation was completed.") from None
-        except ModelIncomplete as exc:
-            raise HTTPException(502, str(exc)) from None
-        except (ValueError, OSError):
-            raise HTTPException(503, "Backend financial source configuration is invalid.") from None
         except InvalidReview as exc:
-            import logging
-
             logging.error("InvalidReview in /api/analyze: %s", exc, exc_info=True)
             raise HTTPException(502, "The model did not produce a valid portfolio review. No recommendation was completed.") from None
-
-        except OpenAIError as exc:
-            import logging
-
-            logging.error(
-                "OpenAI request failed: type=%s status=%s request_id=%s",
-                type(exc).__name__,
-                getattr(exc, "status_code", None),
-                getattr(exc, "request_id", None),
-            )
-            raise HTTPException(
-                502, str(exc) if isinstance(exc, ModelServiceError) else "The model service could not complete the review. Try again."
-            ) from None
+        except (OpenAIError, ValueError, OSError, httpx.HTTPError, SecUnavailable) as exc:
+            # Token counts, upstream status and request IDs stay in the log, never in the response.
+            logging.error("/api/analyze failed: type=%s status=%s request_id=%s detail=%s", type(exc).__name__,
+                          getattr(exc, "status_code", None), getattr(exc, "request_id", None), exc)
+            failure = describe_failure(exc)
+            raise HTTPException(failure.status, failure.message) from None
         finally:
             legacy_active -= int(needs_ai)
             if isinstance(provider, OpenAIModel):

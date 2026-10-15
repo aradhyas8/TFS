@@ -17,15 +17,19 @@ import logging
 import re
 from typing import Any, cast
 
+from openai import OpenAIError
+
 from .allocation import DiscoveryProvider
 from .config import Settings
 from .context import CHARACTER_LIMIT, READ_CAPABILITIES, RunContext, read_tools
+from .failures import describe_failure
 from .financial_data import FinancialProvider
 from .financial_tools import FinancialTools
 from .model_view import fit
 from .persistence import Database, DecimalEncoder
+from .pipeline import InvalidReview, bounded_effort
 from .proposal_tools import ProposalTools
-from .providers import DataProvider, ModelTurn, SuppliedDataProvider
+from .providers import DataProvider, ModelIncomplete, ModelTurn, SuppliedDataProvider
 from .research import ResearchProvider
 from .research_tools import ResearchTools
 from .schemas import RunRecord, ToolOutcome
@@ -133,6 +137,8 @@ class Orchestrator:
             seen_calls: set[str] = set()
             # Calls whose result was an error or had to be cut to fit: repeating one returns the same.
             limited_calls: set[tuple[str, str]] = set()
+            # Workflows that failed and were not later completed; the answer always says so.
+            failed_workflows: dict[str, str] = {}
 
             turns_count = 0
             while turns_count < MAX_TURNS:
@@ -160,8 +166,9 @@ class Orchestrator:
                     self._record_terminal_failure(run_id, f"Model request timed out after {request_timeout:.1f}s.")
                     return
                 except Exception as exc:
+                    # Token counts and provider detail stay in the log; the run gets the safe message.
                     logger.error("Model transport error during run %s: %s", run_id, exc, exc_info=True)
-                    self._record_terminal_failure(run_id, f"Model service error: {exc}")
+                    self._record_terminal_failure(run_id, describe_failure(exc).message)
                     return
                 if self._stopped(thread_id, run_id):
                     return
@@ -211,6 +218,9 @@ class Orchestrator:
                 # Conceptual / tool-free answer path: model produced text response
                 if turn.text or not turn.calls:
                     assistant_text = turn.text or ""
+                    for name, error in failed_workflows.items():
+                        label = name.removeprefix("run_").replace("_", " ").capitalize()
+                        assistant_text = f"{assistant_text}\n\n{label} did not complete: {error}".strip()
                     if web.unavailable and not web.completed:
                         # Never let prose imply a current lookup that did not occur.
                         assistant_text = (
@@ -251,9 +261,18 @@ class Orchestrator:
                         return
                     result = (web.unavailable_result(context, "deadline", None) if call.name in web.capabilities
                               else {"error": "Financial request timed out; no result is available."})
-                except ValueError:
-                    result = {"error": "Requested data is unavailable to this run."}
+                except (InvalidReview, OpenAIError, ValueError) as exc:
+                    # Nested model failures (ModelIncomplete is also a ValueError) keep their real category, so the
+                    # model can explain them instead of reporting missing data.
+                    failure = describe_failure(exc)
+                    logger.warning("Tool %s failed in run %s (%s): %s", call.name, run_id, failure.kind, exc)
+                    result = {"error": failure.message, "retryable": failure.retryable}
                     limited_calls.add(signature)
+                if capability.effect == "workflow":
+                    if "error" in result:
+                        failed_workflows[call.name] = str(result["error"])
+                    else:
+                        failed_workflows.pop(call.name, None)
                 if self._stopped(thread_id, run_id):
                     return
                 artifact_ids = list(result.get("artifact_ids", []))
@@ -314,8 +333,10 @@ class Orchestrator:
             logger.info("Supervised task for run %s was cancelled.", run_id)
             # cancel_run recorded the cancellation in the database before cancelling this task
         except Exception as exc:
-            logger.error("Orchestration error in run %s (%s).", run_id, type(exc).__name__)
-            self._record_terminal_failure(run_id, "Internal orchestration error.")
+            logger.error("Orchestration error in run %s (%s).", run_id, type(exc).__name__, exc_info=True)
+            failure = describe_failure(exc)
+            self._record_terminal_failure(run_id, "Internal orchestration error." if failure.kind == "internal"
+                                          else failure.message)
 
     async def _call_transport(
         self,
@@ -324,16 +345,35 @@ class Orchestrator:
         tools: list[dict[str, Any]],
         tool_choice: str = "auto",
     ) -> ModelTurn:
-        """Call underlying transport, respecting timeout."""
+        """Call underlying transport, respecting timeout.
+
+        Every chat turn may select a tool, so its effort is capped at medium as in the pipeline. A response that ran
+        out of output (the token cap, or no reason given) is retried once at lower effort; a successful tool call is
+        never repeated because the retry happens before any call is executed.
+        """
         sig = inspect.signature(self.transport.respond)
         kwargs: dict[str, Any] = {}
         accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-        for name, value in {"timeout": timeout, "tools": tools, "tool_choice": tool_choice}.items():
+        effort = bounded_effort(self.settings.reasoning_effort, "medium")
+        for name, value in {"timeout": timeout, "tools": tools, "tool_choice": tool_choice,
+                            "reasoning_effort": effort}.items():
             if name in sig.parameters or accepts_kwargs:
                 kwargs[name] = value
 
-        coro = self.transport.respond(messages, **kwargs)
-        return cast(ModelTurn, await asyncio.wait_for(coro, timeout=timeout))
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        try:
+            return cast(ModelTurn, await asyncio.wait_for(self.transport.respond(messages, **kwargs), timeout=timeout))
+        except ModelIncomplete as stopped:
+            lower = bounded_effort(effort, "low")
+            if "reasoning_effort" not in kwargs or lower == effort or stopped.reason not in {None, "max_output_tokens"}:
+                raise
+            logger.warning("Incomplete chat response at reasoning effort %s; retrying once at %s.", effort, lower)
+        kwargs["reasoning_effort"] = lower
+        remaining = max(0.0, deadline - loop.time())
+        if "timeout" in kwargs:
+            kwargs["timeout"] = remaining
+        return cast(ModelTurn, await asyncio.wait_for(self.transport.respond(messages, **kwargs), timeout=remaining))
 
     def _stopped(self, thread_id: str, run_id: str) -> bool:
         """Whether the run ended while provider work was still returning; its late output is then dropped.

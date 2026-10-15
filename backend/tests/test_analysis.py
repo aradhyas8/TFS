@@ -560,3 +560,22 @@ def test_analysis_records_the_model_that_answered():
     response = client.post("/api/analyze", json={"question": "How concentrated am I?", "portfolio": snapshot()})
     assert response.status_code == 200, response.text
     assert (response.json()["ai_provider"], response.json()["ai_model"]) == ("openrouter", "vendor/answering-model")
+
+
+@pytest.mark.parametrize("error,status,detail", [
+    (TimeoutError(), 504, "timed out"),
+    (ConnectionResetError("financial host reset"), 503, "Requested data is unavailable."),
+])
+def test_analyze_reports_the_real_failure_not_a_configuration_error(error, status, detail):
+    from analyst.financial_data import FakeFinancialProvider
+
+    class FailingFinancial(FakeFinancialProvider):
+        async def identity(self, position, as_of):
+            raise error
+
+    model = ScriptedModel([ModelTurn(calls=[ToolCall("review", "review_portfolio", "{}")])])
+    response = TestClient(create_app(model=model, data=FakeDataProvider(), financial=FailingFinancial())).post(
+        "/api/analyze", json={"question": "Review my exposure", "portfolio": snapshot()})
+    assert response.status_code == status, response.text
+    assert detail in response.json()["detail"]
+    assert "configuration" not in response.text and "financial host reset" not in response.text

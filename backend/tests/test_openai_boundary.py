@@ -398,7 +398,7 @@ def test_openrouter_turns_send_only_the_configured_reasoning_effort(configured):
     assert model.reasoning_efforts == [{None: None, "high": "medium"}[configured], configured]
 
 
-def test_incomplete_response_detailed_diagnostics(monkeypatch):
+def test_incomplete_response_detailed_diagnostics(monkeypatch, caplog):
     import asyncio
 
     from analyst.providers import OpenAIModel
@@ -442,14 +442,17 @@ def test_incomplete_response_detailed_diagnostics(monkeypatch):
     with pytest.raises(ValueError) as excinfo:
         asyncio.run(model.respond([{"role": "system", "content": "instructions"}, {"role": "user", "content": json.dumps({"question": "test"})}], require_tool=True, reasoning_effort="medium"))
 
+    # The diagnostics are logged; the user-facing message names only the stop reason.
     err_str = str(excinfo.value)
-    assert "reason=max_output_tokens" in err_str
-    assert "input_tokens=20048" in err_str
-    assert "output_tokens=16000" in err_str
-    assert "reasoning_tokens=15413" in err_str
-    assert "max_output_tokens=16000" in err_str
-    assert "reasoning_effort=medium" in err_str
-    assert "partial_tools=['calculate_comparison']" in err_str
+    assert err_str == "The model response is incomplete (reason: max_output_tokens)."
+    logged = caplog.text
+    assert "reason=max_output_tokens" in logged
+    assert "input_tokens=20048" in logged
+    assert "output_tokens=16000" in logged
+    assert "reasoning_tokens=15413" in logged
+    assert "max_output_tokens=16000" in logged
+    assert "reasoning_effort=medium" in logged
+    assert "partial_tools=['calculate_comparison']" in logged
 
 
 def test_openrouter_is_an_opt_in_base_url_for_the_same_client(monkeypatch):

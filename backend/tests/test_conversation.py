@@ -525,3 +525,57 @@ def test_thread_list_titles_each_thread_by_its_first_question(tmp_path: Path) ->
     summary = client.get("/api/threads").json()[0]
     assert summary["title"] == "What is an ETF?"
     assert summary["last_message_preview"] == "An ETF is an exchange-traded fund."
+
+
+def chat_client(tmp_path: Path, model: Any) -> TestClient:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(sample_portfolio())
+    settings = Settings(api_key="sk-test", model="test-model", request_timeout=5, reasoning_effort="high")
+    return TestClient(create_app(settings=settings, portfolio_store=store,
+                                 orchestrator=Orchestrator(store.db, model, settings)))
+
+
+def test_chat_incomplete_turn_retries_once_at_lower_effort_without_repeating_tools(tmp_path: Path) -> None:
+    from analyst.providers import ModelIncomplete
+    from tests.test_context_retrieval import CapturingTransport, submit
+
+    stopped = ModelIncomplete("The model response is incomplete (reason: max_output_tokens).", reason="max_output_tokens")
+    model = CapturingTransport([ModelTurn(calls=[ToolCall("read", "get_holdings", '{"offset":0,"limit":20}')]),
+                                stopped, ModelTurn(text="You hold TD.")])
+    original = model.respond
+
+    async def respond(messages: Any, **kwargs: Any) -> ModelTurn:
+        turn = await original(messages, **kwargs)
+        if isinstance(turn, Exception):
+            raise turn
+        return turn
+
+    model.respond = respond  # type: ignore[method-assign]
+    with chat_client(tmp_path, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "What do I hold?")
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+    assert run["status"] == "completed", run
+    # Tool-selection turns are capped at medium; the retry lowers the effort once.
+    assert [r["reasoning_effort"] for r in model.requests] == ["medium", "medium", "low"]
+    assert sum(len(m["tool_outcomes"]) for m in messages) == 1
+    assert messages[-1]["text"] == "You hold TD."
+
+
+def test_chat_incomplete_twice_fails_with_a_clear_message(tmp_path: Path) -> None:
+    from analyst.providers import ModelIncomplete
+    from tests.test_context_retrieval import CapturingTransport, submit
+
+    class Incomplete(CapturingTransport):
+        async def respond(self, messages: Any, **kwargs: Any) -> ModelTurn:
+            self.requests.append(kwargs)
+            raise ModelIncomplete("The model response is incomplete (reason: max_output_tokens).", reason="max_output_tokens")
+
+    model = Incomplete([])
+    with chat_client(tmp_path, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "What do I hold?")
+    assert run["status"] == "failed"
+    assert "ran out of output space" in run["error"] and "lower the reasoning effort" in run["error"]
+    assert "tokens=" not in run["error"] and "Model service error" not in run["error"]
+    assert [r["reasoning_effort"] for r in model.requests] == ["medium", "low"]

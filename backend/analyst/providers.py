@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, OpenAIError, omit
 from openai.types.responses import FunctionToolParam, ResponseInputParam, ToolChoiceFunctionParam
@@ -222,6 +222,10 @@ def openrouter_routing(model: str) -> dict[str, Any]:
 class ModelServiceError(OpenAIError):
     """A model-service failure whose message is safe to show the user: no upstream body, key or request detail."""
 
+    def __init__(self, message: str, *, kind: Literal["rate_limit", "timeout", "model_service"] = "model_service") -> None:
+        super().__init__(message)
+        self.kind = kind
+
 
 class ModelIncomplete(ModelServiceError, ValueError):
     """The provider returned a response that stopped before any tool call or answer (e.g. reasoning only)."""
@@ -236,11 +240,13 @@ def openrouter_failure(exc: APIError, model: str) -> ModelServiceError:
     status = getattr(exc, "status_code", None)
     logging.error("OPENROUTER REQUEST FAILED type=%s status=%s model=%s", type(exc).__name__, status, model)
     upstream = str(getattr(exc, "body", None) or "").lower()
+    kind: Literal["rate_limit", "timeout", "model_service"] = "model_service"
     if isinstance(exc, APITimeoutError):
-        reason = "timed out. Nothing was retried; try again later"
+        reason, kind = "timed out. Nothing was retried; try again later", "timeout"
     elif isinstance(exc, APIConnectionError):
         reason = "could not be reached. Nothing was retried; check the connection and try again"
     elif status == 429:
+        kind = "rate_limit"
         reason = "rate limit reached (free-tier models have per-minute and daily limits). Nothing was retried; try again later"
     elif status == 404 and "that support" in upstream and "reasoning" in upstream:
         reason = ("does not support the configured reasoning effort at the allowed price. "
@@ -256,7 +262,7 @@ def openrouter_failure(exc: APIError, model: str) -> ModelServiceError:
                   "Retrying will not help; choose another model")
     else:
         reason = f"is unavailable (HTTP {status}). No other model was used; try again later"
-    return ModelServiceError(f"OpenRouter {model}: {reason}.")
+    return ModelServiceError(f"OpenRouter {model}: {reason}.", kind=kind)
 
 
 class OpenAIResponseTransport:
@@ -341,7 +347,7 @@ class OpenAIResponseTransport:
         except TimeoutError:
             prefix = f"OpenRouter {self.settings.model}: " if openrouter else ""
             raise ModelServiceError(f"{prefix}the model did not respond within {effective_timeout:.0f} seconds. "
-                                    "Nothing was retried; try again later.") from None
+                                    "Nothing was retried; try again later.", kind="timeout") from None
         except APIError as exc:
             if not openrouter:
                 raise
@@ -377,7 +383,9 @@ class OpenAIResponseTransport:
                 f"max_output_tokens=16000, reasoning_effort={effort}, partial_tools={partial_tools}"
             )
             logging.error("OPENAI INCOMPLETE RESPONSE: %s", msg)
-            raise ModelIncomplete(msg, reason=inc_reason)
+            # Token diagnostics stay in the log; the exception message is shown to the user.
+            raise ModelIncomplete(f"The model response is incomplete (reason: {inc_reason or 'not given by the provider'}).",
+                                  reason=inc_reason)
 
         # Check for model refusals in output items
         for item in response.output:
