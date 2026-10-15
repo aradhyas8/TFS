@@ -90,3 +90,12 @@ test('a configured API-key provider shows as ready, and connection text stays on
   const weights = await page.locator('section[aria-label="AI connection"] *').evaluateAll(nodes => nodes.map(node => Number(getComputedStyle(node).fontWeight)));
   expect(Math.max(...weights)).toBeLessThanOrEqual(500);
 });
+
+test('an OpenRouter provider is named with its selected model', async ({ page }) => {
+  await page.route('**/api/ai/**', route => route.fulfill({ json: { state: 'connected', chatgpt_state: 'disconnected', provider: 'openrouter', model: 'vendor/model:free',
+    account: null, models: [], api_key_available: true, api_provider: 'openrouter', message: 'API-key provider ready. AI questions use vendor/model:free.' } }));
+  await page.goto('/');
+  await expect(page.getByText('AI · OpenRouter', { exact: true })).toBeVisible();
+  await page.getByText('AI connection · connected', { exact: true }).click();
+  await expect(page.getByText('Selected model:', { exact: false })).toContainText('vendor/model:free');
+});

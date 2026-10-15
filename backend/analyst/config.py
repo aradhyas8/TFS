@@ -18,6 +18,11 @@ class Settings:
     # "chatgpt_plan": the same Responses client and request with an OAuth token from Sign in with ChatGPT, streamed.
     provider: str = "openai"
 
+    @property
+    def openrouter(self) -> bool:
+        """OpenRouter is identified by its endpoint as well as its label, so no routed request escapes its guards."""
+        return self.provider == "openrouter" or "openrouter.ai" in (self.base_url or "")
+
     @classmethod
     def from_environment(cls) -> "Settings":
         load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
@@ -38,7 +43,7 @@ class Settings:
                        request_timeout=timeout, provider="chatgpt_plan")
         if provider == "openrouter":
             return cls(api_key=os.environ.get("OPENROUTER_API_KEY", ""), model=os.environ.get("OPENROUTER_MODEL", ""),
-                       reasoning_effort=cast(ReasoningEffort, effort), request_timeout=timeout, base_url="https://openrouter.ai/api/v1")
+                       reasoning_effort=cast(ReasoningEffort, effort), request_timeout=timeout, base_url="https://openrouter.ai/api/v1", provider="openrouter")
         return cls(
             api_key=os.environ.get("OPENAI_API_KEY", ""), model=os.environ.get("OPENAI_MODEL", ""),
             reasoning_effort=cast(ReasoningEffort, effort),

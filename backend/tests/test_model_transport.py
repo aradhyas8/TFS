@@ -16,13 +16,6 @@ from analyst.providers import (
 )
 
 
-def test_transport_rejects_routed_third_party_configuration():
-    # Routed third party (e.g. OpenRouter) is rejected by the explicit transport path without fallback
-    settings = Settings("sk-or", "vendor/model", base_url="https://openrouter.ai/api/v1")
-    with pytest.raises(ValueError, match="[Rr]outed.*configuration.*not supported"):
-        OpenAIResponseTransport(settings)
-
-
 def test_transport_plain_prose_with_url_citations():
     sent = []
 
@@ -318,7 +311,7 @@ def test_transport_malformed_json_raises_error():
         ),
     )
 
-    with pytest.raises(ValueError, match="JSONDecodeError|Expecting value|not valid json"):
+    with pytest.raises(ValueError, match="invalid structured output"):
         asyncio.run(
             transport.respond(
                 [{"role": "user", "content": "hi"}],

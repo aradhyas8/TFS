@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
-from openai import AsyncOpenAI, omit
+from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, OpenAIError, omit
 from openai.types.responses import FunctionToolParam, ResponseInputParam, ToolChoiceFunctionParam
 from openai.types.responses.response_create_params import ToolChoice
 
@@ -188,11 +188,52 @@ ALLOCATION_TOOLS: list[FunctionToolParam] = [
 ]
 
 
+def openrouter_routing(model: str) -> dict[str, Any]:
+    """Honour every parameter (so a model without tools or structured outputs fails instead of degrading) and never
+    fall back to another host. OpenAI models stay on the first-party endpoint; a :free model can never be billed."""
+    routing: dict[str, Any] = {"allow_fallbacks": False, "require_parameters": True}
+    if model.startswith("openai/"):
+        routing["only"] = ["openai"]
+    if model.endswith(":free"):
+        routing["max_price"] = {"prompt": 0, "completion": 0}
+    return routing
+
+
+class ModelServiceError(OpenAIError):
+    """A model-service failure whose message is safe to show the user: no upstream body, key or request detail."""
+
+
+def openrouter_failure(exc: APIError, model: str) -> ModelServiceError:
+    """Classify an OpenRouter failure. Upstream bodies are read only to classify and logged by status, never echoed."""
+    status = getattr(exc, "status_code", None)
+    logging.error("OPENROUTER REQUEST FAILED type=%s status=%s model=%s", type(exc).__name__, status, model)
+    upstream = str(getattr(exc, "body", None) or "").lower()
+    if isinstance(exc, APITimeoutError):
+        reason = "timed out. Nothing was retried; try again later"
+    elif isinstance(exc, APIConnectionError):
+        reason = "could not be reached. Nothing was retried; check the connection and try again"
+    elif status == 429:
+        reason = "rate limit reached (free-tier models have per-minute and daily limits). Nothing was retried; try again later"
+    elif status == 404 and "that support" in upstream and "reasoning" in upstream:
+        reason = ("does not support the configured reasoning effort at the allowed price. "
+                  "Unset OPENAI_REASONING_EFFORT or choose a model that supports reasoning; no other model was used")
+    elif status == 404 and "that support" in upstream:
+        reason = ("does not support the required tools, tool choice and structured outputs at the allowed price. "
+                  "Choose a model that does; no other model was used")
+    elif status == 402:
+        reason = "rejected the request for insufficient credits. No other model was used"
+    elif status == 400:
+        reason = ("rejected the request (HTTP 400): the model does not accept a parameter or schema TFS requires. "
+                  "Retrying will not help; choose another model")
+    else:
+        reason = f"is unavailable (HTTP {status}). No other model was used; try again later"
+    return ModelServiceError(f"OpenRouter {model}: {reason}.")
+
+
 class OpenAIResponseTransport:
-    """Explicit model transport over the OpenAI Responses API.
+    """Explicit model transport over the OpenAI Responses API (OpenAI, ChatGPT plan or OpenRouter).
 
     Accepts explicit messages, tools, tool_choice, and optional output_schema.
-    Rejects routed third-party model configurations (e.g. OpenRouter) when invoked directly.
     """
 
     def __init__(
@@ -200,21 +241,16 @@ class OpenAIResponseTransport:
         settings: Settings,
         *,
         client: AsyncOpenAI | None = None,
-        allow_routed: bool = False,
     ) -> None:
         if not settings.api_key or not settings.model:
             raise ValueError("Backend OpenAI configuration is missing.")
-        if not allow_routed and ("openrouter.ai" in (settings.base_url or "") or settings.provider == "openrouter"):
-            raise ValueError(
-                f"Routed third-party model configuration '{settings.base_url}' is not supported for new orchestration."
-            )
         self.settings = settings
         self.client = client or AsyncOpenAI(
             api_key=settings.api_key,
             base_url=settings.base_url,
             timeout=settings.request_timeout,
-            # ChatGPT plan: never retry automatically (a usage-limited request must not be resent).
-            max_retries=0 if settings.provider == "chatgpt_plan" else 2,
+            # ChatGPT plan and OpenRouter: never retry automatically (a usage- or rate-limited request must not be resent).
+            max_retries=0 if settings.provider == "chatgpt_plan" or settings.openrouter else 2,
         )
 
     async def close(self) -> None:
@@ -232,7 +268,7 @@ class OpenAIResponseTransport:
         timeout: float | None = None,
     ) -> ModelTurn:
         effort = cast(Any, reasoning_effort if reasoning_effort is not None else self.settings.reasoning_effort)
-        openrouter = "openrouter.ai" in (self.settings.base_url or "")
+        openrouter = self.settings.openrouter
         t0 = time.monotonic()
 
         text_format: Any = omit
@@ -248,7 +284,8 @@ class OpenAIResponseTransport:
 
         params: dict[str, Any] = dict(
             model=self.settings.model,
-            reasoning={"effort": effort},
+            # OpenRouter requires every sent parameter, so an unset effort sends no reasoning parameter at all.
+            reasoning=omit if openrouter and effort is None else {"effort": effort},
             input=cast(ResponseInputParam, messages),
             tools=omit if tools is None else tools,
             tool_choice=omit if tool_choice is None else tool_choice,
@@ -260,16 +297,20 @@ class OpenAIResponseTransport:
             include=["reasoning.encrypted_content", *(
                 ["web_search_call.action.sources"]
                 if any(tool.get("type") == "web_search" for tool in tools or []) else [])],
-            # OpenRouter only: pin the first-party OpenAI endpoint, honour every parameter, never fall back to another host.
-            extra_body={"provider": {"only": ["openai"], "allow_fallbacks": False, "require_parameters": True}} if openrouter else None,
+            extra_body={"provider": openrouter_routing(self.settings.model)} if openrouter else None,
         )
 
         effective_timeout = timeout or self.settings.request_timeout
-        if self.settings.provider == "chatgpt_plan":
-            del params["max_output_tokens"]
-            response = await stream_response(self.client, params, effective_timeout)
-        else:
-            response = await self.client.responses.create(**params)
+        try:
+            if self.settings.provider == "chatgpt_plan":
+                del params["max_output_tokens"]
+                response = await stream_response(self.client, params, effective_timeout)
+            else:
+                response = await self.client.responses.create(**params)
+        except APIError as exc:
+            if not openrouter:
+                raise
+            raise openrouter_failure(exc, self.settings.model) from None
 
         duration = time.monotonic() - t0
         tool_names = [item.name for item in response.output if item.type == "function_call"]
@@ -366,7 +407,10 @@ class OpenAIResponseTransport:
         if output_schema is not None:
             if not raw_text:
                 raise ValueError("The model did not return a recommendation.")
-            parsed = json.loads(raw_text)
+            try:
+                parsed = json.loads(raw_text)
+            except json.JSONDecodeError:
+                raise ValueError("The model returned invalid structured output.") from None
             if not isinstance(parsed, dict):
                 raise ValueError("Expected a recommendation object.")
             answer = parsed
@@ -549,5 +593,5 @@ class OpenAIModel(WorkflowModelAdapter):
     """
 
     def __init__(self, settings: Settings) -> None:
-        transport = OpenAIResponseTransport(settings, allow_routed=True)
+        transport = OpenAIResponseTransport(settings)
         super().__init__(transport, settings=settings)
