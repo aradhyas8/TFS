@@ -465,3 +465,13 @@ def test_a_configured_reasoning_effort_requires_openrouter_reasoning_support(ope
     with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
         refused = client.post("/api/ai/provider", headers=LOCAL, json={"provider": "openrouter", "model": DEEPSEEK})
         assert refused.status_code == 422 and "reasoning" in refused.json()["detail"]
+
+
+def test_a_signed_out_chatgpt_selection_does_not_hide_the_configured_provider(openrouter, tmp_path, monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    (tmp_path / "credentials").mkdir(parents=True, exist_ok=True)
+    # Sign-out saves the ChatGPT provider without a model; that is not a choice to restore.
+    (tmp_path / "credentials" / "selection.json").write_text(json.dumps({"provider": "chatgpt_plan", "model": ""}))
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        status = client.get("/api/ai/connection").json()
+    assert (status["provider"], status["model"], status["state"]) == ("openrouter", NEMOTRON, "connected")

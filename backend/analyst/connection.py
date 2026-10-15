@@ -85,7 +85,9 @@ class Connection:
         try:
             # The choice saved from the UI outlives restarts; .env only sets the first-run default.
             saved = json.loads((plan.home() / "selection.json").read_text())
-            if saved["provider"] in {"chatgpt_plan", "openrouter", self.api_settings.provider}:
+            # Sign-out saves ChatGPT without a model; that is not a choice, so the .env provider stays.
+            signed_out = saved["provider"] == "chatgpt_plan" and not saved.get("model")
+            if not signed_out and saved["provider"] in {"chatgpt_plan", "openrouter", self.api_settings.provider}:
                 self.provider = saved["provider"]
                 self.model = saved.get("model") or (self.openrouter.model if self.provider == "openrouter" else self.api_settings.model
                                                    if self.provider != "chatgpt_plan" else "")
