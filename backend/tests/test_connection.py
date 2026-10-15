@@ -33,6 +33,18 @@ def test_disconnected_connection_is_local_and_contains_no_credentials(monkeypatc
     with TestClient(app, client=("192.168.1.2", 50000)) as client:
         assert client.get("/api/ai/connection").status_code == 403
 
+@pytest.mark.parametrize("missing", ["OPENAI_API_KEY", "OPENAI_MODEL"])
+def test_api_key_provider_without_key_is_refused_and_not_saved(monkeypatch, tmp_path, missing):
+    monkeypatch.setenv("CHATGPT_PLAN_DIR", str(tmp_path / "credentials"))
+    monkeypatch.setenv("LLM_PROVIDER", "chatgpt_plan")
+    monkeypatch.setenv(missing, "")
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        response = client.post("/api/ai/provider", headers=LOCAL, json={"provider": "openai"})
+        assert response.status_code == 422
+        assert "backend/.env" in response.json()["detail"]
+        assert client.get("/api/ai/connection").json()["provider"] == "chatgpt_plan"
+    assert not (tmp_path / "credentials" / "selection.json").exists()
+
 @pytest.fixture
 def oauth(monkeypatch, tmp_path):
     """Mock OpenAI HTTP and the browser only; real callback, PKCE, JWT checks, DPAPI and SDK."""

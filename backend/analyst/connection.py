@@ -88,7 +88,11 @@ class Connection:
             state, message = self.error_state, self.error
         return {"provider": self.provider, "model": self.model, "state": state, "message": message,
                 "account": account, "models": self.catalog,
-                "api_provider": self.api_settings.provider, "api_key_available": bool(self.api_settings.api_key and self.api_settings.model)}
+                "api_provider": self.api_settings.provider, "api_key_available": self.api_ready}
+
+    @property
+    def api_ready(self) -> bool:
+        return bool(self.api_settings.api_key and self.api_settings.model)
 
     def resolve(self) -> Settings:
         if not self.managed:

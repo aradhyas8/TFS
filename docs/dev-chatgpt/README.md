@@ -100,3 +100,48 @@ Host identity and the account/client/subject mapping are retained. Re-login uses
 Validation: the mocked external-boundary auth/transport suite covers revocation, repeat logout, sign-in again with the same client/host, failed-revocation local cleanup, blocked sign-out during active work, cross-origin rejection, storage-write failure and rejecting a mismatched identity. Browser sign-out control passed; production build and frontend typecheck passed. No real session was revoked by the automated tests.
 
 Final sign-out validation: **885 backend tests passed**, mypy/Ruff passed, the focused browser sign-out test passed, and frontend typecheck/production build passed. Review's identity-storage failure finding was fixed and confirmed; no unresolved sign-out review finding remains. TFS was restarted with the control available. Real revocation is left to the user's explicit Sign out action; automated tests used temporary mocked sessions only.
+
+## Troubleshooting
+
+| Problem | Action |
+| --- | --- |
+| ChatGPT sign-in is unavailable on WSL, Linux or macOS | Use native Windows, or configure the API-key provider in `backend/.env`. |
+| Sign-in callback port `1455` is busy | Finish or cancel the other sign-in attempt. Then try again. |
+| The connection expired, a permission is missing or no models show | Open **AI connection**. Select **Refresh connection**. If that fails, select **Reconnect ChatGPT**. |
+| TFS refuses a provider change | Finish or cancel the running AI request or sign-in. Then try again. |
+| The app loads, but AI analysis fails | Check the AI connection, the selected model and the backend terminal output. Portfolio management works without AI. |
+| `npm run dev` in `cmd.exe` asks `Terminate batch job (Y/N)?` after Ctrl+C | Both services are already stopped. Type `Y`. PowerShell does not show this prompt. |
+
+## macOS and Linux
+
+The launcher has macOS and Linux paths, but real startup is verified only on Windows. ChatGPT sign-in needs Windows DPAPI, so use the API-key provider:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -e './backend[dev]'
+cp backend/.env.example backend/.env
+npm --prefix frontend ci
+npm run dev
+```
+
+For reproducible dependency versions, see `backend/requirements-dev.lock` and `frontend/package-lock.json`. TFS is a personal, loopback-only installation. Do not expose it as a public server.
+
+## Final startup audit (2026-10-14)
+
+Integration base: PR #49 merge `5d9bad2` on `ticket-02-to-09-actions-and-persistence`, merged into this branch without conflicts.
+
+| Check | Result |
+| --- | --- |
+| Clean clone and README install commands (Windows 11, Python 3.11.0, Node 24.18.0) | passed: pip install, `npm --prefix frontend ci` with 0 vulnerabilities |
+| `npm run dev` from a clean clone | ready in 15.8 s (first run), 10.2–10.7 s on restarts; backend `127.0.0.1:8000` from the repository root, frontend `localhost:3000` from `frontend/` |
+| Real console Ctrl+C (four clean-clone runs and one existing session) | launcher, Uvicorn and Next.js exited within 0.7 s; graceful Uvicorn shutdown; ports 8000 and 3000 released |
+| Restart | three restarts reached readiness; saved portfolio revision 1 and threads loaded |
+| Existing portfolio data | a copied real `portfolio.db` was logically identical (SQLite `iterdump`) after four start/stop cycles; `current.json` hash unchanged |
+| Second `npm run dev` while running | exit 1 with `Port 8000 on 127.0.0.1 is unavailable`; the running session kept serving |
+| Provider selection and API-key fallback | ChatGPT-first with an empty `.env`; an `LLM_PROVIDER=openai` key and model selected the API-key provider without exposing the key |
+| Launcher tests | 5 passed |
+| Regression | backend 887 passed (one existing deprecation warning); mypy and Ruff passed; Playwright 246 passed; frontend typecheck and production build passed |
+
+Defect fixed: `POST /api/ai/provider` accepted the API-key provider without a configured key and model, and saved that selection across restarts. AI requests then had no usable provider. The endpoint now returns 422 and saves nothing; a regression test covers it.
+
+Not verified: real ChatGPT sign-in and inference, a real OpenAI API-key answer, and macOS or Linux startup.

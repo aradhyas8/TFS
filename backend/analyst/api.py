@@ -232,7 +232,7 @@ def create_app(
                 await connection.refresh()
                 if choice.model not in {row["slug"] for row in connection.catalog}:
                     raise HTTPException(422, "Choose an available ChatGPT model. Refresh or reconnect to retry.")
-            elif choice.provider != connection.api_settings.provider:
+            elif choice.provider != connection.api_settings.provider or not connection.api_ready:
                 raise HTTPException(422, "Configure the API-key provider in backend/.env before selecting it.")
             selected_model = choice.model if choice.provider == "chatgpt_plan" else connection.api_settings.model
             from .chatgpt_plan import _write, home
