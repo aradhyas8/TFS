@@ -183,7 +183,7 @@ def create_app(
             ensure_idle()
             if connection.task and not connection.task.done():
                 raise HTTPException(409, "A sign-in is already in progress.")
-            if connection.status()["state"] == "unavailable":
+            if connection.status()["chatgpt_state"] == "unavailable":
                 raise HTTPException(503, connection.status()["message"])
             connection.cancel = threading.Event()
             connection.error = None

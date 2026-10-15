@@ -45,6 +45,15 @@ def test_api_key_provider_without_key_is_refused_and_not_saved(monkeypatch, tmp_
         assert client.get("/api/ai/connection").json()["provider"] == "chatgpt_plan"
     assert not (tmp_path / "credentials" / "selection.json").exists()
 
+def test_configured_api_key_provider_is_reported_as_the_ready_provider(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATGPT_PLAN_DIR", str(tmp_path / "credentials"))
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        status = client.get("/api/ai/connection").json()
+    assert status["provider"] == "openai" and status["state"] == "connected"
+    assert status["message"] == "API-key provider ready. AI questions use test-model."
+    assert status["chatgpt_state"] in {"disconnected", "unavailable"}
+    assert "sk-test" not in json.dumps(status)
+
 @pytest.fixture
 def oauth(monkeypatch, tmp_path):
     """Mock OpenAI HTTP and the browser only; real callback, PKCE, JWT checks, DPAPI and SDK."""

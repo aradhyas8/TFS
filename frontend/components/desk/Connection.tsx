@@ -4,8 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/arc/button/button";
 import styles from "./Connection.module.css";
 
+type ConnectionState = "disconnected" | "connecting" | "connected" | "expired" | "unavailable" | "failed";
 type ConnectionStatus = {
-  state: "disconnected" | "connecting" | "connected" | "expired" | "unavailable" | "failed";
+  /** The provider that answers AI questions; chatgpt_state drives the ChatGPT sign-in controls. */
+  state: ConnectionState; chatgpt_state?: ConnectionState;
   provider: string; model: string; account: string | null; message: string;
   models: { slug: string; display_name: string }[];
   api_key_available: boolean; api_provider: string;
@@ -42,13 +44,14 @@ export default function Connection() {
     catch (failure) { setError(failure instanceof Error ? failure.message : "Connection failed. Try again."); }
     finally { setBusy(false); }
   }
-  const connecting = status?.state === "connecting";
-  const connected = status?.state === "connected";
+  const chatgpt = status?.chatgpt_state ?? status?.state;
+  const connecting = chatgpt === "connecting";
+  const connected = chatgpt === "connected";
   const label = status?.state ?? "loading";
   return <section className={styles.connection} aria-label="AI connection">
     <div className={styles.bar}>
       <span className={styles.caption}>AI · {status?.provider === "chatgpt_plan" ? "ChatGPT plan" : "API-key provider"}</span>
-      {!connected && !connecting && status?.state !== "unavailable" && <Button size="sm" loading={busy} onClick={() => void act("login")}>Continue with ChatGPT</Button>}
+      {status?.state !== "connected" && !connecting && chatgpt !== "unavailable" && <Button size="sm" loading={busy} onClick={() => void act("login")}>Continue with ChatGPT</Button>}
       <details ref={details} className={styles.details}>
         <summary>AI connection · <span data-state={label}>{label}</span></summary>
         <div className={styles.card}>
@@ -60,7 +63,7 @@ export default function Connection() {
           {error && <p role="alert" className={styles.error}>{error}</p>}
           {connecting ? <Button variant="secondary" size="sm" loading={busy} onClick={() => void act("login/cancel")}>Cancel sign-in</Button>
             : <div className={styles.actions}>
-              {status?.state !== "unavailable" && <Button size="sm" loading={busy} onClick={() => void act("login")}>{connected || status?.state === "expired" ? "Reconnect ChatGPT" : "Continue with ChatGPT"}</Button>}
+              {chatgpt !== "unavailable" && <Button size="sm" loading={busy} onClick={() => void act("login")}>{connected || chatgpt === "expired" ? "Reconnect ChatGPT" : "Continue with ChatGPT"}</Button>}
               <Button variant="secondary" size="sm" disabled={busy} onClick={() => void act("refresh")}>Refresh connection</Button>
               {status?.account && <Button variant="ghost" size="sm" disabled={busy} onClick={() => void act("logout")}>Sign out of ChatGPT</Button>}
             </div>}

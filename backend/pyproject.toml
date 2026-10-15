@@ -12,6 +12,8 @@ dependencies = [
   "python-dotenv>=1,<2",
   "httpx>=0.28,<1",
   "yfinance>=1.7,<2",
+  # macOS ChatGPT credentials: Security.framework Keychain binding.
+  "keyring>=25.7,<26; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
