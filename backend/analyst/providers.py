@@ -434,8 +434,14 @@ class OpenAIResponseTransport:
             for item in response.output
             if item.type == "function_call"
         ]
+        if len(calls) > 1 and self.settings.openrouter:
+            # OpenRouter cannot be sent parallel_tool_calls=false, so run the first call only; the model asks again for the rest.
+            logging.warning("OpenRouter %s requested %s parallel calls; keeping the first.", self.settings.model, len(calls))
+            continuation = [item for item in continuation if item.get("type") != "function_call" or item.get("call_id") == calls[0].call_id]
+            calls = calls[:1]
         if calls:
-            return ModelTurn(calls=calls, continuation=continuation)
+            # Prose beside a call is narration ("Let me check"); like the turn's text, it is not kept.
+            return ModelTurn(calls=calls, continuation=[item for item in continuation if item.get("type") != "message"])
 
         answer: dict[str, Any] | None = None
         raw_text = response.output_text or ("".join(plain_texts) if plain_texts else None)

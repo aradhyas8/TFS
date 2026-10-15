@@ -470,7 +470,7 @@ def test_openrouter_is_an_opt_in_base_url_for_the_same_client(monkeypatch):
         Settings.from_environment()
 
 
-def test_openrouter_omits_parallel_flag_but_multiple_tool_calls_are_still_rejected(monkeypatch):
+def test_openrouter_omits_parallel_flag_and_runs_only_the_first_of_parallel_calls(monkeypatch):
     from tests.test_portfolio_review import review_request, review_research_fixture
     sent = []
 
@@ -480,7 +480,6 @@ def test_openrouter_omits_parallel_flag_but_multiple_tool_calls_are_still_reject
         assert request.url == "https://openrouter.ai/api/v1/responses"
         assert "parallel_tool_calls" not in payload
         assert payload["provider"] == {"only": ["openai"], "allow_fallbacks": False, "require_parameters": True}
-        assert payload["tool_choice"] == {"type": "function", "name": "review_portfolio"}
         output = [{"type": "function_call", "id": f"fc_{n}", "call_id": f"call_{n}", "name": "review_portfolio",
                    "arguments": "{}", "status": "completed"} for n in (1, 2)]
         return httpx.Response(200, json={"id": "gen-1", "object": "response", "created_at": 1, "model": "openai/test",
@@ -490,9 +489,11 @@ def test_openrouter_omits_parallel_flag_but_multiple_tool_calls_are_still_reject
     settings = Settings("sk-or-test", "openai/test", base_url="https://openrouter.ai/api/v1")
     response = TestClient(create_app(settings=settings, data=FakeDataProvider(),
         research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=review_request())
-    assert response.status_code != 200
-    assert "recommendation" not in response.json()
-    assert len(sent) == 1
+    assert len(sent) >= 2, response.text
+    assert sent[0]["tool_choice"] == {"type": "function", "name": "review_portfolio"}
+    # Only call_1 ran: the next request carries call_1 and its output, never call_2.
+    replayed = [(item.get("type"), item.get("call_id")) for item in sent[1]["input"] if item.get("type") in {"function_call", "function_call_output"}]
+    assert replayed == [("function_call", "call_1"), ("function_call_output", "call_1")]
 
 
 OPENROUTER_TOOL = {"type": "function", "name": "review_portfolio", "strict": True,

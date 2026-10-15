@@ -406,3 +406,47 @@ def test_workflow_model_adapter_delegates_to_transport():
 
     turn2 = asyncio.run(adapter.respond(messages, require_tool=False, final=True))
     assert turn2.answer == {"preferred_action": "no_action"}
+
+
+def test_a_tool_call_turn_drops_preamble_prose_from_its_continuation():
+    """OpenRouter models narrate before a call ("Let me check"). The call turn keeps only reasoning and the call."""
+    output = [
+        {"type": "reasoning", "id": "rs_1", "summary": []},
+        {"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+         "content": [{"type": "output_text", "text": "Let me check your holdings.", "annotations": []}]},
+        {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "get_holdings", "arguments": "{}", "status": "completed"},
+    ]
+
+    def fake_openai(request):
+        return httpx.Response(200, json={"id": "resp_call", "object": "response", "created_at": 1, "model": "m", "status": "completed",
+                                         "output": output, "parallel_tool_calls": False, "error": None, "incomplete_details": None})
+
+    transport = OpenAIResponseTransport(Settings("sk-test", "m"), client=AsyncOpenAI(
+        api_key="sk-test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openai))))
+    turn = asyncio.run(transport.respond([{"role": "user", "content": "Update my portfolio"}], tools=[], tool_choice="auto"))
+    assert turn.calls == [ToolCall("call_1", "get_holdings", "{}")] and turn.text is None
+    assert [item["type"] for item in turn.continuation] == ["reasoning", "function_call"]
+
+
+def test_an_openrouter_turn_with_parallel_calls_keeps_only_the_first_call():
+    """OpenRouter cannot be told parallel_tool_calls=false, so extra calls are dropped; the model asks again next turn."""
+    output = [
+        {"type": "reasoning", "id": "rs_1", "summary": []},
+        {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "get_messages", "arguments": "{}", "status": "completed"},
+        {"type": "function_call", "id": "fc_2", "call_id": "call_2", "name": "review_portfolio", "arguments": "{}", "status": "completed"},
+    ]
+
+    def fake_openai(request):
+        return httpx.Response(200, json={"id": "resp_call", "object": "response", "created_at": 1, "model": "m", "status": "completed",
+                                         "output": output, "parallel_tool_calls": True, "error": None, "incomplete_details": None})
+
+    def turn_for(settings):
+        transport = OpenAIResponseTransport(settings, client=AsyncOpenAI(
+            api_key="sk-test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openai))))
+        return asyncio.run(transport.respond([{"role": "user", "content": "Update my portfolio"}], tools=[], tool_choice="auto"))
+
+    turn = turn_for(Settings("sk-or", "vendor/m", provider="openrouter", base_url="https://openrouter.ai/api/v1"))
+    assert turn.calls == [ToolCall("call_1", "get_messages", "{}")]
+    assert [(item["type"], item.get("call_id")) for item in turn.continuation] == [("reasoning", None), ("function_call", "call_1")]
+    # OpenAI is asked for one call at a time, so a violation there still reaches the orchestrator's check.
+    assert len(turn_for(Settings("sk-test", "m")).calls) == 2
