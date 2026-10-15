@@ -135,7 +135,7 @@ class WebSearchTools:
         query = parsed.query.strip()
         if self.private_terms(context, query):
             return self.unavailable_result(context, "rejected_query", None)
-        if self.settings.provider == "openrouter" or "openrouter.ai" in (self.settings.base_url or ""):
+        if self.settings.openrouter:
             return self.unavailable_result(context, "unsupported", query)
         try:
             # The orchestrator bounds this handler by the remaining run deadline.

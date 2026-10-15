@@ -311,7 +311,7 @@ def test_transport_malformed_json_raises_error():
         ),
     )
 
-    with pytest.raises(ValueError, match="JSONDecodeError|Expecting value|not valid json"):
+    with pytest.raises(ValueError, match="invalid structured output"):
         asyncio.run(
             transport.respond(
                 [{"role": "user", "content": "hi"}],

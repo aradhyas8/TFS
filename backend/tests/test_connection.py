@@ -276,8 +276,9 @@ def test_local_auth_rejects_cross_origin_missing_header_and_remote_proxy(oauth):
 
 
 def test_new_install_defaults_to_plan_but_honors_explicit_api_provider(monkeypatch, tmp_path):
-    monkeypatch.delenv('LLM_PROVIDER')
-    monkeypatch.delenv('OPENAI_API_KEY')
+    # Set empty (not deleted) so a local backend/.env cannot fill them in.
+    monkeypatch.setenv('LLM_PROVIDER', '')
+    monkeypatch.setenv('OPENAI_API_KEY', '')
     assert Settings.from_environment().provider == 'chatgpt_plan'
     monkeypatch.setenv('LLM_PROVIDER', 'openai')
     assert Settings.from_environment().provider == 'openai'

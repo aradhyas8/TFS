@@ -4,7 +4,7 @@ import json
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from openai import AsyncOpenAI, OpenAIError
+from openai import AsyncOpenAI
 
 from analyst.api import create_app
 from analyst.config import Settings
@@ -468,7 +468,22 @@ def test_openrouter_omits_parallel_flag_but_multiple_tool_calls_are_still_reject
     assert len(sent) == 1
 
 
-def openrouter_transport(handler, model="vendor/model:free"):
+OPENROUTER_TOOL = {"type": "function", "name": "review_portfolio", "strict": True,
+                   "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}
+
+
+def openrouter_response(output, model="vendor/model:free"):
+    return httpx.Response(200, json={"id": "gen-1", "object": "response", "created_at": 1, "model": model, "status": "completed",
+                                     "output": output, "parallel_tool_calls": True, "error": None, "incomplete_details": None})
+
+
+def openrouter_message(text):
+    return [{"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+             "content": [{"type": "output_text", "text": text, "annotations": []}]}]
+
+
+def openrouter_transport(monkeypatch, handler, model="vendor/model:free", provider="openrouter"):
+    """The production transport and its own SDK client (so its retry policy is real) over mock HTTP only."""
     from analyst.providers import OpenAIResponseTransport
     sent = []
 
@@ -476,44 +491,120 @@ def openrouter_transport(handler, model="vendor/model:free"):
         sent.append(json.loads(request.content))
         return handler(request)
 
-    settings = Settings("sk-or-secret", model, base_url="https://openrouter.ai/api/v1", provider="openrouter")
-    client = AsyncOpenAI(api_key=settings.api_key, base_url=settings.base_url, max_retries=0,
-                         http_client=httpx.AsyncClient(transport=httpx.MockTransport(record)))
-    return OpenAIResponseTransport(settings, client=client), sent
+    monkeypatch.setattr("analyst.providers.AsyncOpenAI", lambda **kwargs: AsyncOpenAI(
+        **kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(record))))
+    config = Settings("sk-or-secret", model, base_url="https://openrouter.ai/api/v1", provider=provider)
+    return OpenAIResponseTransport(config), sent
 
 
-def test_openrouter_routes_any_vendor_model_with_free_price_cap_and_no_fallback():
+@pytest.mark.parametrize("model, price_cap", [("vendor/model:free", True), ("vendor/model", False)])
+def test_openrouter_routes_any_vendor_model_without_fallback_and_caps_free_models(monkeypatch, model, price_cap):
     output = [{"type": "reasoning", "id": "rs_1", "summary": [], "content": [{"type": "reasoning_text", "text": "Call it."}]},
               {"type": "function_call", "id": "fc_1", "call_id": "call-1", "name": "review_portfolio", "arguments": "{}", "status": "completed"}]
-    transport, sent = openrouter_transport(lambda _request: httpx.Response(200, json={
-        "id": "gen-1", "object": "response", "created_at": 1, "model": "vendor/model:free", "status": "completed",
-        "output": output, "parallel_tool_calls": True, "error": None, "incomplete_details": None}))
-    turn = asyncio.run(transport.respond([{"role": "user", "content": "hi"}], tools=[{"type": "function", "name": "review_portfolio",
-        "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}, "strict": True}],
-        tool_choice={"type": "function", "name": "review_portfolio"}))
-    # No first-party-OpenAI pin for a non-OpenAI model, never another host, and a free model can never be billed.
-    assert sent[0]["provider"] == {"allow_fallbacks": False, "require_parameters": True, "max_price": {"prompt": 0, "completion": 0}}
-    assert "models" not in sent[0] and sent[0]["model"] == "vendor/model:free"
+    transport, sent = openrouter_transport(monkeypatch, lambda _request: openrouter_response(output, model), model=model)
+    turn = asyncio.run(transport.respond([{"role": "user", "content": "hi"}], tools=[OPENROUTER_TOOL],
+                                         tool_choice={"type": "function", "name": "review_portfolio"}))
+    # No first-party-OpenAI pin for a non-OpenAI model, never another model or host, and a free model can never be billed.
+    expected: dict = {"allow_fallbacks": False, "require_parameters": True}
+    if price_cap:
+        expected["max_price"] = {"prompt": 0, "completion": 0}
+    assert sent[0]["provider"] == expected
+    assert "models" not in sent[0] and sent[0]["model"] == model
+    assert "parallel_tool_calls" not in sent[0]
     assert [call.name for call in turn.calls] == ["review_portfolio"]
     assert [item["type"] for item in turn.continuation] == ["reasoning", "function_call"]
 
 
-@pytest.mark.parametrize("status, expected", [
-    (429, "rate limit"),
-    (404, "no available endpoint"),
-    (503, "unavailable"),
+@pytest.mark.parametrize("effort, expected", [(None, None), ("none", {"effort": "none"}), ("medium", {"effort": "medium"})])
+def test_openrouter_sends_reasoning_only_when_an_effort_is_chosen(monkeypatch, effort, expected):
+    transport, sent = openrouter_transport(monkeypatch, lambda _request: openrouter_response(openrouter_message("Answer.")))
+    asyncio.run(transport.respond([{"role": "user", "content": "hi"}], reasoning_effort=effort))
+    # require_parameters would otherwise demand reasoning support for an empty effort.
+    assert sent[0].get("reasoning") == expected
+
+
+def failing(status, message="upstream detail sk-or-secret"):
+    return lambda _request: httpx.Response(status, json={"error": {"message": message, "code": status}})
+
+
+def raising(error):
+    def handler(request):
+        raise error("upstream detail sk-or-secret", request=request)
+    return handler
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "openai"])  # an OpenRouter URL is OpenRouter whatever the label
+@pytest.mark.parametrize("handler, expected", [
+    (failing(429), "rate limit reached"),
+    (failing(404, "No endpoints found that support the provided 'tool_choice' value"), "does not support the required"),
+    (failing(404, "No endpoints found for vendor/model:free."), "is unavailable"),
+    (failing(400), "rejected the request (HTTP 400)"),
+    (failing(402), "insufficient credits"),
+    (failing(503), "is unavailable (HTTP 503)"),
+    (raising(httpx.ReadTimeout), "timed out"),
+    (raising(httpx.ConnectError), "could not be reached"),
 ])
-def test_openrouter_failures_are_explicit_single_attempts_without_secrets(status, expected):
-    transport, sent = openrouter_transport(lambda _request: httpx.Response(status, json={"error": {
-        "message": "upstream detail sk-or-secret", "code": status}}))
-    with pytest.raises(OpenAIError) as failure:
+def test_openrouter_failures_are_explicit_single_attempts_without_secrets(monkeypatch, provider, handler, expected):
+    from analyst.providers import ModelServiceError
+    transport, sent = openrouter_transport(monkeypatch, handler, provider=provider)
+    with pytest.raises(ModelServiceError) as failure:
         asyncio.run(transport.respond([{"role": "user", "content": "hi"}]))
-    assert expected in str(failure.value) and "vendor/model:free" in str(failure.value)
-    assert "sk-or-secret" not in str(failure.value)
+    assert expected in str(failure.value) and "OpenRouter vendor/model:free" in str(failure.value)
+    assert "sk-or-secret" not in str(failure.value) and "upstream detail" not in str(failure.value)
+    assert len(sent) == 1  # never retried automatically
+
+
+def test_openrouter_invalid_structured_output_is_rejected(monkeypatch):
+    transport, _sent = openrouter_transport(
+        monkeypatch, lambda _request: openrouter_response(openrouter_message("Here is my review: {not json")))
+    with pytest.raises(ValueError, match="invalid structured output"):
+        asyncio.run(transport.respond([{"role": "user", "content": "hi"}], output_schema={
+            "type": "object", "properties": {}, "required": [], "additionalProperties": False}))
+
+
+def openrouter_app(monkeypatch, handler):
+    monkeypatch.setattr("analyst.providers.AsyncOpenAI", lambda **kwargs: AsyncOpenAI(
+        **kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))))
+    settings = Settings("sk-or-secret", "vendor/model:free", base_url="https://openrouter.ai/api/v1", provider="openrouter")
+    return TestClient(create_app(settings=settings, data=FakeDataProvider()))
+
+
+def test_analyze_keeps_the_specific_openrouter_failure(monkeypatch):
+    response = openrouter_app(monkeypatch, failing(429)).post(
+        "/api/analyze", json={"question": "Review my exposure", "portfolio": snapshot()})
+    assert response.status_code == 502
+    assert "rate limit reached" in response.json()["detail"] and "sk-or-secret" not in response.text
+
+
+def test_analyze_rejects_invalid_openrouter_structured_output(monkeypatch):
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        if len(sent) == 1:
+            return openrouter_response([{"type": "function_call", "id": "fc_1", "call_id": "call-1",
+                                         "name": "review_portfolio", "arguments": "{}", "status": "completed"}])
+        return openrouter_response(openrouter_message("{not json"))
+
+    response = openrouter_app(monkeypatch, handler).post(
+        "/api/analyze", json={"question": "Review my exposure", "portfolio": snapshot()})
+    assert response.status_code == 502, response.text
+    assert "recommendation" not in response.json()
+
+
+@pytest.mark.anyio
+async def test_conversation_run_records_the_specific_openrouter_failure(monkeypatch, tmp_path):
+    from analyst.orchestrator import Orchestrator
+    from analyst.persistence import Database
+    from analyst.schemas import SubmitMessageRequest
+    transport, sent = openrouter_transport(monkeypatch, failing(429))
+    db = Database(tmp_path / "test.db")
+    db.initialize()
+    db.create_thread("th-1")
+    request = SubmitMessageRequest(client_request_id="req-1", text="What is intrinsic value?")
+    run, _ = db.submit_message("th-1", request, bound_revision=None)
+    await Orchestrator(db=db, transport=transport, settings=transport.settings)._execute_run("th-1", run, request.text, None, None)
+    failed = db.get_run("th-1", run.id)
+    assert failed is not None and failed.status == "failed"
+    assert "OpenRouter vendor/model:free: rate limit reached" in (failed.error or "")
     assert len(sent) == 1
-
-
-def test_openrouter_transport_never_retries_automatically():
-    from analyst.providers import OpenAIResponseTransport
-    transport = OpenAIResponseTransport(Settings("sk-or", "vendor/model:free", base_url="https://openrouter.ai/api/v1", provider="openrouter"))
-    assert transport.client.max_retries == 0

@@ -116,7 +116,7 @@ If no models show, select **Refresh connection**. If the error says HTTP 520, se
 5. Start TFS with `npm run dev`.
 6. If **AI connection** shows **Use API-key provider**, select it.
 
-`LLM_PROVIDER=openrouter` with `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` is also available for development. Any OpenRouter model that supports tools, tool choice and structured outputs works (for example `nvidia/nemotron-3-super-120b-a12b:free`). TFS never falls back to another model or host, caps `:free` models at zero price, and does not retry rate-limited requests. Hosted web search is unavailable on OpenRouter, so answers that need current web research say so. Keep all keys in `backend/.env` only. Do not put a key in a `NEXT_PUBLIC_*` variable. API billing is separate from your ChatGPT plan.
+`LLM_PROVIDER=openrouter` with `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` is also available for development. Any OpenRouter model that supports tools, tool choice and structured outputs works (for example `nvidia/nemotron-3-super-120b-a12b:free`). TFS never falls back to another model or host, caps `:free` models at zero price, and does not retry rate-limited requests. Hosted web search is unavailable on OpenRouter, so answers that need current web research say so. Free models are slow (60 to 140 seconds per large request) and may not finish full stock-analysis, review, theme or allocation workflows within the 600-second run limit; use ChatGPT sign-in or a stronger model for those. Rate-limit, unavailable-model, unsupported-request and timeout failures are reported with their cause. Keep all keys in `backend/.env` only. Do not put a key in a `NEXT_PUBLIC_*` variable. API billing is separate from your ChatGPT plan.
 
 **Limitations:**
 

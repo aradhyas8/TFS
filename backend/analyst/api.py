@@ -50,7 +50,13 @@ from .portfolio_actions import (
     confirm_portfolio_action,
     prepare_portfolio_action,
 )
-from .providers import DataProvider, ModelProvider, OpenAIModel, SuppliedDataProvider
+from .providers import (
+    DataProvider,
+    ModelProvider,
+    ModelServiceError,
+    OpenAIModel,
+    SuppliedDataProvider,
+)
 from .research import ResearchProvider
 from .schemas import (
     BENCHMARK_FUND,
@@ -688,7 +694,7 @@ def create_app(
                 getattr(exc, "request_id", None),
             )
             raise HTTPException(
-                502, "The model service could not complete the review. Try again."
+                502, str(exc) if isinstance(exc, ModelServiceError) else "The model service could not complete the review. Try again."
             ) from None
         finally:
             legacy_active -= int(needs_ai)

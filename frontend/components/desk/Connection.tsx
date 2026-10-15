@@ -13,7 +13,7 @@ type ConnectionStatus = {
   api_key_available: boolean; api_provider: string;
 };
 
-const PROVIDERS: Record<string, string> = { chatgpt_plan: "ChatGPT plan", openrouter: "OpenRouter", openai: "OpenAI API" };
+const PROVIDER_LABELS: Record<string, string> = { chatgpt_plan: "ChatGPT plan", openrouter: "OpenRouter", openai: "OpenAI API" };
 
 export default function Connection() {
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
@@ -52,7 +52,7 @@ export default function Connection() {
   const label = status?.state ?? "loading";
   return <section className={styles.connection} aria-label="AI connection">
     <div className={styles.bar}>
-      <span className={styles.caption}>AI · {PROVIDERS[status?.provider ?? ""] ?? "API-key provider"}</span>
+      <span className={styles.caption}>AI · {PROVIDER_LABELS[status?.provider ?? ""] ?? "API-key provider"}</span>
       {status?.state !== "connected" && !connecting && chatgpt !== "unavailable" && <Button size="sm" loading={busy} onClick={() => void act("login")}>Continue with ChatGPT</Button>}
       <details ref={details} className={styles.details}>
         <summary>AI connection · <span data-state={label}>{label}</span></summary>

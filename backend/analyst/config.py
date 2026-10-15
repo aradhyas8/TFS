@@ -18,6 +18,11 @@ class Settings:
     # "chatgpt_plan": the same Responses client and request with an OAuth token from Sign in with ChatGPT, streamed.
     provider: str = "openai"
 
+    @property
+    def openrouter(self) -> bool:
+        """OpenRouter is identified by its endpoint as well as its label, so no routed request escapes its guards."""
+        return self.provider == "openrouter" or "openrouter.ai" in (self.base_url or "")
+
     @classmethod
     def from_environment(cls) -> "Settings":
         load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
