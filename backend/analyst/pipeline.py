@@ -103,6 +103,11 @@ class InvalidReview(Exception):
     pass
 
 
+class AnswerRejected(InvalidReview):
+    """The final recommendation still failed validation after its one correction. The message is a fixed validator
+    reason (never model text), so it is safe to show."""
+
+
 def validate_recommendation(answer: dict[str, Any], *, stock: bool = False) -> Recommendation:
     if answer.get("amount") is not None:
         raise InvalidReview("Only Python may supply allocation amounts.")
@@ -1344,7 +1349,8 @@ async def analyze(
                 recommendation = validate_recommendation(turn.answer, stock=request.stock is not None or allocation is not None or reunderwriting is not None or theme is not None)
             except (InvalidReview, ValidationError) as err:
                 if answer_retried:
-                    raise
+                    reason = str(err) if isinstance(err, InvalidReview) else "it does not match the recommendation schema"
+                    raise AnswerRejected(f"The corrected final recommendation still failed validation: {reason}") from None
                 answer_retried = True
                 logging.warning("Final answer rejected (%s); returning it once to correct.", err)
                 messages.extend(turn.continuation or [{"role": "assistant", "content": json.dumps(turn.answer)}])
@@ -1427,7 +1433,23 @@ async def analyze(
                         reunderwriting.amount = None
                 validate_review_baseline(" ".join([recommendation.reason, recommendation.downside, *recommendation.assumptions, *recommendation.uncertainty, *recommendation.what_could_change, *(row.reason for row in recommendation.alternatives)]), request)
             if stock_result is not None:
-                recommendation = validate_stock_recommendation(recommendation, stock_result, computed, proposals)
+                try:
+                    recommendation = validate_stock_recommendation(recommendation, stock_result, computed, proposals)
+                except InvalidReview as err:
+                    if answer_retried:
+                        raise AnswerRejected(f"The corrected final recommendation still failed validation: {err}") from None
+                    # Research, cases and comparison are complete: one answer-only turn (no tools) to fix the cited problem.
+                    answer_retried = True
+                    citable = sorted(doc.id for doc in stock_result.research.documents if doc.available)
+                    logging.warning("Stock answer rejected (%s); returning it once to correct.", err)
+                    messages.extend(turn.continuation or [{"role": "assistant", "content": json.dumps(turn.answer)}])
+                    messages.append({"role": "user", "content": f"Your final recommendation was rejected: {err} "
+                                     f"Cite only these available document IDs: {citable}. Transcript Q&A is not available: never "
+                                     "say a transcript or Q&A was reviewed, says, shows, supports or confirms anything; if you mention it, "
+                                     "say only that it was not available, in a sentence with no other claim. Research, company cases and "
+                                     "comparison are complete. Return only the corrected final recommendation, with every other rule unchanged."})
+                    final_next = True
+                    continue
                 stock_result.sizing_withheld = sizing_withheld(stock_result, computed, proposals)
             if allocation:
                 assert isinstance(recommendation, StockRecommendation)
@@ -1650,6 +1672,8 @@ def validate_stock_recommendation(answer: Recommendation, stock: StockResult,
         for sentence in re.split(r"[.!?;]", prose):
             # Mentioning a transcript is fine; claiming to have read one that is unavailable is not.
             claimed = re.sub(r"\b(?:not|never|no|without|cannot|could not|was not|were not)\s+(?:been\s+)?(?:reviewed|read|available)\b", "", sentence, flags=re.I)
+            claimed = re.sub(r"\bno\b[^,]*?\b(?:transcript|Q&A|question.and.answer)\b[^,]*?\b(?:was|were|has been|have been)\s+(?:reviewed|read)\b",
+                             "", claimed, flags=re.I)
             if re.search(r"(?:transcript|Q&A|question.and.answer)", sentence, re.I) and re.search(
                     r"\b(?:reviewed|read|confirms?|confirmed|supports?|says|said|states?|stated|notes?|noted|shows?|showed|according to)\b", claimed, re.I):
                 raise InvalidReview("Unavailable transcript Q&A cannot be claimed reviewed.")

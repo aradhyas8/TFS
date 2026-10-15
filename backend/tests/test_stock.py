@@ -539,6 +539,9 @@ def test_explanatory_stock_prose_may_quote_figures_and_periods():
     ("A transcript could change the view on credit quality.", True),
     ("The transcript says management expects lower credit losses.", False),
     ("Transcript Q&A was reviewed and confirms the thesis.", False),
+    # An explicit denial is not a claim; a denial followed by a claim still is.
+    ("No earnings-call transcript or Q&A was reviewed.", True),
+    ("No doubt the transcript was reviewed and confirms the thesis.", False),
 ])
 def test_transcript_mentions_versus_claims(reason, ok):
     answer = stock_answer()

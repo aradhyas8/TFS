@@ -35,7 +35,7 @@ from .persistence import (
     StaleBaseRevisionError,
     ThreadNotFoundError,
 )
-from .pipeline import InvalidReview, analyze
+from .pipeline import AnswerRejected, InvalidReview, analyze
 from .portfolio import (
     HOLDINGS_COLUMNS,
     PortfolioStore,
@@ -694,7 +694,8 @@ def create_app(
             logging.error("InvalidReview in /api/analyze: %s", exc, exc_info=True)
             raise HTTPException(
                 502,
-                "The model did not produce a valid portfolio review. No recommendation was completed.",
+                f"{exc} No recommendation was completed." if isinstance(exc, AnswerRejected)
+                else "The model did not produce a valid portfolio review. No recommendation was completed.",
             ) from None
 
         except OpenAIError as exc:

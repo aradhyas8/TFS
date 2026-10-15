@@ -299,3 +299,48 @@ def test_incomplete_response_for_a_non_budget_reason_is_not_retried(monkeypatch)
     response = run(monkeypatch, model)
     assert response.status_code == 502 and "content_filter" in response.json()["detail"]
     assert len(model.sent) == 4
+
+
+def answer_with(**changes):
+    answer = msft_answer()
+    answer.update(changes)
+    return lambda: openrouter_response(openrouter_message(json.dumps(answer)), model="deepseek/deepseek-v4.1-flash")
+
+
+TRANSCRIPT_CLAIM = ["The earnings-call transcript says management expects capital intensity to ease."]
+
+
+def test_rejected_transcript_claim_is_corrected_once_without_repeating_research_or_calculations(monkeypatch):
+    research_calls = []
+    original = ReviewedResearchProvider.company
+
+    async def counted(self, position, as_of):
+        research_calls.append(position.id)
+        return await original(self, position, as_of)
+
+    monkeypatch.setattr(ReviewedResearchProvider, "company", counted)
+    model = Model(msft_request(), script={6: answer_with(uncertainty=TRANSCRIPT_CLAIM)})
+    response = run(monkeypatch, model)
+    assert response.status_code == 200, response.text
+    assert response.json()["recommendation"]["preferred_action"] == "hold"
+    assert len(model.sent) == 7 and research_calls == ["msft"]
+    correction = model.sent[6]
+    # An answer-only turn: no tools to call, so research, cases and comparison cannot run again.
+    assert "tools" not in correction and "tool_choice" not in correction
+    assert "transcript Q&A cannot be claimed reviewed" in json.dumps(correction["input"][-1])
+    assert [p["tool_choice"]["name"] for p in model.sent if isinstance(p.get("tool_choice"), dict)] == SEQUENCE
+
+
+@pytest.mark.parametrize("second, reason", [
+    (answer_with(uncertainty=TRANSCRIPT_CLAIM), "transcript Q&A cannot be claimed reviewed"),
+    # A correction that brings in unsupported evidence or a numerical claim is not accepted either.
+    (answer_with(evidence_ids=["sec-10-k-invented"]), "cannot cite unavailable primary evidence"),
+    (answer_with(reason="Hold: there is a 90% probability that revenue doubles within two years."), "still failed validation"),
+])
+def test_corrected_answer_that_still_fails_returns_an_explicit_error(monkeypatch, second, reason):
+    model = Model(msft_request(), script={6: answer_with(uncertainty=TRANSCRIPT_CLAIM), 7: second})
+    response = run(monkeypatch, model)
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert "still failed validation" in detail and reason.lower() in detail.lower()
+    assert len(model.sent) == 7
