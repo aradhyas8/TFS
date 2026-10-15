@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import Any, AsyncIterator, Literal, cast
 from uuid import uuid4
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
@@ -19,7 +20,7 @@ from pydantic import ValidationError
 
 from .allocation import DiscoveryProvider
 from .config import Settings
-from .connection import Connection, ProviderChoice, local_request
+from .connection import Connection, ProviderChoice, local_request, openrouter_problem
 from .csv_input import COLUMNS, load_csv
 from .decisions import DecisionStore, extract_decision
 from .financial_data import (
@@ -245,9 +246,21 @@ def create_app(
                 await connection.refresh()
                 if choice.model not in {row["slug"] for row in connection.catalog}:
                     raise HTTPException(422, "Choose an available ChatGPT model. Refresh or reconnect to retry.")
+            elif choice.provider == "openrouter":
+                if not connection.openrouter.api_key:
+                    raise HTTPException(422, "Add OPENROUTER_API_KEY to backend/.env, then restart TFS to use OpenRouter.")
+                choice.model = choice.model or connection.openrouter.model
+                if choice.model not in {row["slug"] for row in connection.openrouter_models()}:
+                    raise HTTPException(422, "Choose a listed OpenRouter model.")
+                try:
+                    problem = await asyncio.to_thread(openrouter_problem, choice.model, connection.openrouter.reasoning_effort is not None)
+                except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                    raise HTTPException(503, f"Could not check {choice.model} with OpenRouter. The model was not changed. Try again.") from None
+                if problem:
+                    raise HTTPException(422, problem)
             elif choice.provider != connection.api_settings.provider or not connection.api_ready:
                 raise HTTPException(422, "Configure the API-key provider in backend/.env before selecting it.")
-            selected_model = choice.model if choice.provider == "chatgpt_plan" else connection.api_settings.model
+            selected_model = choice.model if choice.provider in {"chatgpt_plan", "openrouter"} else connection.api_settings.model
             from .chatgpt_plan import _write, home
             await asyncio.to_thread(_write, home() / "selection.json", json.dumps({"provider": choice.provider, "model": selected_model}).encode())
             connection.provider, connection.model = choice.provider, selected_model
@@ -704,6 +717,7 @@ def create_app(
                     discovery=discovery,
                 )
             if needs_ai:
+                result = result.model_copy(update={"ai_provider": config.provider, "ai_model": config.model or None})
                 save_analysis(request, result)
             return result
         except TimeoutError:
@@ -838,6 +852,8 @@ def create_app(
             thread_id=thread_id,
             request=request,
             bound_revision=bound_revision,
+            ai_provider=selected_orch.settings.provider,
+            ai_model=selected_orch.settings.model or None,
         )
 
         if is_new:

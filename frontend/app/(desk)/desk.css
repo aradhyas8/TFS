@@ -469,6 +469,21 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .seg-opt input:checked + span { background: var(--surface-raised); color: var(--text); font-weight: 600; box-shadow: var(--shadow-resting); }
 .desk .seg-opt input:focus-visible + span { outline: var(--focus-outline-width, 2px) solid var(--focus-outline); outline-offset: 1px; }
 .desk .pill-select { width: auto; min-height: 32px; border-radius: 999px; padding: 0 10px; font-size: 13px; background: var(--surface-raised); max-width: 100%; }
+/* Composer AI model: a pill beside send; its note wraps under the row when AI is not ready. */
+.desk .model-pick { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; margin-left: auto; }
+.desk .model-row { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.desk .model-pick select { width: auto; max-width: min(200px, 40vw); text-overflow: ellipsis; }
+.desk .model-pick .live { width: 7px; height: 7px; border-radius: 50%; background: var(--success); flex: none; }
+.desk .model-pick .live[data-state="failed"] { background: var(--warning); }
+.desk .model-pick + .send { margin-left: 0; }
+.desk .model-note { flex-basis: 100%; text-align: right; }
+/* Phone: the picker takes its own row above the shortcuts so neither is cut off. */
+@media (max-width: 480px) {
+  .desk .box-tools { flex-wrap: wrap; }
+  .desk .box-tools .model-pick { order: -1; flex-basis: 100%; justify-content: flex-start; }
+  .desk .box-tools .model-pick select { max-width: calc(100% - 20px); }
+  .desk .box-tools .model-note { text-align: left; }
+}
 /* Holdings: one table, columns on a wide screen, two-line rows on a phone. */
 .desk .ht { background: var(--raised); border-radius: 20px; overflow: hidden; font-size: 13.5px; }
 .desk .hr { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, .7fr) minmax(0, .6fr) minmax(0, .85fr) minmax(0, 1fr) minmax(0, 1.45fr) minmax(0, 1.05fr) 88px;

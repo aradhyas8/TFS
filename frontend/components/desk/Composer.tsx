@@ -2,6 +2,7 @@ import { ArrowUp, Slash } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { isThemeCandidate, type NewCashInput, type Position, type Snapshot, type ThemeInput } from "../../lib/contracts";
 import { accountName, fullDate, money, newCashLabel } from "./format";
+import ModelPicker from "./ModelPicker";
 import { isConversation, parseMoney } from "./route";
 
 const WORKFLOWS = [
@@ -349,12 +350,14 @@ export default function Composer({
             placeholder={running ? "Wait for this answer to finish" : workflow === "new-cash" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?") : workflow === "theme" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "Explore a theme against your shortlist.") : inThread ? "Ask a follow-up, or type / for a workflow" : "Ask anything, or type / for a workflow"}
             onChange={event => { onQuestion(event.target.value); setActive(0); }} />
           {(workflow || question.trim()) && blocked && !running && !slashOpen && <span className="cap amber hint">{blocked}</span>}
+          {!tools && <ModelPicker running={running} />}
           {!tools && send}
         </div>
         {tools && <div className="box-tools">
           <button type="button" className="pill" disabled={running} onClick={() => { onQuestion("/"); setActive(0); document.getElementById("ask")?.focus(); }}>
             <Slash size={14} aria-hidden="true" />Workflows</button>
           {snapshot && <span className="pill status n"><span className="live" aria-hidden="true" /><span className="hide-sm">Using portfolio as of {fullDate(snapshot.as_of)}</span><span className="show-sm" aria-hidden="true">As of {fullDate(snapshot.as_of)}</span></span>}
+          <ModelPicker running={running} />
           {send}
         </div>}
       </div>

@@ -327,7 +327,7 @@ def test_ordinary_run_ignores_an_open_draft(tmp_path):
 # Storage migration
 
 
-def test_existing_runs_survive_the_upgrade_that_records_hypothetical_selection(tmp_path):
+def test_existing_runs_survive_the_upgrades_that_record_hypothetical_selection_and_model(tmp_path):
     path = tmp_path / "portfolio.db"
     db = Database(path)
     db.initialize()
@@ -335,14 +335,16 @@ def test_existing_runs_survive_the_upgrade_that_records_hypothetical_selection(t
     run, _ = db.submit_message("th-1", SubmitMessageRequest(client_request_id="req-1", text="Before upgrade"), 1)
     with sqlite3.connect(path) as conn:  # the database as the previous release left it
         conn.execute("ALTER TABLE runs DROP COLUMN hypothetical_artifact_id;")
+        conn.execute("ALTER TABLE runs DROP COLUMN ai_provider;")
+        conn.execute("ALTER TABLE runs DROP COLUMN ai_model;")
         conn.execute("PRAGMA user_version = 2;")
 
     upgraded = Database(path)
     upgraded.initialize()
     upgraded.initialize()  # repeated startup
-    assert upgraded.get_schema_version() == SCHEMA_VERSION == 3
+    assert upgraded.get_schema_version() == SCHEMA_VERSION == 4
     kept = upgraded.get_run("th-1", run.id)
-    assert kept is not None and (kept.bound_revision, kept.hypothetical_artifact_id) == (1, None)
+    assert kept is not None and (kept.bound_revision, kept.hypothetical_artifact_id, kept.ai_model) == (1, None, None)
     with sqlite3.connect(tmp_path / "portfolio.backup.db") as backup:
         assert backup.execute("PRAGMA user_version;").fetchone()[0] == 2
 

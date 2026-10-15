@@ -33,7 +33,7 @@ from .schemas import (
     build_artifact_payload,
 )
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class SchemaMigrationError(RuntimeError):
@@ -160,6 +160,8 @@ class Database:
                 self._apply_migration_v2(conn)
             if current_version < 3:
                 self._apply_migration_v3(conn)
+            if current_version < 4:
+                self._apply_migration_v4(conn)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
 
             # Backfill any missing art-rev-N artifacts for committed revisions
@@ -378,6 +380,15 @@ class Database:
         conn.execute("ALTER TABLE runs ADD COLUMN hypothetical_artifact_id TEXT;")
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?);",
+            (datetime.now(UTC).isoformat(),),
+        )
+
+    def _apply_migration_v4(self, conn: sqlite3.Connection) -> None:
+        """Apply migration v4: a run records the AI provider and model that answered it."""
+        conn.execute("ALTER TABLE runs ADD COLUMN ai_provider TEXT;")
+        conn.execute("ALTER TABLE runs ADD COLUMN ai_model TEXT;")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?);",
             (datetime.now(UTC).isoformat(),),
         )
 
@@ -1183,7 +1194,7 @@ class Database:
                 """
                 SELECT id, thread_id, client_request_id, status, bound_revision,
                        created_at, updated_at, error, message_ids_json, artifact_ids_json,
-                       hypothetical_artifact_id
+                       hypothetical_artifact_id, ai_provider, ai_model
                 FROM runs
                 WHERE thread_id = ?
                 ORDER BY created_at ASC;
@@ -1234,6 +1245,8 @@ class Database:
         thread_id: str,
         request: SubmitMessageRequest,
         bound_revision: int | None,
+        ai_provider: str | None = None,
+        ai_model: str | None = None,
     ) -> tuple[RunRecord, bool]:
         """
         Submit a message to a thread transactionally.
@@ -1262,7 +1275,7 @@ class Database:
                 """
                 SELECT id, thread_id, client_request_id, request_payload_hash, status,
                        bound_revision, created_at, updated_at, error, message_ids_json, artifact_ids_json,
-                       hypothetical_artifact_id
+                       hypothetical_artifact_id, ai_provider, ai_model
                 FROM runs
                 WHERE thread_id = ? AND client_request_id = ?;
                 """,
@@ -1299,8 +1312,8 @@ class Database:
                 INSERT INTO runs (
                     id, thread_id, client_request_id, request_payload_hash, status,
                     bound_revision, created_at, updated_at, error, message_ids_json, artifact_ids_json,
-                    hypothetical_artifact_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    hypothetical_artifact_id, ai_provider, ai_model
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     run_id,
@@ -1315,6 +1328,8 @@ class Database:
                     json.dumps([msg_id]),
                     "[]",
                     request.hypothetical_artifact_id,
+                    ai_provider,
+                    ai_model,
                 ),
             )
 
@@ -1355,6 +1370,8 @@ class Database:
                 message_ids=[msg_id],
                 artifact_ids=[],
                 hypothetical_artifact_id=request.hypothetical_artifact_id,
+                ai_provider=ai_provider,
+                ai_model=ai_model,
             )
             return run_record, True
 
@@ -1365,7 +1382,7 @@ class Database:
                 """
                 SELECT id, thread_id, client_request_id, status, bound_revision,
                        created_at, updated_at, error, message_ids_json, artifact_ids_json,
-                       hypothetical_artifact_id
+                       hypothetical_artifact_id, ai_provider, ai_model
                 FROM runs
                 WHERE id = ? AND thread_id = ?;
                 """,
@@ -1387,7 +1404,7 @@ class Database:
                 """
                 SELECT id, thread_id, client_request_id, status, bound_revision,
                        created_at, updated_at, error, message_ids_json, artifact_ids_json,
-                       hypothetical_artifact_id
+                       hypothetical_artifact_id, ai_provider, ai_model
                 FROM runs
                 WHERE id = ? AND thread_id = ?;
                 """,
@@ -1410,7 +1427,7 @@ class Database:
                     """
                     SELECT id, thread_id, client_request_id, status, bound_revision,
                            created_at, updated_at, error, message_ids_json, artifact_ids_json,
-                           hypothetical_artifact_id
+                           hypothetical_artifact_id, ai_provider, ai_model
                     FROM runs
                     WHERE id = ?;
                     """,
@@ -1439,7 +1456,7 @@ class Database:
                 """
                 SELECT id, thread_id, client_request_id, status, bound_revision,
                        created_at, updated_at, error, message_ids_json, artifact_ids_json,
-                       hypothetical_artifact_id
+                       hypothetical_artifact_id, ai_provider, ai_model
                 FROM runs
                 WHERE id = ?;
                 """,
@@ -1488,7 +1505,7 @@ class Database:
                 """
                 SELECT id, thread_id, client_request_id, status, bound_revision,
                        created_at, updated_at, error, message_ids_json, artifact_ids_json,
-                       hypothetical_artifact_id
+                       hypothetical_artifact_id, ai_provider, ai_model
                 FROM runs
                 WHERE id = ?;
                 """,
@@ -1602,6 +1619,8 @@ class Database:
             message_ids=json.loads(row["message_ids_json"]),
             artifact_ids=json.loads(row["artifact_ids_json"]),
             hypothetical_artifact_id=row["hypothetical_artifact_id"],
+            ai_provider=row["ai_provider"],
+            ai_model=row["ai_model"],
         )
 
     def _row_to_message(self, row: sqlite3.Row) -> MessageRecord:

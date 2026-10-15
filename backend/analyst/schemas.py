@@ -1431,6 +1431,9 @@ class AnalysisResult(Contract):
     reunderwriting: ReunderwritingResult | None = None
     theme: ThemeResult | None = None
     artifact_reference: Any | None = None
+    # The AI provider and model that produced this analysis; TFS never switches models silently.
+    ai_provider: str | None = None
+    ai_model: str | None = None
 
 
 DecisionAction = Literal[
@@ -1906,6 +1909,9 @@ class RunRecord(Contract):
     artifact_ids: list[Identifier] = Field(default_factory=list)
     # The immutable draft this run analyzes instead of the committed holdings; never a commit.
     hypothetical_artifact_id: Identifier | None = None
+    # The AI provider and model selected when the run was accepted.
+    ai_provider: str | None = None
+    ai_model: str | None = None
 
 
 class ThreadDetail(Contract):

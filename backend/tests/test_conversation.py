@@ -411,6 +411,8 @@ def test_fastapi_thread_and_run_endpoints(tmp_path: Path) -> None:
     assert run_data["status"] == "running"
     # Revision was bound once at acceptance!
     assert run_data["bound_revision"] == 1
+    # The run records the model that answers it.
+    assert (run_data["ai_provider"], run_data["ai_model"]) == ("openai", "gpt-4o")
     run_id = run_data["id"]
 
     # 4. Duplicate submission returns existing run (202)

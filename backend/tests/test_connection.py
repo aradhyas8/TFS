@@ -60,6 +60,7 @@ def test_configured_openrouter_provider_reports_its_provider_and_model(monkeypat
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-secret")
     monkeypatch.setenv("OPENROUTER_MODEL", "vendor/model:free")
+    monkeypatch.setattr("analyst.api.openrouter_problem", lambda model, reasoning: None)
     with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
         status = client.get("/api/ai/connection").json()
         assert client.post("/api/ai/provider", headers=LOCAL, json={"provider": "openrouter"}).status_code == 200
@@ -389,3 +390,78 @@ def test_login_after_logout_cannot_replace_registration_with_another_identity(oa
         client.post('/api/ai/login', headers=LOCAL)
         status = wait_login(client)
         assert status['state'] == 'failed' and status['account'] is None
+
+
+DEEPSEEK = "deepseek/deepseek-v4.1-flash"
+NEMOTRON = "nvidia/nemotron-3-super-120b-a12b:free"
+
+
+@pytest.fixture
+def openrouter(monkeypatch, tmp_path):
+    """ChatGPT is the startup provider; OpenRouter is configured alongside it. The public catalog is mocked."""
+    monkeypatch.setenv("CHATGPT_PLAN_DIR", str(tmp_path / "credentials"))
+    monkeypatch.setenv("LLM_PROVIDER", "chatgpt_plan")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-secret")
+    monkeypatch.setenv("OPENROUTER_MODEL", NEMOTRON)
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "")  # set, so backend/.env cannot supply one
+    catalog = {"data": [{"id": DEEPSEEK, "supported_parameters": ["tools", "tool_choice", "structured_outputs"]},
+                        {"id": NEMOTRON, "supported_parameters": ["tools", "tool_choice"]}], "fail": False}
+
+    def get(url, **kwargs):
+        assert url == "https://openrouter.ai/api/v1/models" and "Authorization" not in kwargs.get("headers", {})
+        if catalog["fail"]:
+            raise httpx.ConnectError("offline")
+        return httpx.Response(200, request=httpx.Request("GET", url), json={"data": catalog["data"]})
+
+    monkeypatch.setattr("analyst.connection.httpx.get", get)
+    return catalog
+
+
+def test_openrouter_models_are_listed_and_selection_survives_a_restart(openrouter, tmp_path):
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        status = client.get("/api/ai/connection").json()
+        assert [row["slug"] for row in status["openrouter_models"]] == [DEEPSEEK, NEMOTRON]
+        assert status["openrouter_available"] is True
+        selected = client.post("/api/ai/provider", headers=LOCAL, json={"provider": "openrouter", "model": DEEPSEEK})
+        assert selected.status_code == 200, selected.text
+        assert (selected.json()["provider"], selected.json()["model"], selected.json()["state"]) == ("openrouter", DEEPSEEK, "connected")
+        assert "sk-or-secret" not in selected.text
+    # A new backend process restores the saved choice even though .env names another provider.
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        assert (client.get("/api/ai/connection").json()["provider"], client.get("/api/ai/connection").json()["model"]) == ("openrouter", DEEPSEEK)
+
+
+def test_incompatible_or_unchecked_openrouter_models_are_refused_without_switching(openrouter):
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        refused = client.post("/api/ai/provider", headers=LOCAL, json={"provider": "openrouter", "model": NEMOTRON})
+        assert refused.status_code == 422
+        assert "structured_outputs" in refused.json()["detail"]
+        unknown = client.post("/api/ai/provider", headers=LOCAL, json={"provider": "openrouter", "model": "vendor/other"})
+        assert unknown.status_code == 422
+        openrouter["fail"] = True
+        offline = client.post("/api/ai/provider", headers=LOCAL, json={"provider": "openrouter", "model": DEEPSEEK})
+        assert offline.status_code == 503 and "not changed" in offline.json()["detail"]
+        assert client.get("/api/ai/connection").json()["provider"] == "chatgpt_plan"
+
+
+def test_openrouter_without_a_backend_key_cannot_be_selected(openrouter, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        assert client.get("/api/ai/connection").json()["openrouter_available"] is False
+        refused = client.post("/api/ai/provider", headers=LOCAL, json={"provider": "openrouter", "model": DEEPSEEK})
+        assert refused.status_code == 422 and "OPENROUTER_API_KEY" in refused.json()["detail"]
+
+
+def test_selected_openrouter_model_is_the_one_each_request_uses(openrouter):
+    from analyst.connection import Connection
+    connection = Connection(Settings.from_environment())
+    connection.provider, connection.model = "openrouter", DEEPSEEK
+    config = connection.resolve()
+    assert (config.provider, config.model, config.api_key, config.openrouter) == ("openrouter", DEEPSEEK, "sk-or-secret", True)
+
+
+def test_a_configured_reasoning_effort_requires_openrouter_reasoning_support(openrouter, monkeypatch):
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "low")
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        refused = client.post("/api/ai/provider", headers=LOCAL, json={"provider": "openrouter", "model": DEEPSEEK})
+        assert refused.status_code == 422 and "reasoning" in refused.json()["detail"]

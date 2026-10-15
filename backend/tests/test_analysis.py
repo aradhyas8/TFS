@@ -551,3 +551,12 @@ def test_research_source_selection_for_new_cash_and_theme(monkeypatch):
     assert len(captured) == 3
     assert captured[2] is None
     assert resp_unconfirmed.json()["theme"]["status"] == "awaiting_agreement"
+
+
+def test_analysis_records_the_model_that_answered():
+    model = ScriptedModel([ModelTurn(calls=[ToolCall("call_1", "review_portfolio", "{}")]), ModelTurn(answer=recommendation())])
+    settings = Settings(api_key="sk-test", model="vendor/answering-model", provider="openrouter")
+    client = TestClient(create_app(model=model, data=FakeDataProvider(), settings=settings))
+    response = client.post("/api/analyze", json={"question": "How concentrated am I?", "portfolio": snapshot()})
+    assert response.status_code == 200, response.text
+    assert (response.json()["ai_provider"], response.json()["ai_model"]) == ("openrouter", "vendor/answering-model")
