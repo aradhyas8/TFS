@@ -66,7 +66,8 @@ Values live in `frontend/app/theme.css`, loaded after Arc's `foundation.css`.
 1. Foundation and main workspace: tokens, type, rail, home, composer, responsive shell. Done.
 2. Conversation and analysis results. Done.
 3. Portfolio and decisions. Done.
-4. Proposal review and confirmation.
+4. Proposal review and confirmation. Done.
+5. Final cross-screen acceptance. Done; see "Acceptance" below.
 
 Until a surface reaches its phase it keeps its structure and takes only the new tokens.
 
@@ -109,7 +110,8 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
   type is edited in its row. Below 768 each holding is a two-line row; nothing scrolls sideways.
 - Values, weights, allocation and the rule checks come only from an analysis of exactly the committed revision: a
   stored result or desk answer that names this revision (a desk answer keeps the revision it was asked against). A
-  result that names no revision counts only when its inputs are demonstrably the committed ones: every holding
+  result that names no revision counts only when its inputs are demonstrably the committed ones. It must name its
+  holdings date (an older result that does not is never used), and match: every holding
   field the analysis reads (account, kind, currency, ticker, listing, company, fund type, shares, cash, mark), the
   reporting currency, the holdings date and each exchange rate on file. A hypothetical draft analysis never counts,
   whether the result or its stored reference says so. Rule checks made under any other guardrail setting (cap,
@@ -184,8 +186,11 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
 - The mockup shows "Funds" in the allocation. The app splits stocks, ETFs and cash, the kinds a holding has.
 - The holdings table has an eighth column for Analyze. The mockup's "Against cap" column is headed Status, because
   it also holds a fund's type, as a select, where the mockup writes "Fund".
-- The header has Back to chat, which the mockup does not show. Below 768 the revision chip and Refresh prices leave
-  the header; the revision is written at the top of the page instead.
+- The header has Back to chat, which the mockup does not show. Below 1200 the revision chip leaves the header and the
+  revision and holdings date are written at the top of the page instead; below 768 Refresh prices leaves too. Below
+  360 (320, or 400% zoom) Back to chat shows only its arrow and keeps its name for screen readers.
+- Between 1024 and 1199 the rail sits beside a page no wider than a tablet's, so the holdings table uses the tablet
+  columns (no average cost). The weight bar shrinks before its percentage does.
 - Sizes taken from the mockup outside the 15, 14 and 12 scale: the view title 17, the portfolio total 38 (32 on a
   phone), the not-valued total 26, 13.5 in the table, notices and the draft bar, 12.5 in summary captions, legends
   and chips, 10.5 in holding initials. The empty states use 17 for their heading.
@@ -210,3 +215,24 @@ Until a surface reaches its phase it keeps its structure and takes only the new 
 - Opening Portfolio or Decisions moves focus to the view's title; Back to chat moves it to the composer. The view
   tabs follow the tab pattern (arrow keys move between them). The account and status filters are radio groups.
   Below 1024 the view's controls, filters and fund-type selects are 44px.
+- With the draft bar showing, focus and scrolling stop clear of it and of the sticky header and tabs
+  (`scroll-padding` on the page), so a field reached by keyboard is never hidden behind them.
+- Widening past 1024 closes the rail drawer, so narrowing again never reopens it over the page by itself.
+- Every confirmation receipt is announced by one polite live region that is always on the page, from a conversation or
+  from Portfolio.
+
+## Accepted exceptions
+
+- Arc's drawer close button ("Close drawer") and toast close button are 32px, below the 44px this app uses for touch
+  targets below 1024. Arc internals are not restyled (AGENTS.md); they meet WCAG 2.5.8's 24px minimum. Accepted for
+  this release.
+
+## Acceptance
+
+Final cross-screen acceptance ran on the production build at 1440, 1279, 1024, 768, 390 and 320
+(`docs/ui-direction-5/acceptance/`). `frontend/tests/acceptance.spec.ts` keeps the cross-screen rules: no sideways
+scrolling on any view at those widths, whole values and controls in the holdings table and view headers, the draft
+bar never covering a focused field, the rail surviving a resize, receipts announced from both places, nothing called
+live, analysis dates kept apart from holdings dates, and server errors without a JSON body reported in words.
+Dates: a saved decision and the details name the analysis date as an analysis date ("analysis as of"); the holdings
+date is the one the analysis names, never the date it ran.

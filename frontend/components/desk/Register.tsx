@@ -45,7 +45,7 @@ export default function Register({ menu, decisions, state, onOpen, onDelete, onC
           {decisions.length > 0 && <span className="chip hide-sm n">{decisions.length} saved{open ? ` · ${open} not confirmed` : ""}</span>}
         </div>
         <div className="ctx-right">
-          <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft size={15} aria-hidden="true" />Back to chat</Button>
+          <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft size={15} aria-hidden="true" /><span className="back-label">Back to chat</span></Button>
         </div>
       </header>
       <div className="pview-body dview" role="region" aria-label="Decisions register">
@@ -92,7 +92,7 @@ export default function Register({ menu, decisions, state, onOpen, onDelete, onC
                       <span className="dmain">
                         <b className="dtitle">{label}</b>
                         <span className="dq">{decision.question}</span>
-                        <span className="cap n">Saved {fullDate(decision.saved_at)} · portfolio as of {fullDate(decision.as_of)}{sources ? ` · ${sources} source${sources === 1 ? "" : "s"}` : ""}</span>
+                        <span className="cap n">Saved {fullDate(decision.saved_at)} · analysis as of {fullDate(decision.as_of)}{sources ? ` · ${sources} source${sources === 1 ? "" : "s"}` : ""}</span>
                       </span>
                       <span className="dside">
                         <span className="dconc">{actionLabel(decision.conclusion.preferred_action)}</span>

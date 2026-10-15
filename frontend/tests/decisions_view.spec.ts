@@ -51,7 +51,7 @@ test("decisions open as their own view, apart from what you recorded and from to
   await expect(stock).toContainText("Is ACME still worth holding?");
   await expect(stock).toContainText("Hold conditionally");
   await expect(stock).toContainText("You did: held");
-  await expect(stock).toContainText("portfolio as of Sep 12, 2026");
+  await expect(stock).toContainText("analysis as of Sep 12, 2026");
   await expect(stock).toContainText("1 source");
   await expect(list.getByTestId("decision-row").filter({ hasText: "Portfolio review" })).toContainText("Not confirmed");
 

@@ -32,10 +32,17 @@ test.describe("valuationFor", () => {
   });
 
   test("without a revision, only a result of exactly these holdings is used", () => {
-    const result = valued([ACME, CASH, { ...ACME, id: "benchmark-fund", shares: "0" }]);
+    const dated = (result: Analysis) => { result.portfolio.holdings_as_of = SNAPSHOT.as_of; return result; };
+    const result = dated(valued([ACME, CASH, { ...ACME, id: "benchmark-fund", shares: "0" }]));
     expect(valuationFor(result, null, 14, SNAPSHOT)).toBe(result.portfolio);
-    expect(valuationFor(valued([{ ...ACME, shares: "12" }, CASH]), null, 14, SNAPSHOT)).toBeNull();
-    expect(valuationFor(valued([ACME]), null, 14, SNAPSHOT)).toBeNull();
+    expect(valuationFor(dated(valued([{ ...ACME, shares: "12" }, CASH])), null, 14, SNAPSHOT)).toBeNull();
+    expect(valuationFor(dated(valued([ACME])), null, 14, SNAPSHOT)).toBeNull();
+  });
+
+  test("a legacy result with neither a revision nor a holdings date never values the portfolio", () => {
+    // Same holdings, but nothing shows which holdings date it was made from, so equivalence can not be established.
+    expect(valuationFor(valued([ACME, CASH]), null, 14, SNAPSHOT)).toBeNull();
+    expect(valuationFor(valued([ACME, CASH]), { revision: null, basis: "committed" }, 14, SNAPSHOT)).toBeNull();
   });
 
   test("nothing to value without a result or a portfolio", () => {

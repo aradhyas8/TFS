@@ -484,8 +484,9 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 .desk .av { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; font-size: 10.5px; font-weight: 600; flex: none; background: var(--success-subtle); color: var(--sage); }
 .desk .av.etf { background: var(--analysis-subtle); color: var(--analysis); }
 .desk .av.cash { background: var(--surface-muted); color: var(--muted); }
-.desk .c-weight { display: flex; align-items: center; gap: 10px; }
-.desk .wbar { position: relative; width: 96px; height: 6px; border-radius: 3px; background: var(--border); flex: none; }
+.desk .c-weight { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+/* The bar gives way before the figure does: the percentage always shows whole. */
+.desk .wbar { position: relative; flex: 1 1 96px; max-width: 96px; min-width: 24px; height: 6px; border-radius: 3px; background: var(--border); }
 .desk .wbar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--success); }
 .desk .wbar.over i { background: var(--warning); }
 .desk .wbar.fund i { background: var(--analysis); }
@@ -505,6 +506,10 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
 /* The draft floats over the page, white and lifted, until it is reviewed or discarded. */
 .desk .draft-bar { position: sticky; bottom: 16px; z-index: 3; display: flex; align-items: center; gap: 10px; margin-top: 6px; padding: 10px 10px 10px 16px;
   border-radius: 20px; background: var(--surface-raised); border: 1px solid var(--rule); box-shadow: var(--shadow-raised); font-size: 13.5px; line-height: 20px; }
+/* Focus and scrolling stop clear of the sticky header and tabs, and of the draft bar while it floats. */
+html:has(.desk .pview) { scroll-padding-top: 112px; }
+html:has(.desk .draft-bar) { scroll-padding-bottom: 96px; }
+@media (max-width: 767px) { html:has(.desk .draft-bar) { scroll-padding-bottom: 152px; } }
 .desk .draft-text { flex: 1; min-width: 0; }
 .desk .draft-text b { font-weight: 600; }
 .desk .draft-act { display: flex; gap: 8px; flex: none; }
@@ -534,15 +539,22 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
   .desk .psum { grid-template-columns: 1fr 1fr; }
   .desk .psum > :last-child { grid-column: 1 / -1; }
 }
+/* Below 1200 the page beside the rail is no wider than a tablet's: the tablet table columns (no average cost), and no
+   room for the revision chip in the header, so the revision and holdings date head the page instead. */
+@media (max-width: 1199px) {
+  .desk .hr { grid-template-columns: minmax(0, 1.5fr) minmax(0, .6fr) minmax(0, .5fr) minmax(0, .95fr) minmax(0, 1fr) minmax(0, 1.4fr) 84px; }
+  .desk .hr .c-avg { display: none; }
+  .desk .wbar { max-width: 56px; }
+  .desk .view-head .live-chip { display: none; }
+  .desk .pview-body > .show-sm { display: block; }
+}
 @media (max-width: 1023px) {
   .desk .view-head { padding: 0 16px 0 8px; }
   .desk .pview-tabs { padding: 0 16px; }
   .desk .pview-body { padding: 20px 16px 48px; }
   /* Arc buttons and the view's selects are full touch targets here too. */
   .desk .pview :is(button, select) { min-height: 44px; }
-  .desk .hr { grid-template-columns: minmax(0, 1.5fr) minmax(0, .6fr) minmax(0, .5fr) minmax(0, .95fr) minmax(0, 1fr) minmax(0, 1.4fr) 84px; min-height: 48px; }
-  .desk .hr .c-avg { display: none; }
-  .desk .wbar { width: 56px; }
+  .desk .hr { min-height: 48px; }
   .desk .seg-opt span, .desk .pill-select { min-height: 44px; }
   .desk .dcard .ddel { width: 44px; height: 44px; top: 8px; right: 8px; }
 }
@@ -574,10 +586,16 @@ body:has(.desk) { margin: 0; background: var(--background); scroll-padding-top: 
   .desk .draft-bar { flex-wrap: wrap; bottom: 8px; gap: 8px; padding: 10px 12px; }
   .desk .draft-bar > .chip { display: none; }
   .desk .draft-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; line-height: 18px; }
-  .desk .draft-act { width: 100%; gap: 6px; }
-  .desk .draft-act > * { flex: 1 1 0; min-width: 0; padding-inline: 8px; }
+  .desk .draft-act { width: 100%; gap: 6px; flex-wrap: wrap; }
+  .desk .draft-act > * { flex: 1 1 auto; padding-inline: 12px; }
   .desk .pchange { flex-direction: column; align-items: stretch; }
   .desk .dopen { grid-template-columns: 30px minmax(0, 1fr); }
   .desk .dside { grid-column: 2; align-items: flex-start; text-align: left; }
   .desk .dcount { margin-left: 0; width: 100%; }
+}
+
+/* At 320 (or 400% zoom) Back to chat keeps its arrow and its name, read out but not shown, so the title fits. */
+@media (max-width: 359px) {
+  .desk .view-head .back-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+  .desk .view-head .ctx-right > button:has(.back-label) { min-width: 44px; justify-content: center; }
 }
