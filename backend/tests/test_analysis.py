@@ -456,6 +456,41 @@ def test_validate_prose_allows_descriptive_trading_properties():
         validate_prose("Execute a buy order for the ETF.")
 
 
+VALUATION_TERMS = [
+    # DeepSeek Run 4: sentence-initial "Exit multiple" was read as "exit the position".
+    "Payout reflects the observed mix of dividends and buybacks. Exit multiple is a normalized multiple on final-year free cash flow.",
+    "Exit multiples on free cash flow are a judgment and move value materially.",
+    "Distributions stay idle cash. Exit value depends on the final-year margin.",
+    "Increase in capital spending may persist. Shift in mix toward cloud supports margins.",
+    "Put options are not modeled.",
+]
+TRADING_INSTRUCTIONS = [
+    ("Exit the position.", "Exit"), ("The thesis is weak. Exit Microsoft now.", "Exit"),
+    ("Then add to the fund.", "Then add"), ("You should trim the stock.", "You should trim"),
+    ("Increase the position.", "Increase"), ("Put the cash into the ETF.", "Put"),
+    ("Shift into bonds.", "Shift"), ("Sell the shares.", "Sell"),
+]
+
+
+@pytest.mark.parametrize("explanatory", [False, True])
+def test_validate_prose_allows_valuation_terms_that_share_a_trade_word(explanatory):
+    from analyst.pipeline import validate_prose
+
+    for text in VALUATION_TERMS:
+        validate_prose(text, explanatory=explanatory)
+
+
+@pytest.mark.parametrize("text, phrase", TRADING_INSTRUCTIONS)
+def test_validate_prose_rejects_trading_instructions_and_names_the_phrase(text, phrase):
+    from analyst.pipeline import ProseRejected, validate_prose
+
+    with pytest.raises(ProseRejected) as caught:
+        validate_prose(text, explanatory=True)
+    message = str(caught.value)
+    assert message.startswith(ProseRejected.public)
+    assert f"Rejected phrase {phrase!r}: reads as a" in message
+
+
 def test_research_source_selection_for_new_cash_and_theme(monkeypatch):
     import analyst.api
     from analyst.financial_data import FakeFinancialProvider

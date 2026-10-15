@@ -105,9 +105,24 @@ class InvalidReview(Exception):
     pass
 
 
+class ProseRejected(InvalidReview):
+    """Names the rejected phrase and why, so the model's one correction can fix it. The phrase is model text, so the
+    user-facing AnswerRejected shows only the fixed public reason."""
+
+    public = "Unsupported quantitative claims or execution direction."
+
+    def __init__(self, phrase: str, reason: str) -> None:
+        super().__init__(f"{self.public} Rejected phrase {phrase.strip(' .!?;:')!r}: {reason}. Rephrase or remove that wording; "
+                         "descriptive valuation terms such as the exit multiple are allowed.")
+
+
 class AnswerRejected(InvalidReview):
     """The final recommendation still failed validation after its one correction. The message is a fixed validator
     reason (never model text), so it is safe to show."""
+
+
+def public_reason(err: InvalidReview) -> str:
+    return err.public if isinstance(err, ProseRejected) else str(err)
 
 
 def validate_recommendation(answer: dict[str, Any], *, stock: bool = False) -> Recommendation:
@@ -205,6 +220,13 @@ def validate_prose(prose: str, *, stock: bool = False, explanatory: bool = False
         r"\b(?:trades?|trading)\s+(?:on|in)\b"
     )
     qualified = re.sub(trading_property, "", qualified, flags=re.I)
+    # Adjustment words used as nouns in valuation and reporting language ("Exit multiple is a judgment", "Increase in
+    # capital spending") are not proposed position changes.
+    financial_term = (
+        r"\bexit\s+(?:multiples?|values?|prices?|yields?|years?|rates?|cap\s+rates?)\b|"
+        r"\bput\s+(?:options?|contracts?|spreads?|premiums?)\b|\b(?:increase|shift)s?\s+in\b"
+    )
+    qualified = re.sub(financial_term, "", qualified, flags=re.I)
     proposed_adjustment = (
         rf"(?:^|[.!?;:]\s*|\b(?:then|but)\s+){adjustment}\b|"
         rf"\byou\s+(?:(?:should|must|could|can|might)\s+)?{adjustment}\b|"
@@ -228,20 +250,20 @@ def validate_prose(prose: str, *, stock: bool = False, explanatory: bool = False
     m = re.search(quantitative, prose_for_quant, re.I)
     if m:
         logging.error("validate_prose failed (quantitative): matched %r in %r", m.group(0), prose)
-        raise InvalidReview("Unsupported quantitative claims or execution direction.")
+        raise ProseRejected(m.group(0), "reads as an unsupported number, probability, guarantee or trade size")
     m = re.search(forbidden_claims, prose, re.I)
     if m:
         logging.error("validate_prose failed (forbidden_claims): matched %r in %r", m.group(0), prose)
-        raise InvalidReview("Unsupported quantitative claims or execution direction.")
+        raise ProseRejected(m.group(0), "is an unsupported claim about SEDAR scraping or tax treatment")
     if not stock:
         m = re.search(rf"\b{execution}\b", qualified, re.I)
         if m:
             logging.error("validate_prose failed (execution): matched %r in %r", m.group(0), qualified)
-            raise InvalidReview("Unsupported quantitative claims or execution direction.")
+            raise ProseRejected(m.group(0), "reads as a trading instruction")
         m = re.search(proposed_adjustment, qualified, re.I)
         if m:
             logging.error("validate_prose failed (proposed_adjustment): matched %r in %r", m.group(0), qualified)
-            raise InvalidReview("Unsupported quantitative claims or execution direction.")
+            raise ProseRejected(m.group(0), "reads as a proposed position adjustment")
     else:
         def strip_room_disclaimer(text: str) -> str:
             chunks = re.split(r"([.!?;])", text)
@@ -262,7 +284,7 @@ def validate_prose(prose: str, *, stock: bool = False, explanatory: bool = False
         m = re.search(r"\b(?:executed|placed an order|bought|sold|trade[s]? (?:completed|filled)|orders? (?:was |were |has been |have been )?(?:placed|submitted|filled)|guaranteed|contribution room|market believes)\b", prose_for_claims, re.I)
         if m:
             logging.error("validate_prose failed (stock): matched %r in %r", m.group(0), prose)
-            raise InvalidReview("Unsupported quantitative claims or execution direction.")
+            raise ProseRejected(m.group(0), "claims an executed trade, a guarantee, contribution room or market belief")
 
 
 
@@ -1364,7 +1386,7 @@ async def analyze(
                 recommendation = validate_recommendation(turn.answer, stock=request.stock is not None or allocation is not None or reunderwriting is not None or theme is not None)
             except (InvalidReview, ValidationError) as err:
                 if answer_retried:
-                    reason = str(err) if isinstance(err, InvalidReview) else "it does not match the recommendation schema"
+                    reason = public_reason(err) if isinstance(err, InvalidReview) else "it does not match the recommendation schema"
                     raise AnswerRejected(f"The corrected final recommendation still failed validation: {reason}") from None
                 answer_retried = True
                 logging.warning("Final answer rejected (%s); returning it once to correct.", err)
@@ -1452,7 +1474,7 @@ async def analyze(
                     recommendation = validate_stock_recommendation(recommendation, stock_result, computed, proposals)
                 except InvalidReview as err:
                     if answer_retried:
-                        raise AnswerRejected(f"The corrected final recommendation still failed validation: {err}") from None
+                        raise AnswerRejected(f"The corrected final recommendation still failed validation: {public_reason(err)}") from None
                     # Research, cases and comparison are complete: one answer-only turn (no tools) to fix the cited problem.
                     answer_retried = True
                     citable = sorted(doc.id for doc in stock_result.research.documents if doc.available)

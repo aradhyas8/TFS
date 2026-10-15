@@ -354,6 +354,54 @@ def test_corrected_answer_that_still_fails_returns_an_explicit_error(monkeypatch
     assert len(model.sent) == 7
 
 
+def test_final_answer_rejection_shown_to_the_user_never_quotes_model_text(monkeypatch):
+    model = Model(msft_request(), script={6: answer_with(uncertainty=TRANSCRIPT_CLAIM), 7: answer_with(reason="There is a high probability that Microsoft recovers.")})
+    response = run(monkeypatch, model)
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert "still failed validation: Unsupported quantitative claims or execution direction." in detail
+    assert "probability" not in detail and "Rejected phrase" not in detail
+
+
+def judgments_with(text: str) -> str:
+    judgments = msft_judgments()
+    for case in judgments["cases"]:
+        case["assumptions"] = ["Payout reflects the observed mix of dividends and buybacks.", text]
+    return json.dumps(judgments)
+
+
+def company_turns(model) -> list[dict]:
+    return [p for p in model.sent if isinstance(p.get("tool_choice"), dict) and p["tool_choice"]["name"] == "calculate_company_cases"]
+
+
+def test_valuation_wording_from_run_4_is_accepted_without_a_correction(monkeypatch):
+    model = Model(msft_request())
+    model.arguments["calculate_company_cases"] = judgments_with("Exit multiple is a normalized multiple on final-year free cash flow.")
+    response = run(monkeypatch, model)
+    assert response.status_code == 200, response.text
+    assert len(company_turns(model)) == 1
+    assert [p.get("tool_choice", {}).get("name") if isinstance(p.get("tool_choice"), dict) else p.get("tool_choice") for p in model.sent] \
+        == [*SEQUENCE, "auto"]
+
+
+def rejected_call(arguments):
+    response = call("calculate_company_cases", arguments)
+    body = json.loads(response.content)
+    body["output"][0].update(id="fc_rejected", call_id="call_rejected")
+    return httpx.Response(200, json=body)
+
+
+def test_rejected_trading_instruction_is_corrected_with_the_exact_phrase_and_reason(monkeypatch):
+    model = Model(msft_request(), script={4: lambda: rejected_call(judgments_with("Exit the position if margins fall."))})
+    response = run(monkeypatch, model)
+    assert response.status_code == 200, response.text
+    turns = company_turns(model)
+    assert len(turns) == 2
+    error = outputs(turns[1])["calculate_company_cases"]["error"]
+    assert "Rejected phrase 'Exit': reads as a proposed position adjustment" in error
+    assert response.json()["stock"]["cases"][0]["terminal_price"] is not None
+
+
 class Market:
     """A dated market-data provider: verified identities, same-day indicative quotes and provider FX, all configurable."""
 
