@@ -214,6 +214,9 @@ def openrouter_failure(exc: APIError, model: str) -> ModelServiceError:
         reason = "could not be reached. Nothing was retried; check the connection and try again"
     elif status == 429:
         reason = "rate limit reached (free-tier models have per-minute and daily limits). Nothing was retried; try again later"
+    elif status == 404 and "that support" in upstream and "reasoning" in upstream:
+        reason = ("does not support the configured reasoning effort at the allowed price. "
+                  "Unset OPENAI_REASONING_EFFORT or choose a model that supports reasoning; no other model was used")
     elif status == 404 and "that support" in upstream:
         reason = ("does not support the required tools, tool choice and structured outputs at the allowed price. "
                   "Choose a model that does; no other model was used")

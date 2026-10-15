@@ -371,6 +371,29 @@ def test_tiered_reasoning_pipeline_scripted_model():
     assert stock_model.reasoning_efforts == ["medium", "medium", "medium", "medium", "medium", "medium", "max"]
 
 
+@pytest.mark.parametrize("configured", [None, "high"])
+def test_openrouter_turns_send_only_the_configured_reasoning_effort(configured):
+    """require_parameters drops every endpoint that cannot honour a sent parameter, so TFS never adds its own
+    tool-turn effort on OpenRouter. An explicitly configured effort is still sent on every turn."""
+    from analyst.pipeline import analyze
+    from analyst.providers import ModelTurn, ScriptedModel, ToolCall
+    from analyst.schemas import AnalysisRequest
+    from tests.test_analysis import snapshot
+
+    turns = [
+        ModelTurn(calls=[ToolCall("c1", "review_portfolio", "{}")]),
+        ModelTurn(answer={"preferred_action": "no_action", "amount": None, "reason": "Portfolio is balanced.",
+                          "alternatives": [{"action": "no_action", "reason": "No changes needed."}],
+                          "downside": "Market risk.", "assumptions": ["Marks are current."],
+                          "uncertainty": ["General uncertainty."], "what_could_change": ["Market movements."]}),
+    ]
+    settings = Settings("key", "vendor/model:free", reasoning_effort=configured, base_url="https://openrouter.ai/api/v1", provider="openrouter")
+    model = ScriptedModel(turns, settings=settings)
+    req = AnalysisRequest.model_validate({"question": "Review my exposure", "portfolio": snapshot()})
+    asyncio.run(analyze(req, model, FakeDataProvider()))
+    assert model.reasoning_efforts == [configured, configured]
+
+
 def test_incomplete_response_detailed_diagnostics(monkeypatch):
     import asyncio
 
@@ -537,6 +560,7 @@ def raising(error):
 @pytest.mark.parametrize("handler, expected", [
     (failing(429), "rate limit reached"),
     (failing(404, "No endpoints found that support the provided 'tool_choice' value"), "does not support the required"),
+    (failing(404, "No endpoints found that support the provided 'reasoning' value"), "OPENAI_REASONING_EFFORT"),
     (failing(404, "No endpoints found for vendor/model:free."), "is unavailable"),
     (failing(400), "rejected the request (HTTP 400)"),
     (failing(402), "insufficient credits"),
