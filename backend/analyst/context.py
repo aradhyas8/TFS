@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 from openai import pydantic_function_tool
 from pydantic import BaseModel, ConfigDict, Field
 
+from .model_view import model_envelope
 from .persistence import Database, DecimalEncoder
 from .providers import sanitize_schema
 from .schemas import (
@@ -38,6 +39,10 @@ class HoldingsArguments(ReadArguments):
 
 class ArtifactArguments(ReadArguments):
     artifact_id: Identifier
+    section: str | None = Field(default=None, max_length=300,
+                                description="Dotted path from an omitted marker, e.g. stock.cases.0. Null reads the summary.")
+    offset: int | None = Field(default=None, ge=0)
+    limit: int | None = Field(default=None, ge=1, le=100)
 
 
 class ProposalArguments(ReadArguments):
@@ -210,7 +215,7 @@ class RunContext:
         if envelope is None or (envelope.reference.created_at > self.run.created_at
                                 and envelope.reference.originating_run_id != self.run.id):
             raise ValueError("Artifact is unavailable to this run.")
-        return envelope.model_dump(mode="json")
+        return model_envelope(envelope.model_dump(mode="json"), parsed.section, parsed.offset, parsed.limit)
 
     def read_proposal(self, parsed: ProposalArguments) -> dict[str, Any]:
         proposal = self.known_proposals.get(parsed.proposal_id)
@@ -271,7 +276,8 @@ READ_CAPABILITIES = {
     "get_holdings": ReadCapability(HoldingsArguments,
         "Read a page of holdings from this run's bound revision.", "bound_revision_or_none", RunContext.read_holdings),
     "get_artifact": ReadCapability(ArtifactArguments,
-        "Read a known immutable artifact using its model projection.", "known_artifact", RunContext.read_artifact),
+        "Read a known immutable artifact. Without a section it returns a compact summary; pass an omitted "
+        "section path to read details, with offset and limit to page a long list.", "known_artifact", RunContext.read_artifact),
     "get_proposal": ReadCapability(ProposalArguments,
         "Read a known portfolio proposal; never confirm it.", "known_proposal", RunContext.read_proposal),
     "get_messages": ReadCapability(MessageArguments,

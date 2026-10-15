@@ -22,6 +22,7 @@ from .config import Settings
 from .context import CHARACTER_LIMIT, READ_CAPABILITIES, RunContext, read_tools
 from .financial_data import FinancialProvider
 from .financial_tools import FinancialTools
+from .model_view import fit
 from .persistence import Database, DecimalEncoder
 from .proposal_tools import ProposalTools
 from .providers import DataProvider, ModelTurn, SuppliedDataProvider
@@ -130,6 +131,8 @@ class Orchestrator:
             initial_messages = messages
             exchanges: list[list[dict[str, Any]]] = []
             seen_calls: set[str] = set()
+            # Calls whose result was an error or had to be cut to fit: repeating one returns the same.
+            limited_calls: set[tuple[str, str]] = set()
 
             turns_count = 0
             while turns_count < MAX_TURNS:
@@ -193,6 +196,12 @@ class Orchestrator:
                         self._record_terminal_failure(run_id, "Invalid application tool arguments.")
                         return
                     seen_calls.add(call.call_id)
+                    signature = (call.name, json.dumps(parsed.model_dump(mode="json"), sort_keys=True))
+                    if signature in limited_calls:
+                        self._record_terminal_failure(
+                            run_id, "The model repeated a retrieval that already failed or was cut to fit the "
+                                    "context budget. Ask a narrower question.")
+                        return
 
                 # Continuation state is server-only. A tool-call turn is stored after its handler,
                 # so a rejected search query never reaches storage.
@@ -244,6 +253,7 @@ class Orchestrator:
                               else {"error": "Financial request timed out; no result is available."})
                 except ValueError:
                     result = {"error": "Requested data is unavailable to this run."}
+                    limited_calls.add(signature)
                 if self._stopped(thread_id, run_id):
                     return
                 artifact_ids = list(result.get("artifact_ids", []))
@@ -265,11 +275,17 @@ class Orchestrator:
                 output_item = {"type": "function_call_output", "call_id": call.call_id, "output": output}
                 required_size = len(initial_messages[-1]["content"]) + sum(len(json.dumps(item)) for item in exchange)
                 if required_size + len(json.dumps(output_item)) > CHARACTER_LIMIT:
-                    result = {"error": "Result exceeds retrieval budget. Request a smaller slice.",
-                              "artifact_ids": artifact_ids, "proposal_ids": proposal_ids}
-                    if call.name == "get_artifact":
-                        result["artifact_id"] = parsed.model_dump()["artifact_id"]
-                    output_item["output"] = json.dumps(result)
+                    # The limit covers the whole serialized output item, so measure the doubly encoded result.
+                    available = CHARACTER_LIMIT - required_size - len(json.dumps({**output_item, "output": ""}))
+                    fitted = fit(result, available, lambda value: len(json.dumps(json.dumps(value, cls=DecimalEncoder))))
+                    limited_calls.add(signature)
+                    if fitted is None:
+                        result = {"error": "Result exceeds the context budget even when summarized.",
+                                  "artifact_ids": artifact_ids, "proposal_ids": proposal_ids}
+                        if call.name == "get_artifact":
+                            result["artifact_id"] = parsed.model_dump()["artifact_id"]
+                        fitted = result
+                    output_item["output"] = json.dumps(fitted, cls=DecimalEncoder)
                 exchange.append(output_item)
                 exchanges.append(exchange)
                 messages = context.with_exchanges(initial_messages, exchanges)

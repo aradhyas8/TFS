@@ -273,10 +273,11 @@ def test_oversized_reads_are_bounded_and_completed_exchanges_become_references(t
             ModelTurn(text="Finished safely."),
         ])
         assert submit(client, thread, "Read those results")["status"] == "completed"
-        public = client.get(f"/api/threads/{thread}").json()
-        assert any(o["status"] == "error" for m in public["messages"] for o in m["tool_outcomes"])
+    # The oversized read returns its reference and a pointer to the omitted section, not an error.
     first_output = json.loads(model.requests[1]["messages"][-1]["output"])
-    assert "error" in first_output and first_output["artifact_id"] == "large"
+    assert "error" not in first_output and first_output["reference"]["id"] == "large"
+    assert first_output["payload"]["fact"] == {"omitted": "fact", "chars": 40002}
+    assert "section" in first_output["retrieval"]
     for request in model.requests:
         items = request["messages"][2:]
         assert sum(len(m["content"]) if "content" in m else len(json.dumps(m)) for m in items) <= 32000
@@ -456,3 +457,94 @@ def test_historical_user_json_keeps_reasoning_and_removes_private_state(tmp_path
         assert projected["reasoning"] == "Hold cash for next year's planned withdrawal."
         assert projected["nested"][0]["reasoning"]["reason"] == "Avoid forced sales."
         assert "PRIVATE-" not in json.dumps(projected)
+
+
+def fifty_holding_case() -> tuple[SavedPortfolio, Any]:
+    from datetime import UTC, datetime
+
+    from analyst.financial_data import MARKET_TIME, FakeFinancialProvider
+    from analyst.schemas import FinancialEvidence
+
+    today = datetime.now(MARKET_TIME).date().isoformat()
+    tickers = [f"T{i:02d}" for i in range(50)]
+    saved = SavedPortfolio.model_validate({
+        "snapshot": {"as_of": today, "reporting_currency": "CAD", "accounts": [{"id": "tfsa", "name": "TFSA"}],
+                     "positions": [{"id": f"s{i:02d}", "account_id": "tfsa", "kind": "stock", "currency": "CAD",
+                                    "ticker": ticker, "listing": "XTSE", "shares": str(10 + i),
+                                    "company_id": ticker.lower(), "company_name": f"Company {ticker}"}
+                                   for i, ticker in enumerate(tickers)]
+                                  + [{"id": "cash", "account_id": "tfsa", "kind": "cash", "currency": "CAD", "cash": "800"}]},
+        "average_costs": {"s00": "934.12"},
+        "settings": {"single_company_cap": "0.03", "active_budget": "0.9", "indirect_cap_policy": "direct_only"},
+    })
+    evidence = FinancialEvidence.model_validate({
+        "identities": {f"s{i:02d}": {"status": "supplied", "ticker": ticker, "listing": "XTSE", "currency": "CAD",
+                                     "kind": "stock", "company_id": ticker.lower(), "company_name": f"Company {ticker}",
+                                     "source": "Fixture", "as_of": today} for i, ticker in enumerate(tickers)},
+        "quotes": {f"s{i:02d}": {"ticker": ticker, "listing": "XTSE", "currency": "CAD", "value": "20", "as_of": today,
+                                 "source": "Fixture", "status": "manual", "captured_at": datetime.now(UTC).isoformat(),
+                                 "basis": "unadjusted"} for i, ticker in enumerate(tickers)},
+    })
+    return saved, FakeFinancialProvider(evidence)
+
+
+def test_fifty_holding_review_is_summarized_and_details_are_retrievable(tmp_path: Path) -> None:
+    saved, financial = fifty_holding_case()
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(saved)
+
+    class FollowUp(CapturingTransport):
+        async def respond(self, messages: Any, **kwargs: Any) -> ModelTurn:
+            if len(self.requests) == 1:
+                artifact_id = json.loads(messages[-1]["output"])["reference"]["id"]
+                self.turns = iter([ModelTurn(calls=[ToolCall("detail", "get_artifact", json.dumps({
+                    "artifact_id": artifact_id, "section": "result.positions", "offset": 40, "limit": 10}))]),
+                    ModelTurn(text="Done.")])
+            return await super().respond(messages, **kwargs)
+
+    model = FollowUp([ModelTurn(calls=[ToolCall("review", "review_portfolio", "{}")])])
+    settings = Settings(api_key="sk-test", model="test-model", request_timeout=5)
+    with TestClient(create_app(model=model, financial=financial, portfolio_store=store, settings=settings)) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Review my portfolio.")
+        assert run["status"] == "completed", run
+        artifact = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()
+    full = artifact["payload"]["result"]
+    assert len(full["positions"]) == 51 and len(json.dumps(full)) > 32000
+
+    summary = json.loads(model.requests[1]["messages"][-1]["output"])
+    assert "error" not in summary and "omitted to fit" not in summary["retrieval"]
+    result = summary["payload"]["result"]
+    assert result["total_value"] == full["total_value"] and result["cash_value"] == full["cash_value"]
+    assert result["positions"]["count"] == 51 and len(result["positions"]["top_by_weight"]) == 10
+    breached = [c for c in full["guardrails"]["companies"] if c["status"] == "breached"]
+    assert breached and result["guardrails"]["companies"]["count"] == len(full["guardrails"]["companies"])
+    # Breaches rank first, so none is lost behind the list cap.
+    top = result["guardrails"]["companies"]["top"]
+    assert {c["company_id"] for c in top[:len(breached)]} == {c["company_id"] for c in breached[:20]}
+
+    detail = json.loads(model.requests[2]["messages"][-1]["output"])
+    assert "error" not in detail and detail["count"] == 51 and detail["offset"] == 40
+    assert [row["supplied"]["id"] for row in detail["payload"]] == [row["supplied"]["id"] for row in full["positions"][40:50]]
+    for request in model.requests:
+        items = request["messages"][2:]
+        assert sum(len(m["content"]) if "content" in m else len(json.dumps(m)) for m in items) <= 32000
+    assert "934.12" not in json.dumps(model.requests)
+
+
+def test_repeated_oversized_retrieval_stops_with_a_clear_error(tmp_path: Path) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(sample_portfolio())
+    read = '{"artifact_id":"large","section":"fact","offset":null,"limit":null}'
+    model = CapturingTransport([ModelTurn(calls=[ToolCall(f"read-{i}", "get_artifact", read)]) for i in range(8)])
+    with client_for(store, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        ref = store.db.get_artifact_reference("art-rev-1").model_copy(update={"id": "large", "kind": "analysis_result"})
+        store.db.store_artifact(ref, {"fact": "x" * 40000})
+        store.db.add_message(thread, "assistant", "Result", artifact_ids=["large"])
+        run = submit(client, thread, "Show the whole fact.")
+    assert run["status"] == "failed"
+    assert "repeated a retrieval" in run["error"]
+    assert len(model.requests) == 2
+    first = json.loads(model.requests[1]["messages"][-1]["output"])
+    assert first["error"] == "Result exceeds the context budget even when summarized."

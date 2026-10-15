@@ -119,6 +119,15 @@ def test_complete_workflows_preserve_typed_results_and_explicit_inputs(tmp_path,
         for key, value in request[input_field].items():
             assert nested_request[input_field][key] == value
         assert client.get("/api/portfolio").json()["revision"] == 1
+    # The chat model sees the result itself, within the budget and without anything cut to fit.
+    chat = model.requests[-1]["messages"]
+    output = json.loads(next(m["output"] for m in chat if m.get("type") == "function_call_output"))
+    assert "error" not in output and "omitted to fit" not in output.get("retrieval", "")
+    assert output["payload"]["recommendation"] == artifact["payload"]["recommendation"]
+    assert output["payload"][result_field] is not None
+    assert sum(len(m["content"]) if "content" in m else len(json.dumps(m)) for m in chat[2:]) <= 32000
+    if name == "run_stock_analysis":
+        assert output["payload"]["stock"]["valuation"] == artifact["payload"]["stock"]["valuation"]
 
 
 @pytest.mark.parametrize("name,field", [("run_new_cash_allocation", "new_cash"), ("run_theme_exploration", "theme")])
