@@ -1,8 +1,8 @@
 """ChatGPT plan usage through OpenAI's official Sign in with ChatGPT flow for open-source local apps.
 https://developers.openai.com/siwc/token-sharing-open-source
 
-Greedy registers itself (dynamic_agent_client, PKCE S256), keeps the tokens DPAPI-encrypted for the current Windows
-user under %LOCALAPPDATA%\\Greedy\\chatgpt-plan and rotates the refresh token. It never reads Codex or other tools'
+Greedy registers itself (dynamic_agent_client, PKCE S256), keeps the tokens encrypted for the current OS user
+(Windows DPAPI under %LOCALAPPDATA%\\Greedy\\chatgpt-plan, or the macOS login Keychain) and rotates the refresh token. It never reads Codex or other tools'
 credentials. Inference uses the public Responses API with store=false and stream=true; the stream is consumed here
 under one deadline per model turn.
 
@@ -11,6 +11,7 @@ under one deadline per model turn.
 import asyncio
 import base64
 import collections
+import contextlib
 import ctypes
 import hashlib
 import hmac
@@ -18,14 +19,16 @@ import json
 import logging
 import os
 import secrets
+import socketserver
 import sys
+import threading
 import time
 import urllib.parse
 import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import httpx
 import openai
@@ -37,10 +40,12 @@ JWKS = f"{ISSUER}/.well-known/jwks.json"
 RESOURCE = "https://api.openai.com/v1"
 SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
 PLAN_SCOPE = "chatgpt.tokens.use.direct"
-APP_NAME = "Greedy"
+APP_NAME = "TFS"
 REDIRECT = "http://127.0.0.1:1455/auth/callback"
+LOGIN_TIMEOUT = 600
 REFRESH_MARGIN = 900  # refresh when under 15 minutes remain; an analysis finishes well inside that
 USAGE_CODES = {"subscription_sharing_usage_limit_exceeded", "subscription_sharing_usage_unavailable"}
+SAFE_RESPONSE_CODES = USAGE_CODES | {"model_not_found", "insufficient_permissions", "invalid_api_key", "rate_limit_exceeded", "server_error"}
 
 
 class PlanError(openai.OpenAIError):
@@ -52,7 +57,11 @@ class PlanError(openai.OpenAIError):
 
 
 def home() -> Path:
-    return Path(os.environ.get("CHATGPT_PLAN_DIR") or Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Greedy" / "chatgpt-plan")
+    if os.environ.get("CHATGPT_PLAN_DIR"):
+        return Path(os.environ["CHATGPT_PLAN_DIR"])
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Greedy" / "chatgpt-plan"
+    return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Greedy" / "chatgpt-plan"
 
 
 # --- Responses stream: one deadline for the whole turn ---
@@ -67,6 +76,8 @@ async def stream_response(client: openai.AsyncOpenAI, params: dict[str, Any], ti
         async with asyncio.timeout(timeout):
             stream = await client.responses.create(**params, stream=True)
             return await _terminal(stream, seen)
+    except openai.APIStatusError as exc:
+        raise PlanError("request_failed", f"HTTP {exc.status_code}; check AI connection and retry.") from None
     except TimeoutError:
         logging.error("CHATGPT PLAN TIMEOUT after %ss; partial events (diagnostic only): %s", timeout, dict(seen))
         raise openai.APITimeoutError(request=httpx.Request("POST", f"{RESOURCE}/responses")) from None
@@ -92,19 +103,26 @@ async def _terminal(stream: Any, seen: collections.Counter[str]) -> Any:
             code = getattr(error, "code", None) or "response_failed"
             if code in USAGE_CODES:
                 logging.error("CHATGPT PLAN USAGE LIMIT code=%s: pause plan requests; see ChatGPT Settings > Usage.", code)
-            raise PlanError(code, getattr(error, "message", "") or "")
+            raise PlanError(code if code in SAFE_RESPONSE_CODES else "response_failed")
         elif event.type == "error":
-            raise PlanError(getattr(event, "code", None) or "stream_error", getattr(event, "message", "") or "")
+            code = getattr(event, "code", None)
+            raise PlanError(code if code in SAFE_RESPONSE_CODES else "stream_error")
     logging.error("CHATGPT PLAN stream ended without a terminal event; partial events (diagnostic only): %s", dict(seen))
     raise PlanError("no_terminal_event", "The stream ended without response.completed.")
 
 
-# --- Credentials: DPAPI-encrypted record per issued client, atomic writes ---
+# --- Credentials: one encrypted record per issued client. Windows: DPAPI file. macOS: login Keychain item ---
+
+SUPPORTED_PLATFORMS = {"win32", "darwin"}
+KEYCHAIN_SERVICE = "TFS ChatGPT plan"
+
+
+def _require_storage() -> None:
+    if sys.platform not in SUPPORTED_PLATFORMS:
+        raise PlanError("unsupported_storage", "Encrypted ChatGPT plan credentials need Windows DPAPI or the macOS Keychain.")
+
 
 def _dpapi(data: bytes, protect: bool) -> bytes:
-    if sys.platform != "win32":
-        # ponytail: Windows DPAPI only; add an OS keychain backend when the app runs elsewhere.
-        raise PlanError("unsupported_storage", "Encrypted ChatGPT plan credentials need Windows DPAPI.")
     from ctypes import wintypes
 
     class Blob(ctypes.Structure):
@@ -129,7 +147,15 @@ def _write(path: Path, data: bytes) -> None:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(tmp, path)
+    for attempt in range(50):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            # Windows refuses to replace a file while another thread reads it (status polls host.json during sign-in).
+            if attempt == 49:
+                raise
+            time.sleep(0.02)
 
 
 def _host() -> dict[str, Any]:
@@ -145,16 +171,74 @@ def _save_host(host: dict[str, Any]) -> None:
     _write(home() / "host.json", json.dumps(host).encode())
 
 
+def _dpapi_path(client_id: str) -> Path:
+    path = home() / f"{client_id}.dpapi"
+    if path.resolve().parent != home().resolve():
+        raise PlanError("invalid_storage")
+    return path
+
+
+@contextlib.contextmanager
+def _keychain() -> Iterator[Any]:
+    """The macOS login Keychain through Security.framework (keyring's ctypes binding): no shell, no plaintext file."""
+    from keyring.backends.macOS import Keyring  # type: ignore[import-not-found, unused-ignore]
+    from keyring.errors import (  # type: ignore[import-not-found, unused-ignore]
+        KeyringError,
+        KeyringLocked,
+    )
+    try:
+        yield Keyring()
+    except KeyringLocked:
+        raise PlanError("keychain_locked", "Unlock the macOS login Keychain and allow TFS to use it, then retry.") from None
+    except KeyringError:
+        raise PlanError("keychain_error", "The macOS Keychain refused the ChatGPT credentials. Check Keychain Access, then reconnect.") from None
+
+
+def _keychain_account(client_id: str) -> str:
+    # One item per credential directory and issued client, like the per-directory DPAPI file.
+    return f"{home().resolve()}:{client_id}"
+
+
+def _read_record(client_id: str) -> bytes | None:
+    _require_storage()
+    if sys.platform == "darwin":
+        with _keychain() as keychain:
+            secret = keychain.get_password(KEYCHAIN_SERVICE, _keychain_account(client_id))
+        return None if secret is None else str(secret).encode()
+    path = _dpapi_path(client_id)
+    return _dpapi(path.read_bytes(), False) if path.exists() else None
+
+
+def _write_record(client_id: str, data: bytes) -> None:
+    _require_storage()
+    if sys.platform == "darwin":
+        # ponytail: keyring replaces an item by delete-then-add; a crash between the two needs a new sign-in.
+        with _keychain() as keychain:
+            keychain.set_password(KEYCHAIN_SERVICE, _keychain_account(client_id), data.decode())
+        return
+    _write(_dpapi_path(client_id), _dpapi(data, True))
+
+
+def _delete_record(client_id: str) -> None:
+    _require_storage()
+    if sys.platform == "darwin":
+        with _keychain() as keychain:
+            if keychain.get_password(KEYCHAIN_SERVICE, _keychain_account(client_id)) is not None:
+                keychain.delete_password(KEYCHAIN_SERVICE, _keychain_account(client_id))
+        return
+    _dpapi_path(client_id).unlink(missing_ok=True)
+
+
 def save(record: dict[str, Any]) -> None:
-    _write(home() / f"{record['client_id']}.dpapi", _dpapi(json.dumps(record).encode(), True))
+    _write_record(record["client_id"], json.dumps(record).encode())
 
 
 def load() -> dict[str, Any]:
     client_id = _host().get("client_id")
-    path = home() / f"{client_id}.dpapi"
-    if not client_id or not path.exists():
+    data = _read_record(client_id) if client_id else None
+    if data is None:
         raise PlanError("not_signed_in", "Run: python -m analyst.chatgpt_plan login")
-    return dict(json.loads(_dpapi(path.read_bytes(), False)))
+    return dict(json.loads(data))
 
 
 def _post_form(fields: dict[str, str]) -> dict[str, Any]:
@@ -168,9 +252,11 @@ def _post_form(fields: dict[str, str]) -> dict[str, Any]:
     return dict(response.json())
 
 
-def access_token() -> str:
+def _access_token() -> str:
     """The current access token, refreshed with refresh-token rotation when near expiry."""
     record = load()
+    if PLAN_SCOPE not in record.get("scopes", []):
+        raise PlanError("plan_scope_missing")
     if record["saved_at"] + record["expires_in"] - time.time() > REFRESH_MARGIN:
         return str(record["access_token"])
     tokens = _post_form({"grant_type": "refresh_token", "client_id": record["client_id"],
@@ -230,7 +316,8 @@ def verify_id_token(id_token: str, client_id: str, nonce: str) -> dict[str, Any]
     return dict(claims)
 
 
-def login() -> None:
+def _login(cancel: threading.Event) -> None:
+    _require_storage()
     host = _host()
     saved = host.get("client_id")
     state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(64)
@@ -255,58 +342,181 @@ def login() -> None:
                 self.send_response(404)
                 self.end_headers()
                 return
-            received.update({key: value[0] for key, value in urllib.parse.parse_qs(parsed.query).items()})
+            fields = urllib.parse.parse_qs(parsed.query)
+            if any(len(values) != 1 for values in fields.values()) or not hmac.compare_digest(fields.get("state", [""])[0], state):
+                self.send_response(400)
+                self.end_headers()
+                return
+            received.update({key: value[0] for key, value in fields.items()})
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
-            self.wfile.write(b"Greedy: sign-in received. You can close this tab.")
+            self.wfile.write(b"TFS: sign-in received. Return to TFS to check the connection and choose a model. You can close this tab.")
 
         def log_message(self, *args: Any) -> None:  # the callback query carries the code: never log it
             pass
 
-    server = HTTPServer(("127.0.0.1", 1455), Callback)  # listening before the browser opens
-    server.timeout = 600
+    class CallbackServer(HTTPServer):
+        def server_bind(self) -> None:
+            # HTTPServer.server_bind does a reverse DNS lookup (getfqdn) that takes seconds on some Macs.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = "127.0.0.1", 1455
+
+    try:
+        server = CallbackServer(("127.0.0.1", 1455), Callback)
+    except OSError:
+        raise PlanError("callback_port_busy") from None
+    server.timeout = 0.25
     url = f"{AUTHORIZE}?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
-    print("Opening the browser for Sign in with ChatGPT." + ("" if previous else f" If it does not open, visit:\n{url}"), flush=True)
-    webbrowser.open(url)
-    deadline = time.time() + 600
-    while not received and time.time() < deadline:
-        server.handle_request()
-    server.server_close()
-    if not received or not hmac.compare_digest(received.get("state", ""), state):
-        raise SystemExit("No valid callback (missing or mismatched state).")
+    try:
+        if not webbrowser.open(url):
+            raise PlanError("browser_unavailable")
+        deadline = time.monotonic() + LOGIN_TIMEOUT
+        while not received and time.monotonic() < deadline and not cancel.is_set():
+            server.handle_request()
+    finally:
+        server.server_close()
+    if cancel.is_set():
+        raise PlanError("cancelled")
+    if not received:
+        raise PlanError("timeout")
     if "error" in received:
-        raise SystemExit(f"Authorization error: {received['error']}")
+        raise PlanError("authorization_denied")
+    if not received.get("code"):
+        raise PlanError("invalid_callback")
     issued = received.get("client_id")
     client_id = saved
     if not saved:
         if not issued or issued == "dynamic_agent_client":
-            raise SystemExit("Registration incomplete: no issued client_id.")
+            raise PlanError("registration_incomplete")
         client_id = issued
         _save_host({**host, "client_id": client_id})  # kept even if the exchange below fails
     elif issued and issued != saved:
-        raise SystemExit("Callback client_id differs from the saved registration.")
+        raise PlanError("identity_mismatch")
     assert client_id
     tokens = _post_form({"grant_type": "authorization_code", "client_id": client_id, "code": received["code"],
                          "code_verifier": verifier, "redirect_uri": REDIRECT, "resource": RESOURCE})
     claims = verify_id_token(tokens["id_token"], client_id, nonce)
-    if previous and previous.get("subject") != claims["sub"]:
-        raise SystemExit("Signed-in identity differs from the saved account; credentials not replaced.")
+    expected_subject = previous.get("subject") if previous else host.get("subject")
+    if expected_subject and expected_subject != claims["sub"]:
+        raise PlanError("identity_mismatch")
     scopes = sorted(tokens.get("scope", "").split())
     if PLAN_SCOPE not in scopes or "refresh_token" not in tokens:
-        raise SystemExit(f"ChatGPT plan usage was not granted: scopes={scopes}")
-    save({"email": claims.get("email"), "issuer": ISSUER, "subject": claims["sub"], "client_id": client_id,
+        raise PlanError("plan_scope_missing")
+    if cancel.is_set():
+        raise PlanError("cancelled")
+    with credential_lock():
+        save({"email": claims.get("email"), "issuer": ISSUER, "subject": claims["sub"], "client_id": client_id,
           "ext_agent_host_id": host["ext_agent_host_id"], "id_token": tokens["id_token"], "access_token": tokens["access_token"],
           "refresh_token": tokens["refresh_token"], "token_type": tokens.get("token_type"), "expires_in": tokens["expires_in"],
           "scopes": scopes, "saved_at": time.time()})
-    print(f"Signed in. client_id={client_id} scopes={scopes}")
+
+
+
+_thread_lock = threading.RLock()
+
+
+@contextlib.contextmanager
+def _file_lock(name: str, wait: bool) -> Iterator[None]:
+    """An exclusive lock on a file in the credential directory, shared by all native TFS processes."""
+    _require_storage()
+    home().mkdir(parents=True, exist_ok=True)
+    with open(home() / name, "a+b") as handle:
+        if sys.platform == "win32":
+            import msvcrt
+            if handle.seek(0, os.SEEK_END) == 0:  # never read the byte: another process may hold its lock
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK, 1)
+            except OSError:
+                raise PlanError("login_busy") from None
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise PlanError("login_busy") from None
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def credential_lock() -> Iterator[None]:
+    """Serialize refresh-token rotation across threads and native processes."""
+    with _thread_lock, _file_lock("session.lock", wait=True):
+        yield
+
+
+def access_token() -> str:
+    with credential_lock():
+        return _access_token()
+
+
+@contextlib.contextmanager
+def login_lock() -> Iterator[None]:
+    with _file_lock("login.lock", wait=False):
+        yield
+
+
+def login(cancel: threading.Event | None = None) -> None:
+    with login_lock():
+        _login(cancel or threading.Event())
+
+
+def logout() -> bool:
+    """End the renewable session, clear tokens, and retain the account/client and host mapping."""
+    with login_lock(), credential_lock():
+        host = _host()
+        if not host.get("client_id") or _read_record(host["client_id"]) is None:
+            return True
+        record = load()
+        try:
+            _save_host({**host, "subject": record["subject"]})
+        except OSError:
+            raise PlanError("storage_unavailable") from None
+        revoked = False
+        try:
+            metadata = httpx.get(f"{ISSUER}/.well-known/openid-configuration", timeout=10)
+            metadata.raise_for_status()
+            endpoint = metadata.json()["revocation_endpoint"]
+            parsed = urllib.parse.urlsplit(endpoint)
+            if (parsed.scheme != "https" or parsed.hostname != "auth.openai.com"
+                    or parsed.port not in {None, 443} or parsed.username or parsed.password or parsed.fragment):
+                raise ValueError("Invalid revocation endpoint")
+            for attempt in range(2):
+                try:
+                    response = httpx.post(endpoint, data={"token": record["refresh_token"],
+                                          "token_type_hint": "refresh_token", "client_id": record["client_id"]}, timeout=10)
+                    revoked = response.status_code == 200
+                    if response.status_code < 500:
+                        break
+                except httpx.RequestError:
+                    pass
+                if attempt == 0:
+                    time.sleep(0.25)
+        except (PlanError, httpx.HTTPError, OSError, ValueError, KeyError):
+            pass
+        _delete_record(record["client_id"])
+        return revoked
 
 
 def models() -> list[dict[str, Any]]:
     response = httpx.get(f"{RESOURCE}/models", headers={"Authorization": f"Bearer {access_token()}"}, timeout=30)
     response.raise_for_status()
-    return [{"slug": row.get("slug"), "display_name": row.get("display_name")}
-            for row in response.json().get("models", []) if row.get("visibility") == "list"]
+    return [{"slug": row["slug"], "display_name": row.get("display_name") or row["slug"]}
+            for row in response.json().get("models", [])
+            if row.get("visibility") == "list" and isinstance(row.get("slug"), str) and row["slug"]]
 
 
 if __name__ == "__main__":

@@ -554,6 +554,7 @@ async def analyze(
         current = review_portfolio(supplied, clarification_evidence, holdings_as_of)
         apply_guardrails(current, request.settings)
         clarification = AnalysisResult(question=request.question, portfolio=current, theme=theme,
+            artifact_reference=getattr(request, "artifact_reference", None),
             recommendation=Recommendation(preferred_action="wait_for_inputs", amount=None,
                 reason="Agree the economic mechanism, bounded shortlist and candidate/tool-call effort limits before candidate research.",
                 alternatives=[Alternative(action="no_action", reason="Keep the portfolio while the theme is clarified.")],
@@ -1422,6 +1423,7 @@ async def analyze(
                 allocation=allocation,
                 reunderwriting=reunderwriting,
                 theme=theme,
+                artifact_reference=getattr(request, "artifact_reference", None),
             )
             if secret and secret in result.model_dump_json():
                 raise InvalidReview("Response contains backend-only configuration.")
@@ -1498,9 +1500,9 @@ def sizing_withheld(stock: StockResult, current: PortfolioReview, proposals: lis
         reasons.append("No single-company cap is set, so no position size can be checked against your rules.")
     if checks is None or checks.settings.active_budget is None:
         reasons.append("No active-picks budget is set.")
-    if row is not None and row.quote_used is not None and row.quote_used.status != "verified":
+    if row is not None and row.quote_used is not None and str(row.quote_used.status) != "verified":
         reasons.append(f"The price is {row.quote_used.status} ({row.quote_used.source}, {row.quote_used.as_of}): usable for a valuation view, not for an exact trade size.")
-    if row is not None and row.fx_used is not None and row.fx_used.status != "verified":
+    if row is not None and row.fx_used is not None and str(row.fx_used.status) != "verified":
         reasons.append(f"{row.fx_used.from_currency}/{row.fx_used.to_currency} is {row.fx_used.status} ({row.fx_used.as_of}).")
     if not any(item.source == "user" and item.status == "within_limits" and any(trade.position_id == stock.position_id for trade in item.changes.trades) for item in proposals):
         reasons.append("No hypothetical trade in this stock was checked against your rules.")

@@ -1,5 +1,6 @@
+import { AlertTriangle, Check, Info } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { actionLabel, BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot, type ThemeInput } from "../../lib/contracts";
+import { actionLabel, BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type ArtifactReference, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot, type ThemeInput } from "../../lib/contracts";
 import { accountName, answerSentence, caseCurrency, clock, compact, decisionLabel, POSITION_LABEL, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
 
 export type Tab = "evidence" | "scenarios" | "proposed" | "holdings" | "guardrails";
@@ -8,7 +9,7 @@ type Cite = { numbers: Map<string, number>; onCite: (id: string) => void };
 // Holdings keep the date they were last confirmed; prices carry their own (newer) date.
 function valuationDates(review: Analysis["portfolio"]): string {
   const prices = review.positions.map(row => row.quote_used?.as_of).filter((day): day is string => !!day).sort().at(-1);
-  return `Holdings last confirmed ${fullDate(review.holdings_as_of || review.as_of)}${prices ? ` · Prices ${fullDate(prices)}` : ""}`;
+  return `${review.holdings_as_of ? `Holdings last confirmed ${fullDate(review.holdings_as_of)}` : `Analysis as of ${fullDate(review.as_of)}`}${prices ? ` · Prices ${fullDate(prices)}` : ""}`;
 }
 
 export function Row({ label, kind = "", children }: { label: string; kind?: string; children: ReactNode }) {
@@ -17,7 +18,7 @@ export function Row({ label, kind = "", children }: { label: string; kind?: stri
 
 function Cites({ ids, cite }: { ids: string[]; cite: Cite }) {
   const numbered = ids.filter(id => cite.numbers.has(id));
-  return <>{numbered.map(id => <sup key={id}><button type="button" aria-label={`Source ${cite.numbers.get(id)}`} onClick={() => cite.onCite(id)}>{cite.numbers.get(id)}</button></sup>)}</>;
+  return <>{numbered.map(id => <sup key={id}><button type="button" aria-label={`Source ${cite.numbers.get(id)}`} onClick={() => cite.onCite(id)}><span>{cite.numbers.get(id)}</span></button></sup>)}</>;
 }
 
 function Expandable({ title, count, children }: { title: string; count: string; children: ReactNode }) {
@@ -32,7 +33,67 @@ function Expandable({ title, count, children }: { title: string; count: string; 
 
 const Bullets = ({ items }: { items: string[] }) => <ul className="bullets">{items.map((item, index) => <li key={index}>{item}</li>)}</ul>;
 
-export function Echo({ question, newCash, snapshot, stock, rebalance, theme }: { question: string; newCash: NewCashInput | null; snapshot: Snapshot | null; stock?: string | null; rebalance?: boolean; theme?: ThemeInput | null }) {
+export function HypotheticalBanner({ reference }: { reference?: ArtifactReference | null }) {
+  if (!reference || reference.basis !== "hypothetical") return null;
+  return (
+    <div
+      data-testid="hypothetical-banner"
+      style={{
+        background: "var(--raised)",
+        border: "1px solid var(--rule-strong)",
+        padding: "10px 14px",
+        borderRadius: 8,
+        marginBottom: 16,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 8,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="lbl amber" data-testid="hypothetical-badge">Hypothetical analysis</span>
+        <span className="cap" data-testid="artifact-source-ref">
+          Source: {reference.id} ({reference.label})
+        </span>
+      </div>
+      <span className="cap m">Committed portfolio revision unchanged</span>
+    </div>
+  );
+}
+
+export function Echo({
+  question,
+  newCash,
+  snapshot,
+  stock,
+  rebalance,
+  theme,
+  isHypothetical,
+  artifactReference,
+}: {
+  question: string;
+  newCash: NewCashInput | null;
+  snapshot: Snapshot | null;
+  stock?: string | null;
+  rebalance?: boolean;
+  theme?: ThemeInput | null;
+  isHypothetical?: boolean;
+  artifactReference?: ArtifactReference | null;
+}) {
+  if (isHypothetical || artifactReference?.basis === "hypothetical") {
+    return (
+      <div className="echo" data-testid="hypothetical-echo">
+        <span className="q">{question}</span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}>
+          <span className="lbl amber" data-testid="hypothetical-label">Hypothetical</span>
+          <span className="cap n" data-testid="hypothetical-source-reference">
+            Based on draft artifact {artifactReference?.id || "uncommitted"} ({artifactReference?.label || "Draft"}) · committed portfolio unchanged
+          </span>
+        </div>
+      </div>
+    );
+  }
   if (rebalance) return <div className="echo"><span className="q">{question}</span>
     <span className="cap n">Rebalance · your whole saved portfolio as of {fullDate(snapshot?.as_of)}. Nothing in it is changed.</span></div>;
   if (stock) return <div className="echo"><span className="q">{question}</span>
@@ -183,8 +244,9 @@ export function Answer({ result, sent, snapshot, cite, saved, onTab, onRerun, on
   const amountText = rec.amount ? range(rec.amount.minimum, rec.amount.maximum, rec.amount.currency) : null;
 
   return <div>
-    <Echo question={result.question} newCash={sent.newCash} snapshot={snapshot} />
+    <Echo question={result.question} newCash={sent.newCash} snapshot={snapshot} isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
     <div className="memo" aria-label="Analyst memo" role="region">
+      <HypotheticalBanner reference={result.artifact_reference} />
       <Row label="Recommendation" kind="rec">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 className="display">{amountText && sentence.includes(amountText) ? <>{sentence.split(amountText)[0]}<span className="amt">{amountText}</span>{sentence.split(amountText)[1]}</> : sentence}</h2>
@@ -236,8 +298,9 @@ export function ReviewAnswer({ result, snapshot, cite, saved, onTab, onConfirm }
   // The backend already groups missing values by cause; per-holding detail stays in Holdings.
   const unknowns = review.qualifications;
   return <div>
-    <Echo question={result.question} newCash={null} snapshot={snapshot} />
+    <Echo question={result.question} newCash={null} snapshot={snapshot} isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
     <div className="memo" aria-label="Analyst memo" role="region">
+      <HypotheticalBanner reference={result.artifact_reference} />
       <Row label="Recommendation" kind="rec">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 className="display">{rec.preferred_action === "review_only" && over ? `Your portfolio breaks ${over === 1 ? "one" : over} of your rules.` : answerSentence(rec.preferred_action, rec.amount, "", null)}</h2>
@@ -427,8 +490,9 @@ export function RebalanceAnswer({ result, snapshot, cite, saved, onTab, onConfir
     {items.map(item => <span key={item.row.supplied.id}>{item.label}{item.why && <span className="m"> · {item.why}</span>}</span>)}</div>;
 
   return <div>
-    <Echo question={result.question} newCash={null} snapshot={snapshot} rebalance />
+    <Echo question={result.question} newCash={null} snapshot={snapshot} rebalance isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
     <div className="memo" aria-label="Rebalance" role="region">
+      <HypotheticalBanner reference={result.artifact_reference} />
       <Row label="Recommendation" kind="rec">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 className="display">{rebalanceSentence(rec.preferred_action, plan, rec.amount, over)}</h2>
@@ -529,6 +593,51 @@ const METRIC = { revenue: "Revenue", operating_income: "Operating income", net_i
   operating_cash_flow: "Operating cash flow", capex: "Capital expenditure", cash: "Cash", total_debt: "Total debt", shares: "Diluted shares", book_value: "Book value", ffo: "FFO" } as Record<string, string>;
 const metricLabel = (fact: { metric: string; period_start: string | null; period_end: string }) => METRIC[fact.metric] || fact.metric;
 
+type Case = NonNullable<Analysis["stock"]>["cases"][number];
+const CASE_NAME: Record<string, string> = { downside: "Downside", base: "Base", upside: "Upside" };
+
+/** The three per-share cases on one line, with today's price where it is in the same currency. Drawn only from the
+ *  backend's case values; with fewer than two known cases there is nothing to place, so nothing is drawn. */
+// Said with the values when the analysis made no call, so they never read as a target or an approval.
+const NO_CALL = "No call yet: these are the cases, not a target.";
+
+function CaseRange({ cases, currency, price, undecided }: { cases: Case[]; currency: string; price: { value: string; currency: string } | null; undecided: boolean }) {
+  const known = cases.filter(c => c.present_value_per_share != null).map(c => ({ name: c.name, value: c.present_value_per_share! }));
+  if (known.length < 2) return null;
+  const marker = price && price.currency === currency ? price.value : null;
+  const numbers = [...known.map(c => Number(c.value)), ...(marker === null ? [] : [Number(marker)])];
+  const lo = Math.min(...numbers), hi = Math.max(...numbers);
+  const pad = (hi - lo) * 0.12 || Math.abs(hi) * 0.1 || 1;
+  const at = (value: string) => ((Number(value) - lo + pad) / (hi - lo + 2 * pad)) * 100;
+  // Labels near an edge are anchored to that edge so they stay inside the card.
+  const place = (value: string) => ({ left: `${at(value)}%`, transform: at(value) < 18 ? "translateX(-8px)" : at(value) > 82 ? "translateX(calc(-100% + 8px))" : "translateX(-50%)" });
+  const ends = known.map(c => at(c.value));
+  const describe = known.map(c => `${CASE_NAME[c.name] ?? c.name} ${money(c.value, currency)}`).join(", ");
+  // Cases can sit close together, so their values are a legend under the line rather than labels on it.
+  return <div className="range-wrap n" role="img" data-tone={undecided ? "neutral" : "signal"}
+    aria-label={`Per share, discounted to today: ${describe}${marker === null ? "" : `. Price ${money(marker, currency)}`}${undecided ? `. ${NO_CALL}` : ""}`}>
+    <div className={`range${marker === null ? " bare" : ""}`}>
+      <span className="trk" />
+      <span className="zone" style={{ left: `${Math.min(...ends)}%`, width: `${Math.max(...ends) - Math.min(...ends)}%` }} />
+      {known.map(c => <span key={c.name} className="tk" style={{ left: `${at(c.value)}%` }} />)}
+      {marker !== null && <><span className="pl" style={place(marker)}>Price {money(marker, currency)}</span><span className="px" style={{ left: `${at(marker)}%` }} /></>}
+    </div>
+    <div className="range-legend">{known.map(c => <span key={c.name} className={c.name}>{CASE_NAME[c.name] ?? c.name} <b>{money(c.value, currency)}</b></span>)}<span className="m">per share, discounted to today</span>{undecided && <span className="m">{NO_CALL}</span>}</div>
+  </div>;
+}
+
+/** The company's weight against the cap the investor set, when both are known. Over the cap is a warning whatever
+ *  the verdict; within it is good standing only when the analysis made a call, and otherwise a plain rules check. */
+function CapInsight({ weight, cap, over, undecided, ticker }: { weight: string; cap: string; over: boolean; undecided: boolean; ticker: string }) {
+  const scale = Math.max(Number(weight), Number(cap)) * 1.25 || 1;
+  const tone = over ? "warning" : undecided ? "neutral" : "positive";
+  return <div className={`ins ${tone}`} data-testid="cap-insight" data-tone={tone}>
+    {over ? <AlertTriangle size={17} aria-hidden="true" /> : undecided ? <Info size={17} aria-hidden="true" /> : <Check size={17} aria-hidden="true" />}
+    <span><b className="n">{pct(weight)} of your portfolio.</b> {over ? `Over your ${pct(cap)} company cap.` : `Within your ${pct(cap)} company cap.`}{!over && undecided ? ` A rules check only, not a call on ${ticker}.` : ""}</span>
+    <span className="wb" aria-hidden="true"><i style={{ width: `${Math.min(100, (Number(weight) / scale) * 100)}%` }} /><u style={{ left: `${(Number(cap) / scale) * 100}%` }} /></span>
+  </div>;
+}
+
 const STOCK_CHOICES: [DecisionAction, string][] = [["hold", "Kept it as it is"], ["add", "Added to it"], ["reduce", "Trimmed it"], ["exit", "Sold it"]];
 
 function stockSentence(action: string, amount: Analysis["recommendation"]["amount"], ticker: string): string {
@@ -558,6 +667,8 @@ export function StockAnswer({ result, snapshot, cite, saved, onTab, onConfirm }:
   const cap = review.guardrails?.companies.find(row => row.company_id === companyId);
   // Broken rules make the backend's checks, not the model, set the answer to review only.
   const over = review.guardrails ? review.guardrails.companies.filter(row => row.status === "breached").length + (review.guardrails.active.status === "breached" ? 1 : 0) : 0;
+  // The verdicts below that make no call on the company: not enough to decide, or held back by another broken rule.
+  const undecided = ["wait_for_inputs", "clarify_inputs"].includes(rec.preferred_action) || (rec.preferred_action === "review_only" && over > 0 && cap?.status !== "breached");
   const cases = ["downside", "base", "upside"].map(name => stock.cases.find(c => c.name === name)).filter((c): c is NonNullable<typeof c> => !!c);
   const base = cases.find(c => c.name === "base");
   const documents = stock.research.documents.filter(doc => doc.available).sort((a, b) => b.published_on.localeCompare(a.published_on));
@@ -577,15 +688,18 @@ export function StockAnswer({ result, snapshot, cite, saved, onTab, onConfirm }:
   const unmodeled = [...new Set(comparison?.alternatives.flatMap(alt => alt.cases.flatMap(c => c.terminal_value ? [] : c.unmodeled || [])) || [])];
 
   return <div>
-    <Echo question={result.question} newCash={null} snapshot={snapshot} stock={ticker} />
+    <Echo question={result.question} newCash={null} snapshot={snapshot} stock={ticker} isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
     <div className="memo" aria-label="Stock analysis" role="region">
+      <HypotheticalBanner reference={result.artifact_reference} />
       <Row label="Recommendation" kind="rec">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 className="display">{rec.preferred_action === "review_only" && cap?.status === "breached" ? `${ticker} is over your ${pct(cap.cap)} company cap.`
             : rec.preferred_action === "review_only" && over ? `Your portfolio breaks ${over === 1 ? "one" : over} of your rules, so there is no call on ${ticker} yet.`
             : stockSentence(rec.preferred_action, rec.amount, ticker)}</h2>
           <span className="cap n meta"><span>{actionLabel(rec.preferred_action)} · {positionName(target, ticker)}</span>
-            {cap && <span>{cap.status === "breached" ? <><span className="amber">●</span> Over your company cap</> : cap.status === "within_limit" ? <><span className="sage">●</span> Within your company cap</> : "Company cap not checked"}</span>}</span>
+            {cap && <span>{cap.status === "breached" ? <><span className="amber">●</span> Over your company cap</> : cap.status === "within_limit" ? <><span className={undecided ? "m" : "sage"}>●</span> Within your company cap</> : "Company cap not checked"}</span>}</span>
+          <CaseRange undecided={undecided} cases={cases} currency={local} price={valuation?.price ? { value: valuation.price, currency: valuation.currency } : quote ? { value: quote.value, currency: quote.currency } : null} />
+          {cap?.cap && cap.current_weight != null && ["breached", "within_limit"].includes(cap.status) && <CapInsight weight={cap.current_weight} cap={cap.cap} over={cap.status === "breached"} undecided={undecided} ticker={ticker} />}
         </div>
       </Row>
       <Row label="Your position">
@@ -713,8 +827,9 @@ export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onAgree, onC
 
   if (theme.status === "awaiting_agreement") {
     return <div>
-      <Echo question={result.question} newCash={null} snapshot={snapshot} theme={theme.context} />
+      <Echo question={result.question} newCash={null} snapshot={snapshot} theme={theme.context} isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
       <div className="memo" aria-label="Analyst memo" role="region">
+        <HypotheticalBanner reference={result.artifact_reference} />
         <Row label="Recommendation" kind="rec">
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <h2 className="display">Agree the theme mechanism and shortlist before researching.</h2>
@@ -763,8 +878,9 @@ export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onAgree, onC
   }).filter((p): p is Position => !!p);
 
   return <div>
-    <Echo question={result.question} newCash={null} snapshot={snapshot} theme={theme.context} />
+    <Echo question={result.question} newCash={null} snapshot={snapshot} theme={theme.context} isHypothetical={result.artifact_reference?.basis === "hypothetical"} artifactReference={result.artifact_reference} />
     <div className="memo" aria-label="Analyst memo" role="region">
+      <HypotheticalBanner reference={result.artifact_reference} />
       <Row label="Recommendation" kind="rec">
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <h2 className="display">{amountText && sentence.includes(amountText) ? <>{sentence.split(amountText)[0]}<span className="amt">{amountText}</span>{sentence.split(amountText)[1]}</> : sentence}</h2>
@@ -785,7 +901,7 @@ export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onAgree, onC
             return <div key={test.position_id} className="pgroup" data-testid={`test-${test.position_id}`}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span className="serif" style={{ fontSize: 18 }}>{ticker}</span>
-                <span className={`verdict ${test.conclusion}`}>{test.conclusion}</span>
+                <span className={`verdict ${test.conclusion}`}>{test.conclusion.charAt(0).toUpperCase() + test.conclusion.slice(1)}</span>
               </div>
               <p className="body">{test.explanation}<Cites ids={test.evidence_ids} cite={cite} /></p>
               {etfMissingFacts && <span className="cap amber">Fund facts and dated sponsor holdings are missing; verdict and overlap remain unknown.</span>}
@@ -795,7 +911,7 @@ export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onAgree, onC
             <div key={etf.id} className="pgroup" data-testid={`test-${etf.id}`}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span className="serif" style={{ fontSize: 18 }}>{etf.ticker}</span>
-                <span className="verdict unknown">unknown</span>
+                <span className="verdict unknown">Unknown</span>
               </div>
               <p className="body">No dated fund facts or sponsor holdings were available for this ETF.</p>
               <span className="cap amber">Fund facts and dated sponsor holdings are missing; verdict and overlap remain unknown.</span>
@@ -866,10 +982,10 @@ export function Historical({ decision, snapshot, cite, onRerun, onConfirm }: His
         : CASH_CHOICES(target);
       return <div aria-label="Reopened decision" role="region">
         <div className="historical-band" data-testid="historical-band" style={{ background: "var(--raised)", border: "1px solid var(--rule)", borderRadius: 8, padding: "10px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
-          <span style={{ color: "var(--text-2)" }}>Historical. Prices, filings and your rules are as of the {shortDate(decision.as_of)} snapshot and are not updated.</span>
+          <span style={{ color: "var(--text-2)" }}>Historical. An analysis as of {shortDate(decision.as_of)}; its prices, filings and rules are as they were then and are not updated.</span>
           <button type="button" className="btn secondary small" onClick={onRerun}>Re-run with today&apos;s portfolio</button>
         </div>
-        <div className="echo"><span className="q">{decision.question}</span><span className="cap"><span data-testid="decision-workflow">{decisionLabel(decision)}</span> · Saved {shortDate(decision.saved_at)} · snapshot {shortDate(decision.as_of)}</span></div>
+        <div className="echo"><span className="q">{decision.question}</span><span className="cap"><span data-testid="decision-workflow">{decisionLabel(decision)}</span> · Saved {shortDate(decision.saved_at)} · analysis as of {shortDate(decision.as_of)}</span></div>
         <div className="memo">
           <Row label="Recommendation" kind="rec">
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>

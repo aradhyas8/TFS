@@ -11,6 +11,10 @@
     "test:live": "node run_live_acceptance.cjs"
   },
   "dependencies": {
+    "@radix-ui/react-checkbox": "^1.4.0",
+    "@radix-ui/react-dialog": "^1.3.1",
+    "lucide-react": "^1.55.0",
+    "motion": "^14.1.0",
     "next": "^16.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

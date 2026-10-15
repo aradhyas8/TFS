@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 from typing import Annotated, Any, Literal, Self
@@ -521,6 +522,8 @@ class AnalysisRequest(Contract):
     # Explicit historical valuation date. Absent, the analysis is current: holdings stay as last confirmed on
     # portfolio.as_of and are valued with the latest acceptable prices on or before today.
     analysis_date: date | None = None
+    artifact_reference: Any | None = None
+    artifact_id: Identifier | None = None
 
     @model_validator(mode="after")
     def analysis_after_holdings(self) -> Self:
@@ -973,6 +976,55 @@ class ProposalReview(Contract):
     qualifications: list[str]
 
 
+class PortfolioCalculation(Contract):
+    capability: Literal["review_portfolio"] = "review_portfolio"
+    result: PortfolioReview
+
+
+class ChangeCalculation(Contract):
+    capability: Literal["check_proposed_changes"] = "check_proposed_changes"
+    result: ProposalReview
+
+
+FinancialClarificationCode = Literal["portfolio_required", "select_account", "unknown_instrument", "unresolved_identity", "unavailable"]
+
+
+class FinancialClarification(Contract):
+    code: FinancialClarificationCode
+    message: Text
+    choices: list[Identifier] = Field(default_factory=list)
+
+
+class FinancialClarificationResult(Contract):
+    clarification_required: FinancialClarification
+
+
+class CandidateResolution(Contract):
+    capability: Literal["resolve_candidate"] = "resolve_candidate"
+    result: CandidateResult
+
+
+class DatedFinancialData(Contract):
+    capability: Literal["get_financial_data"] = "get_financial_data"
+    as_of: date
+    result: FinancialEvidence
+    qualifications: list[str]
+
+
+class QuoteRefreshResult(Contract):
+    fetched: list[Identifier]
+    fresh: list[Identifier]
+    skipped: list[Identifier]
+    failed: list[Identifier]
+    remaining: int | None = Field(ge=0)
+    message: str
+
+
+class QuoteRefresh(Contract):
+    capability: Literal["refresh_quotes"] = "refresh_quotes"
+    result: QuoteRefreshResult
+
+
 class ScenarioComponent(Contract):
     position_id: str
     local_currency: str
@@ -1375,6 +1427,7 @@ class AnalysisResult(Contract):
     allocation: AllocationResult | None = None
     reunderwriting: ReunderwritingResult | None = None
     theme: ThemeResult | None = None
+    artifact_reference: Any | None = None
 
 
 DecisionAction = Literal[
@@ -1459,6 +1512,7 @@ class SavedDecision(Contract):
     confirmed_action: UserConfirmedAction | None = None
     workflow: DecisionWorkflow | None = None
     subject: DecisionSubject | None = None
+    artifact_id: Identifier | None = None
 
 
 class SaveDecisionRequest(Contract):
@@ -1467,6 +1521,7 @@ class SaveDecisionRequest(Contract):
     confirmed_action: UserConfirmedAction | None = None
     workflow: DecisionWorkflow | None = None
     subject: DecisionSubject | None = None
+    artifact_id: Identifier | None = None
 
     @model_validator(mode="after")
     def validate_payload(self) -> Self:
@@ -1553,7 +1608,14 @@ class RevisionedPortfolio(Contract):
 
 
 ArtifactBasis = Literal["committed", "hypothetical", "none"]
-ArtifactKind = Literal["portfolio_snapshot"]
+ArtifactKind = Literal[
+    "portfolio_snapshot",
+    "analysis_result",
+    "company_research",
+    "financial_evidence",
+    "calculation_result",
+    "web_research",
+]
 
 
 class ArtifactReference(Contract):
@@ -1567,6 +1629,13 @@ class ArtifactReference(Contract):
     basis: ArtifactBasis = "committed"
     source_artifact_id: Identifier | None = None
     originating_run_id: Identifier | None = None
+
+
+class ArtifactEnvelope(Contract):
+    """Reference-and-typed-payload envelope with explicit projection support."""
+
+    reference: ArtifactReference
+    payload: Any
 
 
 ProposalStatus = Literal["pending", "applied", "cancelled", "stale"]
@@ -1624,14 +1693,38 @@ class PreparationResult(Contract):
         return self
 
 
-def build_artifact_payload(portfolio: SavedPortfolio, projection: Literal["human", "model"] = "human") -> dict[str, Any]:
-    """Serialize SavedPortfolio into an artifact payload, excluding average costs for model projections."""
-    data = portfolio.model_dump(mode="python")
-    if projection == "model":
-        data["average_costs"] = {}
-        for item in data.get("unresolved", []):
-            item["average_cost"] = None
-    return data
+def model_safe(value: Any) -> Any:
+    """Remove private costs/state at every nesting level, including historical JSON text."""
+    if isinstance(value, dict):
+        if value.get("type") == "reasoning":
+            return {}
+        if "average_cost" in str(value.get("path", "")):
+            return {"description": "Private portfolio field omitted."}
+        return {
+            key: ({} if key == "average_costs" else None if key == "average_cost" else model_safe(item))
+            for key, item in value.items()
+            if key not in {"private_continuation", "continuation", "encrypted_content"}
+        }
+    if isinstance(value, list):
+        return [model_safe(item) for item in value]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, RecursionError):
+            return value
+        if isinstance(parsed, (dict, list)):
+            return json.dumps(model_safe(parsed), ensure_ascii=False)
+    return value
+
+
+def build_artifact_payload(
+    artifact: SavedPortfolio | Any,
+    kind: ArtifactKind = "portfolio_snapshot",
+    projection: Literal["human", "model"] = "human",
+) -> Any:
+    """Serialize typed artifacts; human payloads retain costs for exact review."""
+    data = artifact.model_dump(mode="python") if hasattr(artifact, "model_dump") else artifact
+    return model_safe(data) if projection == "model" else data
 
 
 class PortfolioProposalDetail(PortfolioProposal):
@@ -1671,6 +1764,176 @@ class CancelProposalResult(Contract):
     """Result of cancelling a proposal."""
 
     status: ProposalStatus
+
+
+class CreateArtifactRequest(Contract):
+    """Request to store an immutable hypothetical portfolio artifact."""
+
+    portfolio: SavedPortfolio
+    label: Text = "Hypothetical Draft Portfolio"
+    source_artifact_id: Identifier | None = None
+    originating_run_id: Identifier | None = None
+
+
+class WebCitation(Contract):
+    """URL citation annotation; indices address the web research text."""
+
+    type: Literal["url_citation"] = "url_citation"
+    url: str
+    title: str
+    start_index: int = Field(ge=0)
+    end_index: int = Field(ge=0)
+    cited_text: str
+
+
+class WebSource(Contract):
+    url: str
+    title: str | None = None
+
+
+WebSearchUnavailable = Literal[
+    "unsupported", "source_unavailable", "incomplete", "deadline", "no_search", "rejected_query",
+]
+
+
+class WebResearch(Contract):
+    """Hosted web search evidence: untrusted, never a qualified financial fact."""
+
+    capability: Literal["web_search"] = "web_search"
+    status: Literal["completed", "unavailable"]
+    reason: WebSearchUnavailable | None = None
+    query: str | None
+    queries: list[str] = Field(default_factory=list)
+    text: str = ""
+    citations: list[WebCitation] = Field(default_factory=list)
+    sources: list[WebSource] = Field(default_factory=list)
+    qualifications: list[str]
+
+
+RunStatus = Literal["running", "completed", "failed", "cancelled", "interrupted"]
+MessageRole = Literal["user", "assistant", "system"]
+
+WorkflowName = Literal["run_exposure_review", "run_stock_analysis", "run_new_cash_allocation",
+                       "run_portfolio_reunderwriting", "run_theme_exploration"]
+
+
+class WorkflowInput(Contract):
+    """Explicit form inputs; bound portfolio, rules and benchmark are never replaceable."""
+
+    workflow: WorkflowName | None = None
+    analysis_date: date | None = None
+    stock: StockInput | None = None
+    new_cash: NewCashInput | None = None
+    portfolio_review: PortfolioReviewInput | None = None
+    theme: ThemeInput | None = None
+    comparison: ComparisonInput | None = None
+    proposed_changes: ProposedChanges | None = None
+
+
+class WorkflowClarification(Contract):
+    workflow: WorkflowName
+    code: Literal["missing_inputs", "invalid_inputs", "portfolio_required", "unresolved_identity"]
+    fields: list[Identifier]
+    form: Literal["/review", "/stock", "/new-cash", "/rebalance", "/theme", "holdings"]
+    message: Text
+
+
+class ProposalClarification(Contract):
+    code: Literal["portfolio_required", "unknown_position", "invalid_edit"]
+    fields: list[Identifier]
+    form: Literal["holdings"] = "holdings"
+    message: Text
+
+
+class ToolOutcome(Contract):
+    """Execution outcome of a tool call."""
+
+    id: Identifier
+    name: Identifier
+    status: Literal["success", "error"]
+    error: Text | None = None
+    artifact_ids: list[Identifier] = Field(default_factory=list)
+
+
+class MessageRecord(Contract):
+    """Persisted message in a thread."""
+
+    id: Identifier
+    thread_id: Identifier
+    run_id: Identifier | None = None
+    role: MessageRole
+    text: str
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_ids: list[Identifier] = Field(default_factory=list)
+    clarification_required: dict[str, Any] | None = None
+    proposal_ids: list[Identifier] = Field(default_factory=list)
+    tool_outcomes: list[ToolOutcome] = Field(default_factory=list)
+    created_at: AwareDatetime
+
+
+class ThreadSummary(Contract):
+    """Summary of a thread for list endpoints."""
+
+    id: Identifier
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    last_message_preview: str | None = None
+    # The thread's first question; a thread is never titled from a cached answer or a decision.
+    title: str | None = None
+
+
+class CreateThreadRequest(Contract):
+    """Request payload to create a new thread with an optional client-supplied thread ID."""
+
+    id: Identifier | None = None
+
+
+class RunRecord(Contract):
+    """Supervised execution record of an agent run."""
+
+    id: Identifier
+    thread_id: Identifier
+    client_request_id: Identifier
+    status: RunStatus
+    bound_revision: int | None = Field(default=None, gt=0)
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    error: Text | None = None
+    message_ids: list[Identifier] = Field(default_factory=list)
+    artifact_ids: list[Identifier] = Field(default_factory=list)
+    # The immutable draft this run analyzes instead of the committed holdings; never a commit.
+    hypothetical_artifact_id: Identifier | None = None
+
+
+class ThreadDetail(Contract):
+    """Full detail of a thread with ordered messages and active/latest run state."""
+
+    id: Identifier
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+    messages: list[MessageRecord] = Field(default_factory=list)
+    runs: list[RunRecord] = Field(default_factory=list)
+
+
+class SubmitMessageRequest(Contract):
+    """Request to submit a message to a thread."""
+
+    client_request_id: Identifier
+    text: Text
+    workflow_input: dict[str, Any] | None = None
+    hypothetical_artifact_id: Identifier | None = None
+
+    @field_validator("workflow_input")
+    @classmethod
+    def validate_workflow_input(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None:
+            WorkflowInput.model_validate(value)
+        return value
+
+
+AnalysisRequest.model_rebuild()
+AnalysisResult.model_rebuild()
+
 
 
 

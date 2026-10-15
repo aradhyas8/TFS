@@ -23,6 +23,10 @@ const FORM = new Set(["inc", "incorporated", "corp", "corporation", "co", "compa
 const MONEY_ACTION = /\b(invest\w*|put|allocat\w*|new cash)\b/i;
 const MONEY_QUESTION_NO_AMOUNT = /\b(?:new (?:cash|money)|(?:cash|money) to (?:invest|allocate|put|deploy)|where should (?:new )?(?:cash|money) go|where to (?:invest|put|allocate) (?:new )?(?:cash|money)|allocate (?:new )?(?:cash|money))\b/i;
 
+// A plain instruction to correct what is held ("set my ACME shares to 12", "remove ACME from my holdings").
+// A question about a holding ("should I sell ACME?") is not one.
+const HOLDINGS_EDIT = /^\s*(?:please\s+)?(?:set|change|update|correct|record|remove|delete)\b.*\b(?:shares?|holdings?|positions?|portfolio|quantity|balance)\b/i;
+
 const THEME_STOP_WORDS = new Set(["which", "what", "my", "our", "all", "these", "those", "some", "any", "no", "more", "other", "few", "the", "a", "an"]);
 
 function nameWords(name: string): string[] {
@@ -273,15 +277,25 @@ export function route(raw: string, snapshot: Snapshot | null): Route {
   const theme = parseTheme(question);
   if (theme.matches) return { kind: "theme", question, name: theme.name };
 
-  // Unowned candidate ticker token in the question (e.g. standalone ticker or query mentioning ticker)
-  const candidateTokens = (question.match(/\$?[A-Za-z][A-Za-z0-9.-]*/g) || [])
+  // An explicitly marked unowned ticker ($NVDA) anywhere in the question. A bare capitalised word is not enough:
+  // "What is an ETF?" is an ordinary question, not a lookup of the ticker ETF.
+  const candidateTokens = (question.match(/\$[A-Za-z][A-Za-z0-9.-]*/g) || [])
     .filter(token => isCandidateTicker(token, false) && !stocks.some(s => s.ticker === token.replace(/^\$/, "").toUpperCase()));
   if (candidateTokens.length === 1 && !PORTFOLIO.test(question)) {
     return { kind: "candidate", question, ticker: candidateTokens[0].replace(/^\$/, "") };
   }
 
-  // 6. Otherwise, review (unchanged).
-  // Unmatched company subject with no ticker shape returns a short clarify question.
-  if (intent && subject) return resolved(question, [], subject, stocks);
+  // 6. Otherwise the default. Typed without a slash this is ordinary conversation (see isConversation);
+  // only /review runs a portfolio review. A subject that matches no holding and has no ticker shape is
+  // not guessed at here: the conversation can ask about it.
   return { kind: "review", question };
+}
+
+/** Free-form input belongs to the conversation unless it is an explicit shortcut: a slash command, or phrasing
+ *  the router resolves to a specific workflow. The router's default review no longer claims ordinary questions. */
+export function isConversation(raw: string, snapshot: Snapshot | null): boolean {
+  if (raw.trim().startsWith("/")) return false;
+  // An instruction to change the record is prepared as a proposal in the conversation, even when it names a holding.
+  if (HOLDINGS_EDIT.test(raw)) return true;
+  return !snapshot || route(raw, snapshot).kind === "review";
 }

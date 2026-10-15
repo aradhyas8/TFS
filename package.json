@@ -1,0 +1,9 @@
+{
+  "name": "tfs",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "test:startup": "node --test scripts/dev.test.mjs"
+  },
+  "engines": { "node": ">=20.9" }
+}

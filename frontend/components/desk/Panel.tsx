@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { BENCHMARK_FUND, NEW_CASH_DESTINATION, post, type Analysis, type Baseline, type BenchmarkSetting, type CandidateResult, type GuardrailReview, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
+import { BENCHMARK_FUND, NEW_CASH_DESTINATION, post, prepareIdentifyHolding, prepareImport, type Analysis, type Baseline, type BenchmarkSetting, type CandidateResult, type GuardrailReview, type PortfolioProposal, type PortfolioSettings, type PriceRefresh, type SavedDecision, type SavedPortfolio, type Snapshot, type UnresolvedHolding } from "../../lib/contracts";
 import { BeforeAfter, rebalancePlan, type Tab } from "./Memo";
 import { caseCurrency, compact, fullDate, money, pct, positionName, shortDate } from "./format";
 
@@ -29,12 +29,22 @@ export function evidenceFor(result: Analysis | null, decision: SavedDecision | n
 
 type Props = {
   tab: Tab; onTab: (tab: Tab) => void; onClose: () => void; focus: string | null;
+  /** What the details belong to, and where it came from. */
+  title: string; subtitle: string;
+  /** Set while the rail drawer covers the page. */
+  inert?: boolean;
   snapshot: Snapshot | null; setSnapshot: Dispatch<SetStateAction<Snapshot | null>>; averageCosts: Record<string, string>; unresolved: UnresolvedHolding[];
   onImported: (saved: SavedPortfolio) => void; settings: PortfolioSettings; setSettings: Dispatch<SetStateAction<PortfolioSettings>>;
   benchmark: BenchmarkSetting | null; setBenchmark: Dispatch<SetStateAction<BenchmarkSetting | null>>;
   result: Analysis | null; decision: SavedDecision | null; running: boolean; onError: (message: string) => void;
   prices: PriceRefresh | null; refreshing: boolean; onRefreshPrices: () => void;
   isDirty?: boolean; reviewing?: boolean; onReviewChanges?: () => void; onDiscardDraft?: () => void;
+  onAnalyzeDraft?: () => void;
+  baseRevision?: number | null;
+  onProposal?: (proposal: PortfolioProposal) => void;
+  onPreviewProposal?: (proposal: PortfolioProposal) => void;
+  pendingProposals?: PortfolioProposal[];
+  onReopenProposal?: (proposal: PortfolioProposal) => void;
 };
 
 // A rebalance shows its before and after where other answers show scenarios.
@@ -45,12 +55,17 @@ export default function Panel(props: Props) {
   const { tab, onTab, onClose, result, decision, running } = props;
   const evidence = evidenceFor(result, decision);
   const waiting = running && !result;
-  return <aside className="panel" aria-label="Details" id="details">
-    <div className="tabs" role="tablist" aria-label="Detail views">
-      {tabsFor(result).map(item => <button key={item.id} type="button" role="tab" id={`tab-${item.id}`} aria-controls="tabpanel" className="tab" aria-selected={tab === item.id}
-        onClick={() => onTab(item.id)}>{item.label}{item.id === "evidence" && evidence.items.length > 0 && <span className="m n">{evidence.items.length}</span>}</button>)}
-      <button type="button" className="icon-btn panel-close" aria-label="Close details" onClick={onClose}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg></button>
+  return <aside className="panel" aria-label="Details" id="details" inert={props.inert}>
+    <div className="ptop">
+      <div className="phead">
+        <div className="phead-title"><b>{props.title}</b><span className="cap">{props.subtitle}</span></div>
+        <button type="button" className="icon-btn panel-close" aria-label="Close details" onClick={onClose}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg></button>
+      </div>
+      <div className="tabs" role="tablist" aria-label="Detail views">
+        {tabsFor(result).map(item => <button key={item.id} type="button" role="tab" id={`tab-${item.id}`} aria-controls="tabpanel" className="tab" aria-selected={tab === item.id}
+          onClick={() => onTab(item.id)}>{item.label}{item.id === "evidence" && evidence.items.length > 0 && <span className="m n">{evidence.items.length}</span>}</button>)}
+      </div>
     </div>
     <div className="pbody" role="tabpanel" id="tabpanel" aria-labelledby={`tab-${tab}`}>
       {tab === "evidence" && (waiting ? <Pending what="Evidence" /> : <EvidenceTab {...evidence} focus={props.focus} result={result} decision={decision} snapshot={props.snapshot} />)}
@@ -62,9 +77,17 @@ export default function Panel(props: Props) {
   </aside>;
 }
 
+// Where a source came from. Filings and issuer material are retrieved by the analyst, never from a web search.
+const KIND: Record<string, string> = { sec: "SEC filing", sedar: "SEDAR+ filing", sedar_plus: "SEDAR+ filing", issuer: "Issuer material", macro: "Market data" };
+
 const Pending = ({ what }: { what: string }) => <p className="cap">{what} open{what.startsWith("The ") ? "s" : ""} when the answer arrives.</p>;
 const NotSaved = ({ what }: { what: string }) => <p className="cap">{what} weren&apos;t saved with this decision. Re-run with today&apos;s portfolio to see them.</p>;
 
+
+/** What a valuation was made from. A result that names its holdings date is from the portfolio as of that date; an
+ *  older one that does not is dated only as an analysis, never as the portfolio. */
+const valuedFrom = (review: Analysis["portfolio"]) =>
+  review.holdings_as_of ? `your portfolio as of ${fullDate(review.holdings_as_of)}` : `an analysis as of ${fullDate(review.as_of)}`;
 function EvidenceTab({ items, missing, numbers, focus, result, decision, snapshot }: ReturnType<typeof evidenceFor> & { focus: string | null; result: Analysis | null; decision: SavedDecision | null; snapshot: Snapshot | null }) {
   const focused = useRef<HTMLDivElement>(null);
   useEffect(() => { focused.current?.scrollIntoView({ block: "nearest" }); }, [focus]);
@@ -75,17 +98,17 @@ function EvidenceTab({ items, missing, numbers, focus, result, decision, snapsho
     {decision && <p className="cap">As saved on {shortDate(decision.saved_at)}. Sources may have been updated since.</p>}
     {items.length === 0 && <p className="cap">{decision ? "No sources were saved with this decision." : result?.allocation ? "No filings were researched for this answer. The analyst used your snapshot and the screen below."
       : "No filings were researched for this answer. The values rest on the prices and rates below."}</p>}
-    {items.length > 0 && <div className="ev-list" style={{ margin: "0 -8px" }}>{items.map(item => <div ref={item.id === focus ? focused : undefined} key={item.id} className={`ev${item.id === focus ? " focus" : ""}`}>
-      <span className="num">{numbers.get(item.id)}</span>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div><div>{item.title}</div><div className="cap">{item.source} · {shortDate(item.date)}</div></div>
+    {items.length > 0 && <div className="ev-list">{items.map(item => <div ref={item.id === focus ? focused : undefined} key={item.id} className={`ev${item.id === focus ? " focus" : ""}`} aria-current={item.id === focus || undefined}>
+      <span className="ct">{numbers.get(item.id)}</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+        <div><div className="ev-title">{item.title}</div><div className="cap">{KIND[item.source] ?? item.source} · {shortDate(item.date)}</div></div>
         {item.excerpt && (item.id === focus || items.length <= 2) && <blockquote>&ldquo;{item.excerpt}&rdquo;</blockquote>}
-        {item.facts.length > 0 && item.id === focus && <ul className="cap" style={{ listStyle: "none", display: "flex", flexDirection: "column", gap: 4 }}>{item.facts.map(fact => <li key={fact}>{fact}</li>)}</ul>}
+        {item.facts.length > 0 && item.id === focus && <ul className="fx n" aria-label="Facts from this source">{item.facts.map(fact => <li key={fact} className="chip">{fact}</li>)}</ul>}
         {item.url && /^https?:\/\//.test(item.url) && <a className="cap" href={item.url} target="_blank" rel="noreferrer">Open source ↗ <span className="m">(new tab)</span></a>}
       </div>
     </div>)}</div>}
-    {missing.length > 0 && <div className="pgroup"><span className="lbl">Looked for, not found</span>
-      {missing.map(item => <div key={item.id} className="ev"><span className="m">—</span><div><div className="m">{item.title}</div><div className="cap">{item.source} · {shortDate(item.date)}</div></div></div>)}
+    {missing.length > 0 && <div className="nf"><span className="lbl">Looked for, not found</span>
+      {missing.map(item => <div key={item.id}><span>{item.title}</span> <span className="cap">· {KIND[item.source] ?? item.source} · {shortDate(item.date)}</span></div>)}
       <p className="cap">Missing sources are listed so you can judge what the answer couldn&apos;t see.</p></div>}
     {result && !decision && <Valuation result={result} />}
     {target?.mark && <div className="pgroup pnote"><span className="lbl">Your price</span>
@@ -190,7 +213,7 @@ function ProposedTab({ result, snapshot }: { result: Analysis; snapshot: Snapsho
   const undecided = plan.filter(item => item.move === "undecided").length;
   return <>
     <div><div>{moving ? `${moving} of ${plan.length} positions would move` : undecided ? `Undecided for ${undecided} of ${plan.length} positions; nothing moves yet` : "Nothing would move"}</div>
-      <div className="cap">Now: valued {shortDate(result.portfolio.reviewed_at)} from your portfolio as of {fullDate(result.portfolio.as_of)} · your saved holdings are not changed</div></div>
+      <div className="cap">Now: valued {shortDate(result.portfolio.reviewed_at)} from {valuedFrom(result.portfolio)} · your saved holdings are not changed</div></div>
     <BeforeAfter result={result} plan={plan} />
     {rw.previews.length > 0 ? <div className="pgroup pnote"><span className="lbl">Checked size</span>
       {rw.amount && <span className="n">{money(rw.amount.minimum, rw.amount.currency)} to {money(rw.amount.maximum, rw.amount.currency)} · {plan.find(item => item.row.supplied.id === rw.amount!.position_id)?.ticker}</span>}
@@ -267,32 +290,107 @@ function PriceStatus({ prices, refreshing, disabled, onRefresh }: { prices: Pric
 }
 
 /** Asks only for what is missing: the exchange, the security type, or both. */
-function Identify({ row, snapshot, disabled, onImported, onError }: { row: UnresolvedHolding; snapshot: Snapshot; disabled: boolean;
-  onImported: (saved: SavedPortfolio) => void; onError: (message: string) => void }) {
+export function Identify({
+  row,
+  snapshot,
+  disabled,
+  baseRevision,
+  onPreviewProposal,
+  onError,
+}: {
+  row: UnresolvedHolding;
+  snapshot: Snapshot;
+  disabled: boolean;
+  baseRevision?: number | null;
+  onPreviewProposal?: (proposal: PortfolioProposal) => void;
+  onError: (message: string) => void;
+}) {
   const [listing, setListing] = useState("");
   const [kind, setKind] = useState("");
   const [busy, setBusy] = useState(false);
   // When the lookup found several listings, only the exchange is asked; the type comes from the lookup.
   const choices = row.candidates?.length ? EXCHANGES.filter(([code]) => row.candidates.includes(code)) : EXCHANGES;
-  const ready = (row.listing || listing) && (row.kind || kind || row.candidates?.length);
+  const hasNewListing = !row.listing && !!listing;
+  const hasNewKind = !row.kind && !row.candidates?.length && !!kind;
+  const ready = hasNewListing || hasNewKind;
+
   async function save() {
-    setBusy(true); onError("");
-    try { onImported(await post<SavedPortfolio>("/api/portfolio/identify", { account_id: row.account_id, ticker: row.ticker, listing: listing || null, kind: kind || null })); }
-    catch (failure) { onError(failure instanceof Error ? failure.message : "The holding couldn't be identified."); }
-    finally { setBusy(false); }
+    setBusy(true);
+    onError("");
+    try {
+      const res = await prepareIdentifyHolding({
+        account_id: row.account_id,
+        ticker: row.ticker,
+        listing: listing || row.listing || null,
+        kind: (kind as "stock" | "etf" | null) || row.kind || null,
+        base_revision: baseRevision ?? null,
+      });
+      if (res.status === "prepared" && res.proposal) {
+        onPreviewProposal?.(res.proposal);
+      } else {
+        onError("No changes were identified.");
+      }
+    } catch (failure) {
+      onError(failure instanceof Error ? failure.message : "The holding couldn't be identified.");
+    } finally {
+      setBusy(false);
+    }
   }
-  return <div className="identify">
-    <span className="n">{row.ticker} <span className="m">· {row.shares} sh · {snapshot.accounts.find(account => account.id === row.account_id)?.name}</span></span>
-    <div className="rules">
-      {!row.listing && <label className="field"><span className="cap">Exchange</span>
-        <select className="in" aria-label={`Exchange for ${row.ticker}`} value={listing} disabled={disabled || busy} onChange={event => setListing(event.target.value)}>
-          <option value="">Choose</option>{choices.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></label>}
-      {!row.kind && !row.candidates?.length && <label className="field"><span className="cap">Type</span>
-        <select className="in" aria-label={`Type for ${row.ticker}`} value={kind} disabled={disabled || busy} onChange={event => setKind(event.target.value)}>
-          <option value="">Choose</option><option value="stock">Stock</option><option value="etf">ETF</option></select></label>}
+
+  return (
+    <div className="identify">
+      <span className="n">
+        {row.ticker} <span className="m">· {row.shares} sh · {snapshot.accounts.find(account => account.id === row.account_id)?.name}</span>
+      </span>
+      <div className="rules">
+        {!row.listing && (
+          <label className="field">
+            <span className="cap">Exchange</span>
+            <select
+              className="in"
+              aria-label={`Exchange for ${row.ticker}`}
+              value={listing}
+              disabled={disabled || busy}
+              onChange={event => setListing(event.target.value)}
+            >
+              <option value="">Choose</option>
+              {choices.map(([code, name]) => (
+                <option key={code} value={code}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {!row.kind && !row.candidates?.length && (
+          <label className="field">
+            <span className="cap">Type</span>
+            <select
+              className="in"
+              aria-label={`Type for ${row.ticker}`}
+              value={kind}
+              disabled={disabled || busy}
+              onChange={event => setKind(event.target.value)}
+            >
+              <option value="">Choose</option>
+              <option value="stock">Stock</option>
+              <option value="etf">ETF</option>
+            </select>
+          </label>
+        )}
+      </div>
+      <span>
+        <button
+          type="button"
+          className="btn secondary small"
+          disabled={!ready || disabled || busy}
+          onClick={save}
+        >
+          {busy ? "Saving…" : `Save ${row.ticker}`}
+        </button>
+      </span>
     </div>
-    <span><button type="button" className="btn secondary small" disabled={!ready || disabled || busy} onClick={save}>{busy ? "Saving…" : `Save ${row.ticker}`}</button></span>
-  </div>;
+  );
 }
 
 /** Percent in the UI, fraction for the backend. Local text keeps partial input like "12." editable. */
@@ -400,27 +498,32 @@ function BenchmarkInput({ benchmark, onChange, disabled, onError }: {
   </div>;
 }
 
-function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, benchmark, setBenchmark, result, decision, running, onError, prices, refreshing, onRefreshPrices, isDirty, reviewing, onReviewChanges, onDiscardDraft }: Props) {
+function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImported, settings, setSettings, benchmark, setBenchmark, result, decision, running, onError, prices, refreshing, onRefreshPrices, isDirty, reviewing, onReviewChanges, onDiscardDraft, onAnalyzeDraft, baseRevision, onProposal, onPreviewProposal, pendingProposals, onReopenProposal }: Props) {
   if (!snapshot) return <p className="cap">Import a portfolio to see holdings.</p>;
   const review = result?.portfolio;
   const editable = !running;
-  function updateBaseline(category: keyof Baseline, fraction: string | null) {
-    setSettings(s => {
-      const currentBaseline = s.baseline || {};
-      const nextBaseline: Baseline = { ...currentBaseline, [category]: fraction };
-      const hasAny = Object.values(nextBaseline).some(v => v !== undefined && v !== null);
-      return { ...s, baseline: hasAny ? nextBaseline : null };
-    });
-  }
-  const baselineSum = ["stocks", "diversified_etfs", "sector_theme_etfs", "cash"].reduce((acc, key) => {
-    const v = settings.baseline?.[key as keyof Baseline];
-    return acc + (v ? Number(v) : 0);
-  }, 0);
-  const baselineOver = baselineSum > 1.00001;
+  const over = baselineOver(settings);
 
   return <>
     {decision && <p className="cap">Today&apos;s portfolio. Historical weights weren&apos;t saved with this decision.</p>}
     <PriceStatus prices={prices} refreshing={refreshing} disabled={running} onRefresh={onRefreshPrices} />
+    {pendingProposals && pendingProposals.length > 0 && (
+      <div className="pgroup" style={{ background: "var(--raised)", border: "1px solid var(--rule-strong)", padding: "12px 14px", borderRadius: 8 }}>
+        <div className="pv"><span className="lbl amber">Pending portfolio review{pendingProposals.length === 1 ? "" : "s"} ({pendingProposals.length})</span></div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+          {pendingProposals.map(p => (
+            <div key={p.id} className="pv" style={{ alignItems: "center" }}>
+              <span className="cap">
+                {p.origin === "identify" ? "Identity correction" : p.origin === "import" ? "Holdings import" : p.origin === "chat" ? "Action proposal" : "Manual edit"} · {p.differences.length} change{p.differences.length === 1 ? "" : "s"}
+              </span>
+              <button type="button" className="btn secondary small" onClick={() => onReopenProposal?.(p)}>
+                Reopen review
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
     {isDirty && (
       <div className="pgroup" style={{ background: "var(--raised)", border: "1px solid var(--rule-strong)", padding: "12px 14px", borderRadius: 8 }}>
         <div className="pv" style={{ alignItems: "center" }}>
@@ -428,7 +531,7 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
             <span className="lbl amber">Unsaved draft edits</span>
             <p className="cap" style={{ marginTop: 2 }}>Typing changes draft state only. Review before committing.</p>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             {onDiscardDraft && (
               <button
                 type="button"
@@ -440,12 +543,23 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
                 Discard
               </button>
             )}
+            {onAnalyzeDraft && (
+              <button
+                type="button"
+                className="btn secondary small"
+                data-testid="analyze-draft"
+                disabled={!editable || reviewing || running}
+                onClick={onAnalyzeDraft}
+              >
+                Analyze draft
+              </button>
+            )}
             {onReviewChanges && (
               <button
                 type="button"
                 className="btn primary small"
                 data-testid="review-changes"
-                disabled={!editable || reviewing || baselineOver}
+                disabled={!editable || reviewing || over}
                 onClick={onReviewChanges}
               >
                 {reviewing ? "Reviewing…" : "Review changes"}
@@ -458,7 +572,7 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
     {unresolved.length > 0 && <div className="pgroup needs-id" aria-label="Holdings to identify" role="group">
       <span className="lbl amber">Needs you · {unresolved.length} holding{unresolved.length === 1 ? "" : "s"} to identify</span>
       <span className="cap">These couldn&apos;t be matched to a listing or type, so they aren&apos;t in the analysis yet. Nothing is assumed.</span>
-      {unresolved.map(row => <Identify key={`${row.account_id}:${row.ticker}`} row={row} snapshot={snapshot} disabled={!editable} onImported={onImported} onError={onError} />)}
+      {unresolved.map(row => <Identify key={`${row.account_id}:${row.ticker}`} row={row} snapshot={snapshot} disabled={!editable} baseRevision={baseRevision} onPreviewProposal={onPreviewProposal} onError={onError} />)}
     </div>}
     {snapshot.accounts.map(account => {
       const rows = snapshot.positions.filter(row => row.account_id === account.id && row.id !== BENCHMARK_FUND);
@@ -480,10 +594,88 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
         })}</div>
       </div>;
     })}
-    <p className="cap pnote">{review ? `Valued ${shortDate(review.reviewed_at)} from your portfolio as of ${fullDate(review.as_of)}.` : `Portfolio as of ${fullDate(snapshot.as_of)}. Prices, values and weights come back with the analysis.`}
+    <p className="cap pnote">{review ? `Valued ${shortDate(review.reviewed_at)} from ${valuedFrom(review)}.` : `Portfolio as of ${fullDate(snapshot.as_of)}. Prices, values and weights come back with the analysis.`}
       {snapshot.fx.map(fx => ` ${fx.from_currency}/${fx.to_currency} ${fx.rate}.`)}</p>
 
-    <fieldset className="pgroup pnote" disabled={!editable} style={{ border: 0, padding: "12px 0 0" }}>
+    <RulesEditor settings={settings} setSettings={setSettings} benchmark={benchmark} setBenchmark={setBenchmark} editable={editable} onError={onError}
+      actions={isDirty ? { reviewing, onReviewChanges, onDiscardDraft } : undefined} />
+    <ImportCsv snapshot={snapshot} baseRevision={baseRevision} onProposal={onProposal} onImported={onImported} onError={onError} disabled={!editable} label="Replace with a new CSV" />
+  </>;
+}
+
+export type ImportCsvProps = {
+  snapshot: Snapshot | null;
+  baseRevision?: number | null;
+  onProposal?: (proposal: PortfolioProposal) => void;
+  onImported?: (saved: SavedPortfolio) => void;
+  onError: (message: string) => void;
+  disabled?: boolean;
+  label: string;
+};
+
+/** Prepares a portfolio import proposal. The holdings date is the user's; it is shown wherever the portfolio is. */
+export function ImportCsv({ snapshot, baseRevision, onProposal, onImported, onError, disabled, label }: ImportCsvProps) {
+  const [asOf, setAsOf] = useState(() => new Date().toLocaleDateString("en-CA"));
+  const [currency, setCurrency] = useState(snapshot?.reporting_currency || "CAD");
+  const [busy, setBusy] = useState(false);
+  async function load(file: File) {
+    if (file.size > 1_000_000) { onError("CSV must be no larger than 1 MB."); return; }
+    onError(""); setBusy(true);
+    try {
+      const res = await prepareImport({
+        csv: await file.text(),
+        as_of: asOf || undefined,
+        reporting_currency: currency,
+        base_revision: baseRevision ?? null,
+      });
+      if (res.status === "unchanged" || !res.proposal) {
+        onError("No changes detected; imported holdings match the current portfolio.");
+        return;
+      }
+      if (onProposal) {
+        onProposal(res.proposal);
+      }
+    }
+    catch (failure) { onError(failure instanceof Error ? failure.message : "CSV import failed."); }
+    finally { setBusy(false); }
+  }
+  return <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <div className="setup">
+      <label className="field"><span className="cap">Holdings as of</span><input className="in" type="date" aria-label="Holdings as of" value={asOf} disabled={disabled} onChange={event => setAsOf(event.target.value)} /></label>
+      <label className="field"><span className="cap">Reporting currency</span><input className="in" aria-label="Reporting currency" value={currency} maxLength={3} disabled={disabled} onChange={event => setCurrency(event.target.value.toUpperCase())} /></label>
+    </div>
+    <label className="drop" style={{ position: "relative" }}>
+      <span>{busy ? "Importing…" : label}</span>
+      <input type="file" accept=".csv,text/csv" aria-label="Load portfolio CSV" disabled={disabled || busy}
+        onChange={event => { const file = event.target.files?.[0]; if (file) void load(file); event.target.value = ""; }} />
+    </label>
+    <span className="cap">Columns: account, ticker, shares, and optionally average_cost, currency (USD or CAD) and type. Exchange, name and current price are looked up; currency avoids a question when a ticker trades in both countries. Cash rows are optional. <a href="/api/portfolio/holdings-template" download>Template</a> · the <a href="/api/portfolio/template" download>full template</a> also works.</span>
+  </div>;
+}
+
+const baselineSum = (settings: PortfolioSettings) =>
+  (["stocks", "diversified_etfs", "sector_theme_etfs", "cash"] as const).reduce((total, key) => total + Number(settings.baseline?.[key] ?? 0), 0);
+
+/** True when the target mix adds up to more than 100%, which can't be reviewed. */
+export const baselineOver = (settings: PortfolioSettings) => baselineSum(settings) > 1.00001;
+
+/** The investor's rules and benchmark, edited in the draft. Nothing here is saved until the draft is reviewed and confirmed. */
+export function RulesEditor({ settings, setSettings, benchmark, setBenchmark, editable, onError, actions }: {
+  settings: PortfolioSettings; setSettings: Dispatch<SetStateAction<PortfolioSettings>>;
+  benchmark: BenchmarkSetting | null; setBenchmark: Dispatch<SetStateAction<BenchmarkSetting | null>>;
+  editable: boolean; onError: (message: string) => void;
+  /** Draft actions under the rules, while the draft differs. */
+  actions?: { reviewing?: boolean; onReviewChanges?: () => void; onDiscardDraft?: () => void };
+}) {
+  function updateBaseline(category: keyof Baseline, fraction: string | null) {
+    setSettings(s => {
+      const nextBaseline: Baseline = { ...(s.baseline || {}), [category]: fraction };
+      const hasAny = Object.values(nextBaseline).some(v => v !== undefined && v !== null);
+      return { ...s, baseline: hasAny ? nextBaseline : null };
+    });
+  }
+  const over = baselineOver(settings);
+  return <fieldset className="pgroup pnote" disabled={!editable} style={{ border: 0, padding: "12px 0 0" }}>
       <legend className="lbl" style={{ padding: 0, marginBottom: 12 }}>Your rules</legend>
       <div className="rules">
         <PercentInput label="Single-company cap (%)" value={settings.single_company_cap} onChange={single_company_cap => setSettings(s => ({ ...s, single_company_cap }))} />
@@ -503,63 +695,21 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
         <PercentInput label="Sector/theme ETFs (%)" value={settings.baseline?.sector_theme_etfs} onChange={sector_theme_etfs => updateBaseline("sector_theme_etfs", sector_theme_etfs)} />
         <PercentInput label="Cash (%)" value={settings.baseline?.cash} onChange={cash => updateBaseline("cash", cash)} />
       </div>
-      {baselineOver && <span className="cap amber" role="alert">Target mix cannot exceed 100% (currently {Number((baselineSum * 100).toFixed(2))}%)</span>}
+      {over && <span className="cap amber" role="alert">Target mix cannot exceed 100% (currently {Number((baselineSum(settings) * 100).toFixed(2))}%)</span>}
       <BenchmarkInput benchmark={benchmark} onChange={setBenchmark} disabled={!editable} onError={onError} />
-      {isDirty && (
+      {actions && (
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
-          {onDiscardDraft && (
-            <button
-              type="button"
-              className="btn secondary small"
-              data-testid="discard-draft-rules"
-              disabled={!editable || reviewing}
-              onClick={onDiscardDraft}
-            >
+          {actions.onDiscardDraft && (
+            <button type="button" className="btn secondary small" data-testid="discard-draft-rules" disabled={!editable || actions.reviewing} onClick={actions.onDiscardDraft}>
               Discard
             </button>
           )}
-          {onReviewChanges && (
-            <button
-              type="button"
-              className="btn primary small"
-              data-testid="review-changes-rules"
-              disabled={!editable || reviewing || baselineOver}
-              onClick={onReviewChanges}
-            >
-              {reviewing ? "Reviewing…" : "Review changes"}
+          {actions.onReviewChanges && (
+            <button type="button" className="btn primary small" data-testid="review-changes-rules" disabled={!editable || actions.reviewing || over} onClick={actions.onReviewChanges}>
+              {actions.reviewing ? "Reviewing…" : "Review changes"}
             </button>
           )}
         </div>
       )}
-    </fieldset>
-    <ImportCsv snapshot={snapshot} onImported={onImported} onError={onError} disabled={!editable} label="Replace with a new CSV" />
-  </>;
-}
-
-/** Imports and saves the current portfolio. The holdings date is the user's; it is shown wherever the portfolio is. */
-export function ImportCsv({ snapshot, onImported, onError, disabled, label }: {
-  snapshot: Snapshot | null; onImported: (saved: SavedPortfolio) => void; onError: (message: string) => void; disabled?: boolean; label: string;
-}) {
-  const [asOf, setAsOf] = useState(() => new Date().toLocaleDateString("en-CA"));
-  const [currency, setCurrency] = useState(snapshot?.reporting_currency || "CAD");
-  const [busy, setBusy] = useState(false);
-  async function load(file: File) {
-    if (file.size > 1_000_000) { onError("CSV must be no larger than 1 MB."); return; }
-    onError(""); setBusy(true);
-    try { onImported(await post<SavedPortfolio>("/api/portfolio/import", { csv: await file.text(), as_of: asOf || undefined, reporting_currency: currency })); }
-    catch (failure) { onError(failure instanceof Error ? failure.message : "CSV import failed."); }
-    finally { setBusy(false); }
-  }
-  return <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-    <div className="setup">
-      <label className="field"><span className="cap">Holdings as of</span><input className="in" type="date" aria-label="Holdings as of" value={asOf} disabled={disabled} onChange={event => setAsOf(event.target.value)} /></label>
-      <label className="field"><span className="cap">Reporting currency</span><input className="in" aria-label="Reporting currency" value={currency} maxLength={3} disabled={disabled} onChange={event => setCurrency(event.target.value.toUpperCase())} /></label>
-    </div>
-    <label className="drop" style={{ position: "relative" }}>
-      <span>{busy ? "Importing…" : label}</span>
-      <input type="file" accept=".csv,text/csv" aria-label="Load portfolio CSV" disabled={disabled || busy}
-        onChange={event => { const file = event.target.files?.[0]; if (file) void load(file); event.target.value = ""; }} />
-    </label>
-    <span className="cap">Columns: account, ticker, shares, and optionally average_cost, currency (USD or CAD) and type. Exchange, name and current price are looked up; currency avoids a question when a ticker trades in both countries. Cash rows are optional. <a href="/api/portfolio/holdings-template" download>Template</a> · the <a href="/api/portfolio/template" download>full template</a> also works.</span>
-  </div>;
+    </fieldset>;
 }

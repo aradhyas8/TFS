@@ -51,7 +51,7 @@ async function open(page: Page, saved: object = SAVED) {
     if (request.url().endsWith("/api/analyze")) sentAnalyze.push(request.postDataJSON());
   });
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   return sentAnalyze;
 }
 
@@ -129,15 +129,16 @@ test("unowned ticker queries route directly to candidate lookup and Stock Analys
   expect(sent[0].portfolio.positions.some((p: any) => p.ticker === "NVDA")).toBe(true);
 });
 
-test("unknown company names with no ticker shape ask one short clarification question", async ({ page }) => {
+test("unknown company names are answered in conversation, and /stock still asks one short clarification question", async ({ page }) => {
   const sent = await open(page);
 
   await send(page, "What do you think about Shopify?");
+  await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Plain answer to: What do you think about Shopify?");
 
+  await send(page, "/stock Shopify");
   const clarification = page.getByRole("region", { name: "Clarification" });
   await expect(clarification).toBeVisible();
-  await expect(clarification).toContainText('I couldn\'t match "Shopify" to a holding in your saved portfolio.');
-  await expect(clarification).toContainText("Stock Analysis works on companies you own. Which one did you mean?");
+  await expect(clarification).toContainText('I couldn\'t find "Shopify" as a US or Canadian stock. Which holding did you mean?');
 
   expect(sent).toEqual([]);
 });
@@ -154,7 +155,7 @@ test("rebalance, owned stock, and portfolio review routes maintain precedence an
   expect(sent[0].stock?.position_id).toBe("p1");
 
   // Rebalance query
-  await page.getByRole("textbox", { name: /Ask about your portfolio or a holding/ }).fill("Should I rebalance my portfolio?");
+  await page.getByRole("textbox", { name: /type \/ for workflows/ }).fill("Should I rebalance my portfolio?");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   const rebalanceMemo = page.getByRole("region", { name: "Rebalance" });
   await expect(rebalanceMemo).toBeVisible();
@@ -162,8 +163,8 @@ test("rebalance, owned stock, and portfolio review routes maintain precedence an
   expect(sent.length).toBe(2);
   expect(sent[1].portfolio_review).toBeTruthy();
 
-  // Portfolio review query
-  await page.getByRole("textbox", { name: /Ask about your portfolio or a holding/ }).fill("Review my portfolio");
+  // Portfolio review, by its explicit shortcut
+  await page.getByRole("textbox", { name: /type \/ for workflows/ }).fill("/review Review my portfolio");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   await expect(page.locator(".ctx")).toContainText("Portfolio review");
   expect(sent.length).toBe(3);

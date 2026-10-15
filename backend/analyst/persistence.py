@@ -1,5 +1,6 @@
 """SQLite persistence foundation for portfolio revisions, artifacts, and proposals."""
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -11,19 +12,28 @@ from pathlib import Path
 from typing import Any, Generator, Literal
 
 from .schemas import (
+    ArtifactEnvelope,
     ArtifactReference,
     DifferenceItem,
+    MessageRecord,
+    MessageRole,
     PortfolioProposal,
     PortfolioProposalDetail,
     ProposalOrigin,
     ProposalReceipt,
     ProposalStatus,
     RevisionedPortfolio,
+    RunRecord,
+    RunStatus,
     SavedPortfolio,
+    SubmitMessageRequest,
+    ThreadDetail,
+    ThreadSummary,
+    ToolOutcome,
     build_artifact_payload,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 
 class SchemaMigrationError(RuntimeError):
@@ -48,6 +58,14 @@ class InvalidProposalStateError(RuntimeError):
 
 class DatabaseLockError(RuntimeError):
     """Raised when SQLite operations fail due to a lock or busy condition."""
+
+
+class ThreadNotFoundError(RuntimeError):
+    """Raised when a thread ID is not found."""
+
+
+class RunConflictError(RuntimeError):
+    """Raised when a run payload conflicts with an existing client request ID or another run is active."""
 
 
 
@@ -83,7 +101,7 @@ class Database:
             conn = sqlite3.connect(self.path, timeout=30.0)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON;")
-            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("PRAGMA busy_timeout = 30000;")
             try:
                 yield conn
                 conn.commit()
@@ -112,17 +130,93 @@ class Database:
             return int(row[0]) if row else 0
 
     def initialize(self) -> None:
-        """Initialize database schema idempotently."""
+        """Initialize database schema idempotently with forward migrations and automated backup."""
         with self.connect() as conn:
+            # Set WAL journal mode safely once outside transaction if not already WAL
+            row = conn.execute("PRAGMA journal_mode;").fetchone()
+            if not row or str(row[0]).lower() != "wal":
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL;")
+                except sqlite3.OperationalError:
+                    pass
+
+            cursor = conn.execute("PRAGMA user_version;")
+            current_version = int(cursor.fetchone()[0])
+            if current_version > SCHEMA_VERSION:
+                raise SchemaMigrationError(
+                    f"Database schema version {current_version} is higher than supported {SCHEMA_VERSION}."
+                )
+            if 0 < current_version < SCHEMA_VERSION:
+                # Backup database before forward migration (must run outside write transaction)
+                self._backup_database(conn)
+
+            conn.execute("BEGIN IMMEDIATE;")
+            # Re-read version under lock in case another process already completed migration
             cursor = conn.execute("PRAGMA user_version;")
             current_version = int(cursor.fetchone()[0])
             if current_version == 0:
                 self._apply_initial_schema(conn)
-                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
-            elif current_version > SCHEMA_VERSION:
-                raise SchemaMigrationError(
-                    f"Database schema version {current_version} is higher than supported {SCHEMA_VERSION}."
-                )
+            if current_version < 2:
+                self._apply_migration_v2(conn)
+            if current_version < 3:
+                self._apply_migration_v3(conn)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
+
+            # Backfill any missing art-rev-N artifacts for committed revisions
+            self._backfill_committed_artifacts(conn)
+
+    def _backfill_committed_artifacts(self, conn: sqlite3.Connection) -> None:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='portfolio_revisions';"
+        ).fetchone()
+        if not has_table:
+            return
+        rows = conn.execute("""
+            SELECT r.revision, r.committed_at, r.payload
+            FROM portfolio_revisions r
+            WHERE NOT EXISTS (
+                SELECT 1 FROM artifacts a
+                WHERE a.id = ('art-rev-' || r.revision)
+            );
+        """).fetchall()
+        for r in rows:
+            rev_num = int(r["revision"])
+            committed_iso = r["committed_at"]
+            try:
+                rev_port = SavedPortfolio.model_validate(json.loads(r["payload"]))
+                payload_json = json.dumps(build_artifact_payload(rev_port, projection="human"), cls=DecimalEncoder)
+            except Exception:
+                payload_json = r["payload"]
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO artifacts (
+                    id, kind, label, created_at, revision, basis,
+                    source_artifact_id, originating_run_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    f"art-rev-{rev_num}",
+                    "portfolio_snapshot",
+                    f"Committed Portfolio (rev {rev_num})",
+                    committed_iso,
+                    rev_num,
+                    "committed",
+                    None,
+                    None,
+                    payload_json,
+                ),
+            )
+
+    def _backup_database(self, source_conn: sqlite3.Connection) -> Path:
+        """Create an atomic backup using SQLite backup API before forward migration."""
+        backup_path = self.path.with_name(f"{self.path.stem}.backup{self.path.suffix}")
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        backup_conn = sqlite3.connect(backup_path)
+        try:
+            source_conn.backup(backup_conn)
+        finally:
+            backup_conn.close()
+        return backup_path
 
     def _apply_initial_schema(self, conn: sqlite3.Connection) -> None:
         # Schema metadata / migration tracker
@@ -208,18 +302,92 @@ class Database:
         """)
 
         conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?);",
-            (SCHEMA_VERSION, datetime.now(UTC).isoformat()),
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?);",
+            (datetime.now(UTC).isoformat(),),
+        )
+
+    def _apply_migration_v2(self, conn: sqlite3.Connection) -> None:
+        """Apply migration v2: conversation tables (threads, messages, runs, private_continuation)."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS threads (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS runs (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                client_request_id TEXT NOT NULL,
+                request_payload_hash TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'cancelled', 'interrupted')),
+                bound_revision INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                error TEXT,
+                message_ids_json TEXT NOT NULL,
+                artifact_ids_json TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id),
+                UNIQUE(thread_id, client_request_id)
+            );
+        """)
+
+        # At most one running run per thread at database level
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_single_running
+            ON runs(thread_id)
+            WHERE status = 'running';
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                run_id TEXT,
+                role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+                text TEXT NOT NULL,
+                citations_json TEXT NOT NULL,
+                artifact_ids_json TEXT NOT NULL,
+                clarification_required_json TEXT,
+                proposal_ids_json TEXT NOT NULL,
+                tool_outcomes_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id),
+                FOREIGN KEY (run_id) REFERENCES runs(id)
+            );
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS private_continuation (
+                run_id TEXT PRIMARY KEY,
+                continuation_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (run_id) REFERENCES runs(id)
+            );
+        """)
+
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?);",
+            (datetime.now(UTC).isoformat(),),
+        )
+
+    def _apply_migration_v3(self, conn: sqlite3.Connection) -> None:
+        """Apply migration v3: a run records the hypothetical portfolio artifact it was asked to analyze."""
+        conn.execute("ALTER TABLE runs ADD COLUMN hypothetical_artifact_id TEXT;")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?);",
+            (datetime.now(UTC).isoformat(),),
         )
 
     def store_artifact(
         self,
         reference: ArtifactReference,
-        portfolio: SavedPortfolio,
+        payload: Any,
     ) -> None:
         """Store immutable artifact payload and metadata."""
-        # Store human-projection payload natively with Decimal serialization
-        raw_payload = build_artifact_payload(portfolio, projection="human")
+        raw_payload = build_artifact_payload(payload, kind=reference.kind, projection="human")
         payload_json = json.dumps(raw_payload, cls=DecimalEncoder)
 
         with self.connect() as conn:
@@ -243,27 +411,72 @@ class Database:
                 ),
             )
 
+    def store_hypothetical_artifact(
+        self,
+        portfolio: SavedPortfolio,
+        label: str = "Hypothetical Draft Portfolio",
+        source_artifact_id: str | None = None,
+        originating_run_id: str | None = None,
+    ) -> ArtifactReference:
+        """Store immutable hypothetical draft portfolio artifact."""
+        now = datetime.now(UTC)
+        artifact_id = f"art-hypo-{uuid.uuid4().hex[:12]}"
+        if source_artifact_id is None:
+            current = self.get_current_portfolio()
+            if current:
+                with self.connect() as conn:
+                    cursor = conn.execute(
+                        "SELECT id FROM artifacts WHERE revision = ? AND basis = 'committed' ORDER BY created_at DESC LIMIT 1;",
+                        (current.revision,),
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        source_artifact_id = row["id"]
+        ref = ArtifactReference(
+            id=artifact_id,
+            kind="portfolio_snapshot",
+            label=label,
+            created_at=now,
+            revision=None,
+            basis="hypothetical",
+            source_artifact_id=source_artifact_id,
+            originating_run_id=originating_run_id,
+        )
+        self.store_artifact(ref, portfolio)
+        return ref
+
     def get_artifact(
         self,
         artifact_id: str,
         projection: Literal["human", "model"] = "human",
-    ) -> dict[str, Any] | None:
+    ) -> Any | None:
         """Retrieve stored artifact payload with the chosen projection."""
         with self.connect() as conn:
             cursor = conn.execute(
-                "SELECT payload_json FROM artifacts WHERE id = ?;",
+                "SELECT kind, payload_json FROM artifacts WHERE id = ?;",
                 (artifact_id,),
             )
             row = cursor.fetchone()
             if not row:
                 return None
             data = json.loads(row["payload_json"])
+            kind = row["kind"]
 
-            if projection == "model":
-                data["average_costs"] = {}
-                for item in data.get("unresolved", []):
-                    item["average_cost"] = None
-            return data
+            return build_artifact_payload(data, kind=kind, projection=projection)
+
+    def get_artifact_envelope(
+        self,
+        artifact_id: str,
+        projection: Literal["human", "model"] = "human",
+    ) -> ArtifactEnvelope | None:
+        """Retrieve stored artifact envelope containing reference and projected payload."""
+        ref = self.get_artifact_reference(artifact_id)
+        if not ref:
+            return None
+        payload = self.get_artifact(artifact_id, projection=projection)
+        if payload is None:
+            return None
+        return ArtifactEnvelope(reference=ref, payload=payload)
 
     def get_artifact_reference(self, artifact_id: str) -> ArtifactReference | None:
         """Retrieve artifact reference metadata without the full payload."""
@@ -301,6 +514,7 @@ class Database:
         """Import legacy current.json into revision 1 without enrichment, atomically."""
         path = Path(legacy_json_path) if legacy_json_path else None
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE;")
             # Check if migration has already been recorded
             cursor = conn.execute(
                 "SELECT value FROM metadata WHERE key = 'legacy_migration';"
@@ -341,6 +555,26 @@ class Database:
                 """,
                 (now_iso,),
             )
+            art_id = "art-rev-1"
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO artifacts (
+                    id, kind, label, created_at, revision, basis,
+                    source_artifact_id, originating_run_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    art_id,
+                    "portfolio_snapshot",
+                    "Committed Portfolio (rev 1)",
+                    committed_at,
+                    1,
+                    "committed",
+                    None,
+                    None,
+                    json.dumps(build_artifact_payload(portfolio, projection="human"), cls=DecimalEncoder),
+                ),
+            )
             conn.execute(
                 "INSERT OR IGNORE INTO metadata (key, value, updated_at) VALUES ('legacy_migration', 'completed', ?);",
                 (now_iso,),
@@ -368,6 +602,20 @@ class Database:
                 committed_at=datetime.fromisoformat(row["committed_at"]),
             )
 
+    def get_portfolio_revision(self, revision: int) -> RevisionedPortfolio | None:
+        """Read an immutable run basis without consulting the current pointer."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT revision, committed_at, payload FROM portfolio_revisions WHERE revision = ?;",
+                (revision,),
+            ).fetchone()
+            if row is None:
+                return None
+            return RevisionedPortfolio(
+                revision=row["revision"], committed_at=datetime.fromisoformat(row["committed_at"]),
+                portfolio=SavedPortfolio.model_validate_json(row["payload"]),
+            )
+
     def save_revision(self, portfolio: SavedPortfolio) -> RevisionedPortfolio:
         """Save a new committed revision and advance the current pointer atomically."""
         now = datetime.now(UTC)
@@ -391,6 +639,26 @@ class Database:
                 ON CONFLICT(id) DO UPDATE SET current_revision = excluded.current_revision, updated_at = excluded.updated_at;
                 """,
                 (next_rev, committed_at_iso),
+            )
+            art_id = f"art-rev-{next_rev}"
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO artifacts (
+                    id, kind, label, created_at, revision, basis,
+                    source_artifact_id, originating_run_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    art_id,
+                    "portfolio_snapshot",
+                    f"Committed Portfolio (rev {next_rev})",
+                    committed_at_iso,
+                    next_rev,
+                    "committed",
+                    None,
+                    None,
+                    json.dumps(build_artifact_payload(portfolio_with_saved_at, projection="human"), cls=DecimalEncoder),
+                ),
             )
             return RevisionedPortfolio(
                 revision=next_rev,
@@ -665,6 +933,8 @@ class Database:
     ) -> tuple[RevisionedPortfolio, ProposalReceipt]:
         """Atomically commit a proposal, creating a new revision, receipt, updating current pointer, and marking competing proposals stale."""
         with self.connect() as conn:
+            # Reserve the writer before reading status or allocating the next revision.
+            conn.execute("BEGIN IMMEDIATE;")
             cursor = conn.execute(
                 """
                 SELECT p.id, p.base_revision, p.status, p.after_artifact_id,
@@ -752,6 +1022,27 @@ class Database:
                 (next_rev, now_iso),
             )
 
+            art_id = f"art-rev-{next_rev}"
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO artifacts (
+                    id, kind, label, created_at, revision, basis,
+                    source_artifact_id, originating_run_id, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    art_id,
+                    "portfolio_snapshot",
+                    f"Committed Portfolio (rev {next_rev})",
+                    now_iso,
+                    next_rev,
+                    "committed",
+                    row["after_artifact_id"],
+                    None,
+                    json.dumps(build_artifact_payload(candidate_portfolio, projection="human"), cls=DecimalEncoder),
+                ),
+            )
+
             conn.execute(
                 "UPDATE proposals SET status = 'applied' WHERE id = ?;",
                 (proposal_id,),
@@ -807,6 +1098,529 @@ class Database:
                 (proposal_id,),
             )
             return "cancelled"
+
+    # =========================================================================
+    # Conversation & Run Lifecycle Methods (Ticket 03)
+    # =========================================================================
+
+    def create_thread(self, thread_id: str | None = None) -> ThreadSummary:
+        """Create a new conversation thread idempotently."""
+        tid = thread_id or f"th-{uuid.uuid4().hex[:12]}"
+        now = datetime.now(UTC)
+        now_iso = now.isoformat()
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO threads (id, created_at, updated_at) VALUES (?, ?, ?);",
+                (tid, now_iso, now_iso),
+            )
+            cursor = conn.execute("SELECT created_at, updated_at FROM threads WHERE id = ?;", (tid,))
+            row = cursor.fetchone()
+            if row:
+                created = datetime.fromisoformat(row["created_at"])
+                updated = datetime.fromisoformat(row["updated_at"])
+            else:
+                created = now
+                updated = now
+        return ThreadSummary(
+            id=tid,
+            created_at=created,
+            updated_at=updated,
+            last_message_preview=None,
+        )
+
+    def list_threads(self) -> list[ThreadSummary]:
+        """List conversation threads ordered by updated_at descending with last message preview."""
+        with self.connect() as conn:
+            cursor = conn.execute("""
+                SELECT t.id, t.created_at, t.updated_at,
+                       (SELECT m.text FROM messages m WHERE m.thread_id = t.id ORDER BY m.created_at DESC LIMIT 1) as last_msg,
+                       (SELECT m.text FROM messages m WHERE m.thread_id = t.id AND m.role = 'user'
+                        ORDER BY m.created_at ASC LIMIT 1) as title
+                FROM threads t
+                ORDER BY t.updated_at DESC;
+            """)
+            rows = cursor.fetchall()
+            summaries: list[ThreadSummary] = []
+            for r in rows:
+                preview = r["last_msg"]
+                if preview and len(preview) > 120:
+                    preview = preview[:117] + "..."
+                title = r["title"]
+                if title and len(title) > 120:
+                    title = title[:117] + "..."
+                summaries.append(
+                    ThreadSummary(
+                        id=r["id"],
+                        created_at=datetime.fromisoformat(r["created_at"]),
+                        updated_at=datetime.fromisoformat(r["updated_at"]),
+                        last_message_preview=preview,
+                        title=title,
+                    )
+                )
+            return summaries
+
+    def get_thread(self, thread_id: str) -> ThreadDetail | None:
+        """Get thread detail including ordered messages and runs."""
+        with self.connect() as conn:
+            cursor = conn.execute("SELECT id, created_at, updated_at FROM threads WHERE id = ?;", (thread_id,))
+            t_row = cursor.fetchone()
+            if not t_row:
+                return None
+
+            msg_cursor = conn.execute(
+                """
+                SELECT id, thread_id, run_id, role, text, citations_json, artifact_ids_json,
+                       clarification_required_json, proposal_ids_json, tool_outcomes_json, created_at
+                FROM messages
+                WHERE thread_id = ?
+                ORDER BY created_at ASC;
+                """,
+                (thread_id,),
+            )
+            messages = [self._row_to_message(m) for m in msg_cursor.fetchall()]
+
+            run_cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, status, bound_revision,
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
+                FROM runs
+                WHERE thread_id = ?
+                ORDER BY created_at ASC;
+                """,
+                (thread_id,),
+            )
+            runs = [self._row_to_run(rn) for rn in run_cursor.fetchall()]
+
+            return ThreadDetail(
+                id=t_row["id"],
+                created_at=datetime.fromisoformat(t_row["created_at"]),
+                updated_at=datetime.fromisoformat(t_row["updated_at"]),
+                messages=messages,
+                runs=runs,
+            )
+
+    def read_messages(
+        self, thread_id: str, *, limit: int = 20,
+        before_id: str | None = None, through_id: str,
+    ) -> list[MessageRecord]:
+        """Read a bounded chronological slice, capped at the accepted user message."""
+        if not 1 <= limit <= 20:
+            raise ValueError("Message limit must be between 1 and 20.")
+        with self.connect() as conn:
+            end = conn.execute(
+                "SELECT rowid FROM messages WHERE id = ? AND thread_id = ?;",
+                (through_id, thread_id),
+            ).fetchone()
+            if end is None:
+                raise ValueError("Message boundary not found.")
+            cutoff = end[0] + 1
+            if before_id is not None:
+                before = conn.execute(
+                    "SELECT rowid FROM messages WHERE id = ? AND thread_id = ?;",
+                    (before_id, thread_id),
+                ).fetchone()
+                if before is None or before[0] > end[0]:
+                    raise ValueError("Message cursor not found.")
+                cutoff = before[0]
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE thread_id = ? AND rowid < ? "
+                "ORDER BY rowid DESC LIMIT ?;", (thread_id, cutoff, limit),
+            ).fetchall()
+            return [self._row_to_message(row) for row in reversed(rows)]
+
+    def submit_message(
+        self,
+        thread_id: str,
+        request: SubmitMessageRequest,
+        bound_revision: int | None,
+    ) -> tuple[RunRecord, bool]:
+        """
+        Submit a message to a thread transactionally.
+        Returns (RunRecord, is_new).
+        Raises ThreadNotFoundError if thread does not exist.
+        Raises RunConflictError if payload differs for matching client_request_id or competing run is running.
+        """
+        # Canonical hash of request payload
+        payload_dict = {
+            "client_request_id": request.client_request_id,
+            "text": request.text,
+            "workflow_input": request.workflow_input,
+            "hypothetical_artifact_id": request.hypothetical_artifact_id,
+        }
+        canonical_str = json.dumps(payload_dict, sort_keys=True, cls=DecimalEncoder)
+        payload_hash = hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
+
+        with self.connect() as conn:
+            # Check thread existence
+            cursor = conn.execute("SELECT id FROM threads WHERE id = ?;", (thread_id,))
+            if not cursor.fetchone():
+                raise ThreadNotFoundError(f"Thread '{thread_id}' not found.")
+
+            # Check if run with same client_request_id already exists in this thread
+            cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, request_payload_hash, status,
+                       bound_revision, created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
+                FROM runs
+                WHERE thread_id = ? AND client_request_id = ?;
+                """,
+                (thread_id, request.client_request_id),
+            )
+            existing_run = cursor.fetchone()
+            if existing_run:
+                if existing_run["request_payload_hash"] == payload_hash:
+                    # Idempotent match: return existing run
+                    return self._row_to_run(existing_run), False
+                else:
+                    raise RunConflictError(
+                        f"Client request ID '{request.client_request_id}' has already been submitted with a different payload."
+                    )
+
+            # Check if there is already an active running run on this thread
+            cursor = conn.execute(
+                "SELECT id FROM runs WHERE thread_id = ? AND status = 'running';",
+                (thread_id,),
+            )
+            if cursor.fetchone():
+                raise RunConflictError(
+                    f"Thread '{thread_id}' already has an active running run. Only one running run per thread is permitted."
+                )
+
+            # Insert new run first, then initial user message (to satisfy foreign key from messages to runs)
+            run_id = f"run-{uuid.uuid4().hex[:12]}"
+            msg_id = f"msg-{uuid.uuid4().hex[:12]}"
+            now = datetime.now(UTC)
+            now_iso = now.isoformat()
+
+            conn.execute(
+                """
+                INSERT INTO runs (
+                    id, thread_id, client_request_id, request_payload_hash, status,
+                    bound_revision, created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                    hypothetical_artifact_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    run_id,
+                    thread_id,
+                    request.client_request_id,
+                    payload_hash,
+                    "running",
+                    bound_revision,
+                    now_iso,
+                    now_iso,
+                    None,
+                    json.dumps([msg_id]),
+                    "[]",
+                    request.hypothetical_artifact_id,
+                ),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO messages (
+                    id, thread_id, run_id, role, text, citations_json, artifact_ids_json,
+                    clarification_required_json, proposal_ids_json, tool_outcomes_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    msg_id,
+                    thread_id,
+                    run_id,
+                    "user",
+                    request.text,
+                    "[]",
+                    "[]",
+                    None,
+                    "[]",
+                    "[]",
+                    now_iso,
+                ),
+            )
+
+            # Update thread updated_at
+            conn.execute("UPDATE threads SET updated_at = ? WHERE id = ?;", (now_iso, thread_id))
+
+            run_record = RunRecord(
+                id=run_id,
+                thread_id=thread_id,
+                client_request_id=request.client_request_id,
+                status="running",
+                bound_revision=bound_revision,
+                created_at=now,
+                updated_at=now,
+                error=None,
+                message_ids=[msg_id],
+                artifact_ids=[],
+                hypothetical_artifact_id=request.hypothetical_artifact_id,
+            )
+            return run_record, True
+
+    def get_run(self, thread_id: str, run_id: str) -> RunRecord | None:
+        """Get run record ensuring cross-thread lookup returns None."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, status, bound_revision,
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
+                FROM runs
+                WHERE id = ? AND thread_id = ?;
+                """,
+                (run_id, thread_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._row_to_run(row)
+
+    def cancel_run(self, thread_id: str, run_id: str) -> RunRecord | None:
+        """
+        Cancel a run if currently running.
+        Atomically updates status to 'cancelled'. If already in a terminal state, preserves it.
+        Returns the updated/current RunRecord, or None if not found in this thread.
+        """
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, status, bound_revision,
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
+                FROM runs
+                WHERE id = ? AND thread_id = ?;
+                """,
+                (run_id, thread_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            status = row["status"]
+            if status == "running":
+                now_iso = datetime.now(UTC).isoformat()
+                conn.execute(
+                    "UPDATE runs SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'running';",
+                    (now_iso, run_id),
+                )
+                conn.execute("UPDATE threads SET updated_at = ? WHERE id = ?;", (now_iso, thread_id))
+                # Re-fetch
+                cursor = conn.execute(
+                    """
+                    SELECT id, thread_id, client_request_id, status, bound_revision,
+                           created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                           hypothetical_artifact_id
+                    FROM runs
+                    WHERE id = ?;
+                    """,
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+
+            return self._row_to_run(row)
+
+    def update_run(
+        self,
+        run_id: str,
+        status: RunStatus,
+        error: str | None = None,
+        additional_message_ids: list[str] | None = None,
+        additional_artifact_ids: list[str] | None = None,
+    ) -> RunRecord | None:
+        """
+        Atomically update run status, ensuring terminal states cannot be overwritten.
+        Only transitions if current status is 'running'.
+        """
+        now = datetime.now(UTC)
+        now_iso = now.isoformat()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, status, bound_revision,
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
+                FROM runs
+                WHERE id = ?;
+                """,
+                (run_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            current_status = row["status"]
+            if current_status != "running":
+                # Terminal state already reached; do not overwrite!
+                return self._row_to_run(row)
+
+            msg_ids = json.loads(row["message_ids_json"])
+            if additional_message_ids:
+                for mid in additional_message_ids:
+                    if mid not in msg_ids:
+                        msg_ids.append(mid)
+
+            art_ids = json.loads(row["artifact_ids_json"])
+            if additional_artifact_ids:
+                for aid in additional_artifact_ids:
+                    if aid not in art_ids:
+                        art_ids.append(aid)
+
+            conn.execute(
+                """
+                UPDATE runs
+                SET status = ?, updated_at = ?, error = ?, message_ids_json = ?, artifact_ids_json = ?
+                WHERE id = ? AND status = 'running';
+                """,
+                (
+                    status,
+                    now_iso,
+                    error,
+                    json.dumps(msg_ids),
+                    json.dumps(art_ids),
+                    run_id,
+                ),
+            )
+            conn.execute("UPDATE threads SET updated_at = ? WHERE id = ?;", (now_iso, row["thread_id"]))
+
+            # Re-read
+            cursor = conn.execute(
+                """
+                SELECT id, thread_id, client_request_id, status, bound_revision,
+                       created_at, updated_at, error, message_ids_json, artifact_ids_json,
+                       hypothetical_artifact_id
+                FROM runs
+                WHERE id = ?;
+                """,
+                (run_id,),
+            )
+            updated_row = cursor.fetchone()
+            return self._row_to_run(updated_row)
+
+    def add_message(
+        self,
+        thread_id: str,
+        role: MessageRole,
+        text: str,
+        run_id: str | None = None,
+        citations: list[dict[str, Any]] | None = None,
+        artifact_ids: list[str] | None = None,
+        clarification_required: dict[str, Any] | None = None,
+        proposal_ids: list[str] | None = None,
+        tool_outcomes: list[ToolOutcome] | None = None,
+    ) -> MessageRecord:
+        """Add an assistant or user message to a thread."""
+        msg_id = f"msg-{uuid.uuid4().hex[:12]}"
+        now = datetime.now(UTC)
+        now_iso = now.isoformat()
+        tool_outcomes_dicts = [t.model_dump(mode="python") for t in (tool_outcomes or [])]
+
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO messages (
+                    id, thread_id, run_id, role, text, citations_json, artifact_ids_json,
+                    clarification_required_json, proposal_ids_json, tool_outcomes_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    msg_id,
+                    thread_id,
+                    run_id,
+                    role,
+                    text,
+                    json.dumps(citations or []),
+                    json.dumps(artifact_ids or []),
+                    json.dumps(clarification_required) if clarification_required else None,
+                    json.dumps(proposal_ids or []),
+                    json.dumps(tool_outcomes_dicts, cls=DecimalEncoder),
+                    now_iso,
+                ),
+            )
+            conn.execute("UPDATE threads SET updated_at = ? WHERE id = ?;", (now_iso, thread_id))
+
+        return MessageRecord(
+            id=msg_id,
+            thread_id=thread_id,
+            run_id=run_id,
+            role=role,
+            text=text,
+            citations=citations or [],
+            artifact_ids=artifact_ids or [],
+            clarification_required=clarification_required,
+            proposal_ids=proposal_ids or [],
+            tool_outcomes=tool_outcomes or [],
+            created_at=now,
+        )
+
+    def store_private_continuation(self, run_id: str, continuation: Any) -> None:
+        """Store private model continuation items in server-only table."""
+        now_iso = datetime.now(UTC).isoformat()
+        continuation_json = json.dumps(continuation, cls=DecimalEncoder)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO private_continuation (run_id, continuation_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET continuation_json = excluded.continuation_json, updated_at = excluded.updated_at;
+                """,
+                (run_id, continuation_json, now_iso),
+            )
+
+    def get_private_continuation(self, run_id: str) -> Any | None:
+        """Retrieve private continuation for a run."""
+        with self.connect() as conn:
+            cursor = conn.execute("SELECT continuation_json FROM private_continuation WHERE run_id = ?;", (run_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return json.loads(row["continuation_json"])
+
+    def recover_interrupted_runs(self) -> int:
+        """
+        Mark all currently 'running' runs as 'interrupted' upon process restart without replaying.
+        Returns the number of runs transitioned.
+        """
+        now_iso = datetime.now(UTC).isoformat()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE runs SET status = 'interrupted', updated_at = ? WHERE status = 'running';",
+                (now_iso,),
+            )
+            return cursor.rowcount
+
+    def _row_to_run(self, row: sqlite3.Row) -> RunRecord:
+        return RunRecord(
+            id=row["id"],
+            thread_id=row["thread_id"],
+            client_request_id=row["client_request_id"],
+            status=row["status"],
+            bound_revision=row["bound_revision"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+            error=row["error"],
+            message_ids=json.loads(row["message_ids_json"]),
+            artifact_ids=json.loads(row["artifact_ids_json"]),
+            hypothetical_artifact_id=row["hypothetical_artifact_id"],
+        )
+
+    def _row_to_message(self, row: sqlite3.Row) -> MessageRecord:
+        tool_outcomes_raw = json.loads(row["tool_outcomes_json"])
+        outcomes = [ToolOutcome.model_validate(o) for o in tool_outcomes_raw]
+        clarification = json.loads(row["clarification_required_json"]) if row["clarification_required_json"] else None
+        return MessageRecord(
+            id=row["id"],
+            thread_id=row["thread_id"],
+            run_id=row["run_id"],
+            role=row["role"],
+            text=row["text"],
+            citations=json.loads(row["citations_json"]),
+            artifact_ids=json.loads(row["artifact_ids_json"]),
+            clarification_required=clarification,
+            proposal_ids=json.loads(row["proposal_ids_json"]),
+            tool_outcomes=outcomes,
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
 
 
 

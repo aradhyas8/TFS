@@ -42,18 +42,19 @@ const SAVED = {
   unresolved: [],
 };
 
+import { openDetails, seedPortfolio } from "./test_helpers";
+
 async function open(page: Page, saved: object = SAVED) {
   await page.route("**/*", route =>
     ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort()
   );
-  await page.request.delete("/api/test/portfolio");
-  expect((await page.request.put("/api/portfolio", { data: saved })).ok()).toBeTruthy();
+  await seedPortfolio(page, saved);
   const sent: any[] = [];
   page.on("request", request => {
     if (request.url().endsWith("/api/analyze")) sent.push(request.postDataJSON());
   });
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   return sent;
 }
 
@@ -161,7 +162,7 @@ test("theme discovery full flow: form, agreement card, edit clearing, agreed res
   // Candidate verdicts: ACME challenges with primary citation
   const acmeTest = page.getByTestId("test-tfsa-acme");
   await expect(acmeTest).toBeVisible();
-  await expect(acmeTest.locator(".verdict")).toHaveText("challenges");
+  await expect(acmeTest.locator(".verdict")).toHaveText("Challenges");
   await expect(acmeTest).toContainText("Reported revenue does not establish that automation demand improves margins.");
   // Citation button
   await expect(acmeTest.getByRole("button", { name: "Source 1" })).toBeAttached();
@@ -169,7 +170,7 @@ test("theme discovery full flow: form, agreement card, edit clearing, agreed res
   // SPY candidate without dated fund facts honestly renders verdict as unknown
   const spyTest = page.getByTestId("test-candidate-SPY-XNYS");
   await expect(spyTest).toBeVisible();
-  await expect(spyTest.locator(".verdict")).toHaveText("unknown");
+  await expect(spyTest.locator(".verdict")).toHaveText("Unknown");
   await expect(spyTest).toContainText("Fund facts and dated sponsor holdings are missing; verdict and overlap remain unknown.");
 
   // Exposure row contains unknown look-through note for SPY
@@ -181,7 +182,7 @@ test("theme discovery full flow: form, agreement card, edit clearing, agreed res
 
   // 7. Check Scenarios tab renders company cases
   await memo.getByRole("button", { name: /Scenarios/ }).click();
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await expect(details.getByRole("tab", { name: "Scenarios" })).toHaveAttribute("aria-selected", "true");
   await expect(details).toContainText("Acme Corp · per share, discounted to today");
   await expect(details.locator(".case")).toHaveCount(3);
@@ -202,7 +203,7 @@ test("theme discovery full flow: form, agreement card, edit clearing, agreed res
 
 test("starters button opens /theme workflow in composer", async ({ page }) => {
   await open(page);
-  const starter = page.getByRole("button", { name: /\/theme Test an idea/ });
+  const starter = page.getByRole("button", { name: "Test a theme" });
   await expect(starter).toBeVisible();
   await starter.click();
 

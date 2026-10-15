@@ -151,10 +151,21 @@ function extractError(data: unknown): string {
   return "The request could not be completed.";
 }
 
+/** The JSON body of a response. A failed response whose body is not JSON (a proxy or server error page) reads as a
+ *  plain message naming its status, never as a parsing error. */
+async function readBody(response: Response): Promise<any> {
+  try {
+    return await response.json();
+  } catch {
+    if (response.ok) throw new Error("The analyst service sent a reply that could not be read. Try again.");
+    return { detail: `The analyst service had an error (HTTP ${response.status}). Try again.` };
+  }
+}
+
 export async function put<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000) });
-  const data = await response.json();
+  const data = await readBody(response);
   if (!response.ok) throw new Error(extractError(data));
   return data as T;
 }
@@ -171,7 +182,8 @@ export type ReunderwritingResult = { context: PortfolioReviewInput; research: Re
     action: string; current_thesis: string; change_reason: string; downside: string; what_could_change: string[]; evidence_ids: string[] }[];
   qualifications: string[] };
 export type Analysis = { status: "completed"; question: string; portfolio: Review; recommendation: Recommendation;
-  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null; allocation: AllocationResult | null; reunderwriting: ReunderwritingResult | null; theme: ThemeResult | null };
+  proposals: ProposalReview[]; comparison: ComparisonResult | null; stock: StockResult | null; allocation: AllocationResult | null; reunderwriting: ReunderwritingResult | null; theme: ThemeResult | null;
+  artifact_reference?: ArtifactReference | null };
 
 export type DecisionAction =
   | "review_only"
@@ -252,6 +264,7 @@ export type SavedDecision = {
   confirmed_action: UserConfirmedAction | null;
   workflow?: DecisionWorkflow | null;
   subject?: DecisionSubject | null;
+  artifact_id?: string | null;
 };
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -263,9 +276,10 @@ export async function get<T>(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Prom
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(timeoutMs),
   });
-  const data = await response.json();
+  const data = await readBody(response);
   if (!response.ok) {
-    throw new Error(typeof data.detail === "string" ? data.detail : "The request could not be completed.");
+    // The status lets a caller tell a record that no longer exists from a request that merely failed.
+    throw Object.assign(new Error(typeof data.detail === "string" ? data.detail : "The request could not be completed."), { status: response.status });
   }
   return data as T;
 }
@@ -276,7 +290,7 @@ export async function post<T>(path: string, body: unknown, timeoutMs?: number): 
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeout),
   });
-  const data = await response.json();
+  const data = await readBody(response);
   if (!response.ok) {
     const fields = Array.isArray(data.fields) ? ` Fields: ${data.fields.join(", ")}` : "";
     throw new Error(extractError(data) + fields);
@@ -379,7 +393,13 @@ export type RevisionedPortfolio = {
 };
 
 export type ArtifactBasis = "committed" | "hypothetical" | "none";
-export type ArtifactKind = "portfolio_snapshot";
+export type ArtifactKind =
+  | "portfolio_snapshot"
+  | "analysis_result"
+  | "company_research"
+  | "financial_evidence"
+  | "calculation_result"
+  | "web_research";
 
 export type ArtifactReference = {
   id: string;
@@ -390,6 +410,11 @@ export type ArtifactReference = {
   basis: ArtifactBasis;
   source_artifact_id?: string | null;
   originating_run_id?: string | null;
+};
+
+export type ArtifactEnvelope<T = unknown> = {
+  reference: ArtifactReference;
+  payload: T;
 };
 
 export type ProposalStatus = "pending" | "applied" | "cancelled" | "stale";
@@ -470,7 +495,7 @@ export async function postEmpty<T>(path: string, timeoutMs?: number): Promise<T>
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(timeout),
   });
-  const data = await response.json();
+  const data = await readBody(response);
   if (!response.ok) {
     throw new Error(extractError(data));
   }
@@ -479,6 +504,15 @@ export async function postEmpty<T>(path: string, timeoutMs?: number): Promise<T>
 
 export async function prepareUpdate(request: UpdatePortfolioRequest): Promise<PreparationResult> {
   return put<PreparationResult>("/api/portfolio", request);
+}
+
+export async function prepareImport(request: ImportPortfolioRequest): Promise<PreparationResult> {
+  return post<PreparationResult>("/api/portfolio/import", request);
+}
+
+export async function listProposals(status?: ProposalStatus): Promise<PortfolioProposal[]> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+  return get<PortfolioProposal[]>(`/api/portfolio/proposals${query}`);
 }
 
 export async function confirmProposal(proposalId: string): Promise<ConfirmationResult> {
@@ -493,5 +527,123 @@ export async function getProposalDetail(proposalId: string): Promise<PortfolioPr
   return get<PortfolioProposalDetail>(`/api/portfolio/proposals/${proposalId}`);
 }
 
+export type CreateArtifactRequest = {
+  portfolio: SavedPortfolio;
+  label?: string;
+  source_artifact_id?: string | null;
+  originating_run_id?: string | null;
+};
+
+export async function createArtifact(request: CreateArtifactRequest): Promise<ArtifactReference> {
+  return post<ArtifactReference>("/api/portfolio/artifacts", request);
+}
+
+export async function getArtifactReference(artifactId: string): Promise<ArtifactReference> {
+  return get<ArtifactReference>(`/api/portfolio/artifacts/${artifactId}`);
+}
+
+export async function getArtifact<T = unknown>(
+  artifactId: string,
+  projection: "human" | "model" = "human"
+): Promise<ArtifactEnvelope<T>> {
+  return get<ArtifactEnvelope<T>>(`/api/artifacts/${artifactId}?projection=${projection}`);
+}
+
+export async function prepareIdentifyHolding(
+  request: IdentifyHoldingRequest
+): Promise<PreparationResult> {
+  return post<PreparationResult>("/api/portfolio/identify", request);
+}
+
+export type RunStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export type MessageRole = "user" | "assistant" | "system";
+
+export type ToolOutcome = {
+  id: string;
+  name: string;
+  status: "success" | "error";
+  error?: string | null;
+  artifact_ids: string[];
+};
+
+export type MessageRecord = {
+  id: string;
+  thread_id: string;
+  run_id?: string | null;
+  role: MessageRole;
+  text: string;
+  citations: Array<Record<string, unknown>>;
+  artifact_ids: string[];
+  clarification_required?: Record<string, unknown> | null;
+  proposal_ids: string[];
+  tool_outcomes: ToolOutcome[];
+  created_at: string;
+};
+
+export type ThreadSummary = {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  last_message_preview?: string | null;
+  /** The thread's first question. */
+  title?: string | null;
+};
+
+export type RunRecord = {
+  id: string;
+  thread_id: string;
+  client_request_id: string;
+  status: RunStatus;
+  bound_revision?: number | null;
+  created_at: string;
+  updated_at: string;
+  error?: string | null;
+  message_ids: string[];
+  artifact_ids: string[];
+  /** The stored draft this run analyzed instead of the saved portfolio. */
+  hypothetical_artifact_id?: string | null;
+};
+
+export type ThreadDetail = {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  messages: MessageRecord[];
+  runs: RunRecord[];
+};
+
+export type SubmitMessageRequest = {
+  client_request_id: string;
+  text: string;
+  workflow_input?: Record<string, unknown> | null;
+  hypothetical_artifact_id?: string | null;
+};
+
+export async function createThread(id?: string): Promise<ThreadSummary> {
+  return id ? post<ThreadSummary>("/api/threads", { id }) : postEmpty<ThreadSummary>("/api/threads");
+}
+
+export async function listThreads(): Promise<ThreadSummary[]> {
+  return get<ThreadSummary[]>("/api/threads");
+}
+
+export async function getThread(threadId: string): Promise<ThreadDetail> {
+  return get<ThreadDetail>(`/api/threads/${threadId}`);
+}
+
+export async function submitThreadMessage(
+  threadId: string,
+  request: SubmitMessageRequest
+): Promise<RunRecord> {
+  return post<RunRecord>(`/api/threads/${threadId}/messages`, request);
+}
+
+export async function getThreadRun(threadId: string, runId: string): Promise<RunRecord> {
+  return get<RunRecord>(`/api/threads/${threadId}/runs/${runId}`);
+}
+
+export async function cancelThreadRun(threadId: string, runId: string): Promise<RunRecord> {
+  return postEmpty<RunRecord>(`/api/threads/${threadId}/runs/${runId}/cancel`);
+}
 
 

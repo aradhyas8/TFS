@@ -1,0 +1,18 @@
+.connection { position: relative; z-index: 8; padding: 12px 24px; border-bottom: 1px solid var(--border-subtle); font: 13px/1.5 var(--font-body); color: var(--foreground); background: var(--background); }
+.bar { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; }
+.caption { color: var(--text-secondary); font-size: 12px; }
+.details summary { cursor: pointer; min-height: 36px; display: flex; align-items: center; gap: 4px; border-radius: var(--radius-pill); padding: 4px 12px; background: var(--surface); }
+.card { position: absolute; right: 24px; top: calc(100% + 8px); width: min(400px, calc(100vw - 32px)); max-height: 75vh; overflow: auto; padding: 24px; border-radius: 20px; background: var(--surface-raised); box-shadow: var(--shadow-floating); }
+.card h2 { font-size: var(--text-lg); font-weight: 500; margin: 0 0 12px; }
+.card p { margin: 0 0 16px; }
+.account { overflow-wrap: anywhere; font-weight: 500; }
+.card strong { font-weight: 500; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.models { display: grid; gap: 8px; margin-top: 20px; }
+.models select { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; background: var(--surface); color: var(--foreground); font: inherit; }
+.api { margin: 24px 0 16px; padding-top: 16px; border-top: 1px solid var(--border-subtle); }
+.error, .card [data-state="failed"] { color: var(--danger); }
+.card [data-state="connected"] { color: var(--success-strong); }
+.card [data-state="connecting"], .card [data-state="expired"] { color: var(--warning-strong); }
+@media (max-width: 767px) { .connection { padding: 12px 16px; } .caption { flex: 1; } .card { right: 16px; padding: 20px; } .details summary { min-height: 44px; } }
+@media (max-width: 1023px) { .connection :is(button, summary) { min-height: 44px; } }

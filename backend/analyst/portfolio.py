@@ -4,20 +4,24 @@ import csv
 import io
 import os
 import re
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .csv_input import COLUMNS, load_csv
 from .financial_data import SOURCE_ERRORS
+from .persistence import Database
 from .schemas import (
     CANADIAN_LISTINGS,
     US_LISTINGS,
+    ArtifactEnvelope,
+    ArtifactReference,
     CSVRequest,
     FinancialEvidence,
     IdentifyHolding,
     Position,
+    RevisionedPortfolio,
     SavedPortfolio,
     Snapshot,
     UnresolvedHolding,
@@ -205,10 +209,6 @@ async def enrich(saved: SavedPortfolio, provider: Any) -> SavedPortfolio:
     return saved.model_copy(update={"snapshot": snapshot, "average_costs": costs, "unresolved": unresolved})
 
 
-from .persistence import Database
-from .schemas import RevisionedPortfolio
-
-
 class PortfolioStore:
     """Revisioned portfolio storage backed by SQLite with safe legacy JSON migration."""
 
@@ -233,5 +233,40 @@ class PortfolioStore:
         """Save a new committed revision (bridges mutations until ticket 03/04 converts them)."""
         revisioned = self.db.save_revision(record)
         return revisioned.portfolio
+
+    def store_hypothetical_artifact(
+        self,
+        portfolio: SavedPortfolio,
+        label: str = "Hypothetical Draft Portfolio",
+        source_artifact_id: str | None = None,
+        originating_run_id: str | None = None,
+    ) -> ArtifactReference:
+        """Store immutable hypothetical draft portfolio artifact."""
+        return self.db.store_hypothetical_artifact(
+            portfolio,
+            label=label,
+            source_artifact_id=source_artifact_id,
+            originating_run_id=originating_run_id,
+        )
+
+    def get_artifact(
+        self,
+        artifact_id: str,
+        projection: Literal["human", "model"] = "human",
+    ) -> Any | None:
+        """Retrieve stored artifact payload."""
+        return self.db.get_artifact(artifact_id, projection=projection)
+
+    def get_artifact_reference(self, artifact_id: str) -> ArtifactReference | None:
+        """Retrieve artifact reference metadata."""
+        return self.db.get_artifact_reference(artifact_id)
+
+    def get_artifact_envelope(
+        self,
+        artifact_id: str,
+        projection: Literal["human", "model"] = "human",
+    ) -> ArtifactEnvelope | None:
+        """Retrieve stored artifact envelope containing reference and projected payload."""
+        return self.db.get_artifact_envelope(artifact_id, projection=projection)
 
 

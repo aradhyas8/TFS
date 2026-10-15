@@ -1,0 +1,91 @@
+/* Thread view in Direction 5: Arc components on Arc's semantic tokens. */
+.thread { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-5); font-family: var(--font-body); font-size: 15px; line-height: 24px; color: var(--foreground); }
+.thread p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* The question: a warm bubble on the right. */
+.user { display: flex; flex-direction: column; align-items: flex-end; gap: var(--space-1); }
+.bubble { max-width: min(84%, 34rem); padding: 10px 16px; background: var(--surface-muted); border-radius: 20px 20px 6px 20px; }
+.unsent { color: var(--text-secondary); border: 1px dashed var(--border-strong); background: transparent; }
+.status { font-size: var(--text-xs); color: var(--text-muted); }
+
+/* The answer: plain ink text on the page, no bubble. */
+.assistant { display: flex; flex-direction: column; gap: var(--space-3); color: var(--foreground); }
+.stepGroup { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+
+/* What the analyst did: one status mark, then each step. */
+.step { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 12.5px; line-height: 18px; color: var(--text-muted); }
+.stepText + .stepText::before { content: "·"; margin-right: 6px; }
+.stepIcon { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; flex: none; margin-right: 2px; background: var(--success-subtle); color: var(--success-strong); }
+.stepIcon.paused { background: var(--warning-subtle); color: var(--warning-strong); }
+.stepIcon.failed { background: var(--danger-subtle); color: var(--danger); }
+.working { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); font-size: var(--text-sm); color: var(--text-muted); }
+
+.notice { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); }
+.notice > :first-child { align-self: stretch; }
+.actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+.refs { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.empty { margin: 0; font-size: var(--text-sm); color: var(--text-muted); }
+
+/* Stored results: oat cards without outline or shadow. */
+.result { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+.card { display: flex; flex-direction: column; min-width: 0; background: var(--surface); border-radius: 20px; overflow: hidden; }
+.cardHead { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border-subtle); }
+.cardTitle { display: flex; flex-direction: column; min-width: 0; flex: 1; font-size: 14px; line-height: 20px; }
+.cardTitle b { font-weight: 600; overflow-wrap: anywhere; }
+.cardTitle small { line-height: 16px; }
+.cardBody { display: flex; flex-direction: column; gap: var(--space-3); padding: 16px 20px 20px; min-width: 0; }
+/* The card is the frame: the memo inside drops its own, and the question is already the bubble above. */
+.cardBody :global(.memo) { background: none; border-radius: 0; padding: 0; }
+.cardBody :global(.echo .q) { display: none; }
+.tile { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; background: var(--surface-muted); color: var(--text-secondary); }
+.tile.blue { background: var(--analysis-subtle); color: var(--analysis); }
+.chip { display: inline-flex; align-items: center; min-height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px; line-height: 16px; font-weight: 500; white-space: nowrap; background: var(--surface-raised); color: var(--text-secondary); flex: none; }
+.chip.web { background: var(--warning-subtle); color: var(--warning-strong); }
+
+.source { font-size: 12px; line-height: 16px; color: var(--text-muted); }
+.sources { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm); }
+.sources li { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--space-2); min-width: 0; }
+.sourceCard { padding: 4px 14px; border-radius: 14px; background: var(--surface); }
+.card .sourceCard { background: var(--surface-raised); }
+.sourceCard:target { box-shadow: 0 0 0 2px var(--analysis); }
+.globe { color: var(--text-muted); flex: none; }
+.sources a { display: inline-flex; align-items: center; min-height: 2.75rem; color: var(--foreground); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 0.2em; overflow-wrap: anywhere; }
+.sources a:hover { text-decoration-color: currentColor; }
+.host { color: var(--text-muted); font-size: var(--text-xs); }
+.quote { flex-basis: 100%; padding: 0 0 10px 10px; margin-bottom: 4px; border-left: 2px solid var(--border); color: var(--text-secondary); font-size: 13px; line-height: 20px; quotes: none; }
+.cited { display: flex; flex-direction: column; gap: var(--space-2); }
+.citedHead { display: flex; align-items: center; gap: var(--space-2); font-size: 12.5px; color: var(--text-muted); }
+
+/* A source number: a small blue pill, inline with the text it supports. */
+.ct { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; margin: 0 1px; border-radius: 9px; font-size: 11px; line-height: 1; font-weight: 600; font-variant-numeric: tabular-nums; vertical-align: 1px; background: var(--analysis-subtle); color: var(--analysis); text-decoration: none; }
+.cite { text-decoration: none; border-radius: 9px; }
+.cite:hover .ct { background: var(--analysis); color: var(--surface-raised); }
+/* Touch layouts: the pill stays small, the link around it is a full 44px target. The target takes real space in the
+   line, so neighbouring numbers never share a tap area. */
+@media (max-width: 1023px) {
+  .cite { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; vertical-align: middle; border-radius: 12px; }
+}
+
+.fields { margin: 0; padding-left: var(--space-5); font-size: var(--text-sm); color: var(--text-secondary); }
+.agreement { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-4); font-size: var(--text-sm); }
+.agreement dt { color: var(--text-muted); }
+.agreement dd { margin: 0; color: var(--foreground); overflow-wrap: anywhere; }
+.proposal { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); padding: 16px 20px; border-radius: 20px; background: var(--surface); }
+.proposalChanges { list-style: none; margin: 0; padding: 0; align-self: stretch; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.proposalChanges li { display: flex; justify-content: space-between; gap: 12px; }
+.proposalChanges span { color: var(--text-secondary); }
+.proposalChanges small { color: var(--text-muted); font-size: 12px; }
+.proposalChanges b { font-weight: 600; text-align: right; }
+.proposalHead { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); color: var(--foreground); font-weight: 600; font-variant-numeric: tabular-nums; }
+.draft { margin-top: var(--space-6); display: flex; flex-direction: column; gap: var(--space-4); }
+.draftNote { display: flex; flex-direction: column; gap: var(--space-2); }
+/* The card's foot: save the result as a decision. */
+.save { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); font-size: var(--text-sm); color: var(--text-muted); }
+.cardBody > .save { margin: 4px -20px -20px; padding: 10px 20px; border-top: 1px solid var(--border-subtle); }
+@media (max-width: 520px) {
+  .agreement { grid-template-columns: 1fr; }
+  .cardHead { padding: 12px 14px; }
+  .cardBody { padding: 14px; }
+  .cardBody > .save { margin: 4px -14px -14px; padding: 10px 14px; }
+}

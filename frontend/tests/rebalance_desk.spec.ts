@@ -24,7 +24,7 @@ const NO_RULES = { ...SAVED, settings: null };
 
 type Sent = { question: string; stock?: unknown; portfolio_review?: unknown; comparison?: { alternatives: { id: string }[] } };
 
-import { seedPortfolio } from "./test_helpers";
+import { openDetails, seedPortfolio } from "./test_helpers";
 
 async function open(page: Page, saved: object = SAVED) {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
@@ -32,7 +32,7 @@ async function open(page: Page, saved: object = SAVED) {
   const sent: Sent[] = [];
   page.on("request", request => { if (request.url().endsWith("/api/analyze")) sent.push(request.postDataJSON()); });
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   return sent;
 }
 
@@ -73,6 +73,7 @@ test("a natural rebalance question runs the rebalance memo in order and never ch
   await expect(memo(page).getByTestId("rebalance-why")).toContainText("Company cap 15%");
 
   // Right panel: Evidence | Proposed portfolio | Holdings | Guardrails, opened on the proposed portfolio.
+  await openDetails(page);
   await expect(details(page).getByRole("tab")).toHaveText([/^Evidence/, "Proposed portfolio", "Holdings", "Guardrails"]);
   await expect(details(page).getByRole("tab", { name: "Proposed portfolio" })).toHaveAttribute("aria-selected", "true");
   const table = details(page).getByRole("table", { name: "Before and after" });
@@ -111,6 +112,7 @@ test("no action is a complete answer, and no rules still gets a portfolio-level 
   await expect(memo(page)).toContainText("No trades proposed, so every weight stays where it is.");
   await expect(memo(page).getByTestId("rebalance-why")).toContainText("None set. This view doesn't depend on them; no limit was assumed or checked.");
   await expect(memo(page).getByTestId("plan-reduce")).toHaveCount(0);
+  await openDetails(page);
   await expect(details(page).getByRole("table", { name: "Before and after" }).getByRole("row", { name: /ACME · TFSA/ })).toContainText("Unchanged");
   await expect(details(page)).toContainText("Nothing would move");
   expect(sent[0].portfolio_review).toBeTruthy();
@@ -126,6 +128,7 @@ test("a configured cap overrides a keep-everything answer with the path back wit
   // The holding-level hold was also turned into a reduction by the cap check.
   await expect(memo(page).getByTestId("rebalance-why")).toContainText("Configured exposure limits require a forward reduction review");
   await expect(memo(page).getByTestId("plan-reduce")).toContainText("ACME · TFSA");
+  await openDetails(page);
   await expect(details(page).getByRole("table", { name: "Before and after" }).getByRole("row", { name: /ACME · TFSA/ })).toContainText(/about C\$[\d,.]+ to cash/);
 });
 
@@ -137,6 +140,7 @@ test("a directional reduction shows why no exact size is given", async ({ page }
   await expect(withheld).toContainText("Direction only: no exact size could be justified, so none is invented.");
   await expect(withheld).toContainText("Supply decision-critical loss tolerance and withdrawal context.");
   await expect(memo(page).getByRole("table", { name: "Before and after" }).getByRole("row", { name: /ACME · TFSA/ })).toContainText("direction only");
+  await openDetails(page);
   await expect(details(page)).toContainText("Why there are no target weights");
   await page.waitForTimeout(600);
   expect(await stored(page)).toEqual(before);
@@ -144,11 +148,11 @@ test("a directional reduction shows why no exact size is given", async ({ page }
 
 test("descriptive or company questions are not routed to rebalance", async ({ page }) => {
   const sent = await open(page);
+  // A descriptive question is ordinary conversation: no rebalance, and no workflow at all.
   await send(page, "How concentrated is my portfolio?");
-  await expect(page.getByRole("region", { name: "Analyst memo" }).getByRole("heading", { level: 2 })).toHaveText("Your portfolio breaks 2 of your rules.");
-  await expect(page.locator(".ctx")).toContainText("Portfolio review");
+  await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Plain answer to: How concentrated is my portfolio?");
+  await expect(page.locator(".ctx")).toContainText("How concentrated is my portfolio?");
   await send(page, "Should I trim ACME?");
   await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
-  expect(sent.map(body => [body.question, !!body.portfolio_review, !!body.stock])).toEqual([
-    ["How concentrated is my portfolio?", false, false], ["Should I trim ACME?", false, true]]);
+  expect(sent.map(body => [body.question, !!body.portfolio_review, !!body.stock])).toEqual([["Should I trim ACME?", false, true]]);
 });

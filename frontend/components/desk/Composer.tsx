@@ -1,7 +1,8 @@
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { ArrowUp, Slash } from "lucide-react";
+import { useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { isThemeCandidate, type NewCashInput, type Position, type Snapshot, type ThemeInput } from "../../lib/contracts";
 import { accountName, fullDate, money, newCashLabel } from "./format";
-import { parseMoney } from "./route";
+import { isConversation, parseMoney } from "./route";
 
 const WORKFLOWS = [
   { cmd: "/new-cash", text: "Decide where new money should go" },
@@ -26,6 +27,10 @@ type Props = {
   onAddCandidate: (ticker: string) => Promise<boolean>;
   onRemoveCandidate: (id: string) => void;
   running: boolean;
+  /** A conversation is open, so the next free-form question continues it. */
+  inThread: boolean;
+  /** The home screen: the composer is the main thing on the page and carries its own shortcuts. */
+  home: boolean;
   collapsed: boolean;
   onExpand: () => void;
   onSubmit: () => void;
@@ -73,6 +78,8 @@ export default function Composer({
   onAddCandidate,
   onRemoveCandidate,
   running,
+  inThread,
+  home,
   collapsed,
   onExpand,
   onSubmit,
@@ -81,21 +88,32 @@ export default function Composer({
   const [tickerInput, setTickerInput] = useState("");
   const [tickerBusy, setTickerBusy] = useState(false);
   const [tickerError, setTickerError] = useState("");
+  // The question grows with what is typed, up to a few lines, then scrolls.
+  const field = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const element = field.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${element.scrollHeight}px`;
+  }, [question, workflow]);
 
   const slashOpen = !workflow && /^\/\S*$/.test(question);
   const matches = slashOpen ? WORKFLOWS.filter(item => item.cmd.startsWith(question.trim().split(" ")[0] || "/")) : [];
   const accounts = snapshot?.accounts || [];
   const currencies = [...new Set([snapshot?.reporting_currency, "CAD", "USD", ...(snapshot?.positions.map(row => row.currency) || [])].filter((c): c is string => !!c))];
   const label = newCashLabel(newCash, snapshot);
+  // An ordinary question goes to the conversation and needs no portfolio; shortcuts and forms keep their checks.
   const blocked = slashOpen
     ? "Choose a workflow"
-    : missingInput(
-        snapshot,
-        workflow === "new-cash" ? newCash : null,
-        workflow === "theme" ? theme : null,
-        question,
-        unresolved
-      );
+    : !workflow && question.trim() && isConversation(question, snapshot)
+      ? null
+      : missingInput(
+          snapshot,
+          workflow === "new-cash" ? newCash : null,
+          workflow === "theme" ? theme : null,
+          question,
+          unresolved
+        );
 
   const updateCash = (patch: Partial<NewCashInput>) =>
     onNewCash({ ...newCash, ...patch, confirmed: "confirmed" in patch ? !!patch.confirmed : false });
@@ -173,7 +191,7 @@ export default function Composer({
     const item = matches[index];
     if (!item) return;
     const rest = question.slice(item.cmd.length).trimStart();
-    if (item.cmd === "/review") { onWorkflow(null); onQuestion(rest || "Review my portfolio"); return; }
+    if (item.cmd === "/review") { onWorkflow(null); onQuestion(`/review ${rest}`); return; }
     if (item.cmd === "/stock") { onWorkflow(null); onQuestion(`/stock ${rest}`); return; }
     if (item.cmd === "/rebalance") { onWorkflow(null); onQuestion(`/rebalance ${rest}`); return; }
     if (item.cmd === "/theme") {
@@ -199,21 +217,32 @@ export default function Composer({
     }
   }
 
-  function keys(event: KeyboardEvent<HTMLInputElement>) {
+  function keys(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (slashOpen && matches.length) {
       if (event.key === "ArrowDown") { event.preventDefault(); setActive(i => (i + 1) % matches.length); }
       if (event.key === "ArrowUp") { event.preventDefault(); setActive(i => (i - 1 + matches.length) % matches.length); }
       if (event.key === "Enter") { event.preventDefault(); choose(active); }
       if (event.key === "Escape") { event.preventDefault(); onQuestion(""); }
+    } else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      // Enter sends, as it did when this was a one-line field; Shift+Enter starts a new line.
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
     } else if (event.key === "Backspace" && !question && workflow) onWorkflow(null);
   }
 
-  function submit(event: FormEvent) {
+  function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!blocked && !running) onSubmit();
+    if (blocked || running) return;
+    // The send button is disabled while the answer runs. Focus must not stay parked on it, or the next key press goes nowhere.
+    event.currentTarget.querySelector<HTMLElement>(".send:focus")?.blur();
+    onSubmit();
   }
 
-  return <form className="composer" onSubmit={submit} aria-label="Ask the analyst">
+  const tools = home && !workflow;
+  const send = workflow ? <button type="submit" className="btn primary" disabled={!!blocked || running}>Analyze</button>
+    : <button type="submit" className="send" aria-label="Ask" title="Ask" disabled={!!blocked || running}><ArrowUp size={18} aria-hidden="true" /></button>;
+
+  return <form className={`composer${home ? " home" : ""}`} onSubmit={submit} aria-label="Ask the analyst">
     <div className="col">
       {slashOpen && <div className="slash" role="listbox" aria-label="Workflows" id="slash-menu">
         <span className="cap" style={{ padding: "8px 12px 6px" }}>Workflows</span>
@@ -230,7 +259,7 @@ export default function Composer({
           <legend className="sr-only">New cash inputs</legend>
           <div className="nc-grid">
             <label className="field"><span className="cap">Amount</span>
-              <input className="in n" inputMode="decimal" placeholder={snapshot ? snapshot.reporting_currency : ""} value={newCash.amount || ""}
+              <input className="in n" inputMode="decimal" placeholder="e.g. 2,000" value={newCash.amount || ""}
                 onChange={event => updateCash({ amount: event.target.value.replace(/[^0-9.]/g, "") || null })} /></label>
             <label className="field"><span className="cap">Currency</span>
               <select className="in" value={newCash.currency || ""} onChange={event => updateCash({ currency: event.target.value })}>
@@ -314,15 +343,20 @@ export default function Composer({
         <div className="box-line">
           {workflow === "new-cash" && <span className="prefix">New cash</span>}
           {workflow === "theme" && <span className="prefix">Theme</span>}
-          <label htmlFor="ask" className="sr-only">{workflow ? "Question" : "Ask about your portfolio or a holding, or type / for workflows"}</label>
-          <input id="ask" autoComplete="off" value={question} disabled={running} onKeyDown={keys}
+          <label htmlFor="ask" className="sr-only">{workflow ? "Question" : "Ask anything, or type / for workflows"}</label>
+          <textarea id="ask" ref={field} rows={1} autoComplete="off" maxLength={1000} value={question} disabled={running} onKeyDown={keys}
             aria-controls={slashOpen ? "slash-menu" : undefined} aria-expanded={slashOpen}
-            placeholder={running ? "You can ask a follow-up once this answer arrives." : workflow === "new-cash" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?") : workflow === "theme" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "Explore a theme against your shortlist.") : collapsed ? "Ask a follow-up. Each question is a fresh analysis of your saved portfolio." : "Ask about your portfolio or a holding, or type / for a workflow"}
+            placeholder={running ? "Wait for this answer to finish" : workflow === "new-cash" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?") : workflow === "theme" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "Explore a theme against your shortlist.") : inThread ? "Ask a follow-up, or type / for a workflow" : "Ask anything, or type / for a workflow"}
             onChange={event => { onQuestion(event.target.value); setActive(0); }} />
           {(workflow || question.trim()) && blocked && !running && !slashOpen && <span className="cap amber hint">{blocked}</span>}
-          {workflow ? <button type="submit" className="btn primary" disabled={!!blocked || running}>Analyze</button>
-            : question.trim() && !slashOpen ? <button type="submit" className="btn primary" disabled={!!blocked || running}>Ask</button> : <span className="cap">/</span>}
+          {!tools && send}
         </div>
+        {tools && <div className="box-tools">
+          <button type="button" className="pill" disabled={running} onClick={() => { onQuestion("/"); setActive(0); document.getElementById("ask")?.focus(); }}>
+            <Slash size={14} aria-hidden="true" />Workflows</button>
+          {snapshot && <span className="pill status n"><span className="live" aria-hidden="true" /><span className="hide-sm">Using portfolio as of {fullDate(snapshot.as_of)}</span><span className="show-sm" aria-hidden="true">As of {fullDate(snapshot.as_of)}</span></span>}
+          {send}
+        </div>}
       </div>
     </div>
   </form>;

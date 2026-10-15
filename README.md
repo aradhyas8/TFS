@@ -1,127 +1,195 @@
-# Personal Investment Analyst
+# TFS — Personal Investment Analyst
 
-A standalone Next.js and FastAPI app for tickets 01–10: enter a dated whole-portfolio snapshot, supply optional personal settings, select comparison alternatives, ask a question, and receive calculated exposure, guardrail checks and conditional five-year cases. All code is new.
+## What is TFS?
 
-## Run locally
+TFS is a local investment research application that you run on your own computer. You ask questions in a chat, and an AI (artificial intelligence) analyst uses Python tools to research stocks and analyze your portfolio. TFS does not place trades with a broker.
 
-Requires Python 3.11+ and Node.js 20.9+. From this directory on Windows:
+## Features
+
+- **Investment research:** TFS reads dated SEC (US Securities and Exchange Commission) filings, issuer reports and cited web results.
+- **Portfolio analysis:** TFS calculates value, cash, company exposure, currency exposure and ETF (exchange-traded fund) overlap.
+- **Stock valuation:** TFS calculates five-year company cases from reported facts and explained assumptions.
+- **Scenarios:** TFS compares a stock with an ETF, cash and no action on the same capital.
+- **AI conversations:** TFS keeps chat threads, tool results and sources on your computer.
+- **Saved decisions:** You can save an analysis result as a decision and read it later.
+- **Confirmed portfolio changes:** Imports and edits make a proposal. Your portfolio changes only after you select **Confirm changes**.
+
+## How TFS Works
+
+| Part | Function |
+| --- | --- |
+| Frontend | Next.js (React) in `frontend/`. It shows the chat, portfolio and results at `http://localhost:3000`. |
+| Backend | FastAPI (Python) in `backend/analyst/`. It runs on `http://127.0.0.1:8000`. |
+| AI orchestration | The backend sends your question to the AI model. The model can call only the tools in the backend registry. |
+| Financial data | yfinance and EODHD supply delayed quotes. SEC EDGAR, OpenFIGI and EODHD identify securities. The Bank of Canada supplies exchange rates for CAD (Canadian dollars). |
+| Calculations | Python calculates all numbers with `Decimal`, pandas and NumPy. The model does not calculate values. Missing inputs stay "unknown". |
+| Persistence | SQLite stores portfolio revisions, proposals, threads and runs in `backend/data/portfolio/portfolio.db`. |
+
+The browser never receives API keys or ChatGPT tokens. Both servers listen only on your computer (loopback).
+
+## Requirements
+
+- **Operating system:** Windows 10 or 11 (native, not WSL), or macOS.
+- **Python:** 3.11 or later.
+- **Node.js:** 20.9 or later, with npm.
+- **Git.**
+- **AI access (optional):** an eligible ChatGPT account or an OpenAI API (application programming interface) key. You can view and edit a portfolio without AI access.
+
+ChatGPT sign-in encrypts tokens with Windows DPAPI (Data Protection API) or stores them in the macOS login Keychain. Linux is not supported. On Linux, ChatGPT sign-in is not available, and startup is not tested.
+
+## Quick Start
+
+Do steps 1 to 4 one time.
+
+1. Get the code. Use the `ticket-02-to-09-actions-and-persistence` branch. The `main` branch does not have `npm run dev` yet.
+
+   ```sh
+   git clone --branch ticket-02-to-09-actions-and-persistence https://github.com/aradhyas8/TFS.git
+   cd TFS
+   ```
+
+2. Install the backend.
+
+   On Windows (PowerShell):
+
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -e "./backend[dev]"
+   Copy-Item backend/.env.example backend/.env
+   ```
+
+   On macOS (Terminal):
+
+   ```sh
+   python3 -m venv .venv
+   .venv/bin/python -m pip install -e './backend[dev]'
+   cp backend/.env.example backend/.env
+   ```
+
+3. Do not commit `backend/.env`. It holds your configuration and keys.
+4. Install the frontend:
+
+   ```sh
+   npm --prefix frontend ci
+   ```
+
+5. Start TFS from the repository root:
+
+   ```sh
+   npm run dev
+   ```
+
+6. Wait for the message `TFS ready at http://localhost:3000`.
+7. Open `http://localhost:3000` in your browser.
+8. To stop TFS, press **Ctrl+C** in the terminal. This stops the backend and the frontend.
+
+To start TFS again, do steps 5 to 7. Your portfolio and sign-in stay saved.
+
+If startup fails, read the `[dev]` message in the terminal:
+
+| Message | Action |
+| --- | --- |
+| `Missing Python virtual environment` | Do step 2 from the repository root. |
+| `Missing frontend dependencies` | Do step 4. |
+| `Port 8000` or `Port 3000` `is unavailable` | Stop the other program that uses the port. TFS does not stop other programs. |
+| `Backend dependency/configuration check failed` | Do step 2 again. Then do step 5. |
+
+## Connect ChatGPT
+
+TFS can use your ChatGPT plan for AI requests. This sign-in connects the AI provider. It is not a TFS account.
+
+1. Select **Continue with ChatGPT** at the top of the page.
+2. Sign in to ChatGPT in the browser window that opens.
+3. Go back to the TFS tab.
+4. Open **AI connection**.
+5. Select a model in **ChatGPT model**. The list shows only the models that your account can use.
+6. Select **Use ChatGPT plan**.
+
+If no models show, select **Refresh connection**. If the error says HTTP 520, see the known upstream issue under **Limitations**. If the connection expires, select **Reconnect ChatGPT**. To remove the saved sign-in, select **Sign out of ChatGPT**.
+
+**API-key alternative:** If you cannot use ChatGPT sign-in, use an OpenAI API key.
+
+1. Stop TFS.
+2. In `backend/.env`, set `LLM_PROVIDER=openai`.
+3. Set `OPENAI_API_KEY` to your key.
+4. Set `OPENAI_MODEL` to a Responses API model that your account can use.
+5. Start TFS with `npm run dev`.
+6. If **AI connection** shows **Use API-key provider**, select it.
+
+`LLM_PROVIDER=openrouter` with `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` is also available for development. Keep all keys in `backend/.env` only. Do not put a key in a `NEXT_PUBLIC_*` variable. API billing is separate from your ChatGPT plan.
+
+**Limitations:**
+
+- ChatGPT sign-in works only on native Windows and macOS.
+- On macOS, the Keychain can ask you to allow access. Select **Always Allow**.
+- TFS keeps one saved ChatGPT account.
+- Model availability and usage limits depend on your ChatGPT plan.
+- You cannot change the provider while an AI request or sign-in is in progress.
+- The automated tests use a mocked sign-in. No test has yet used a real ChatGPT account.
+- **Known upstream issue (October 2026):** With a real ChatGPT sign-in, OpenAI's `api.openai.com` returns a Cloudflare HTTP 520 for both the model catalog (`GET /v1/models`) and inference (`POST /v1/responses`). TFS shows "OpenAI's model catalog is unavailable (HTTP 520)". Requests without a valid token still get a normal HTTP 401. That means the fault is OpenAI's handling of ChatGPT sign-in tokens, not TFS or your network. Other apps report the same error ([OpenAI community thread](https://community.openai.com/t/persistent-http-520-cloudflare-on-post-v1-responses-with-sign-in-with-chatgpt-oauth-tokens/1406366)). Signing in again does not help. Until OpenAI fixes it:
+  1. Use the API-key alternative above for AI questions.
+  2. Select **Refresh connection** later. Your login stays saved, so the model list loads without a new sign-in once OpenAI fixes the issue.
+
+## First Use
+
+**Ask a question.** Type a question in the chat box, for example: "What is the difference between market price and intrinsic value?" Send the question.
+
+**Import holdings:**
+
+1. On the **Start with what you own** screen, select **Template** to download a CSV (comma-separated values) file.
+2. Add your accounts, tickers and shares to the file.
+3. Set the holdings date and the reporting currency.
+4. Load the file. TFS shows the changes.
+5. Select **Confirm changes**. TFS saves a new portfolio revision.
+6. If TFS cannot identify a holding, open **Portfolio**. Supply the missing exchange or type.
+7. Select **Confirm changes** again.
+
+**Analyze an investment.** Select a workflow: **Analyze a stock**, **Place new cash**, **Rebalance** or **Explore a theme**. Complete the form. Send the form.
+
+**Confirm changes.** If you ask TFS to change a holding, TFS shows a proposal. Review the proposal. Then select **Confirm changes** or cancel. The AI model cannot confirm a proposal.
+
+## Available Tools and Workflows
+
+The AI model can call only these backend tools. The registry is in `backend/analyst/orchestrator.py`.
+
+| Group | Tools | Function |
+| --- | --- | --- |
+| Context | `get_holdings`, `get_artifact`, `get_proposal`, `get_messages` | Read saved holdings, results, proposals and earlier messages. |
+| Financial data | `review_portfolio`, `get_financial_data`, `resolve_candidate`, `refresh_quotes`, `check_proposed_changes` | Calculate exposure, read dated prices and FX (foreign exchange), and check hypothetical trades. |
+| Company research | `get_sec_filings`, `get_sedar_filings`, `get_issuer_material`, `get_company_research` | Read dated primary evidence for one US or Canadian stock. |
+| Valuation and comparison | `calculate_company_cases`, `calculate_comparison`, `scan_opportunities` | Calculate company cases, compare alternatives and read the opportunity screen. |
+| Workflows | `run_exposure_review`, `run_stock_analysis`, `run_new_cash_allocation`, `run_portfolio_reunderwriting`, `run_theme_exploration` | Run a full workflow. Each workflow needs its form inputs. |
+| Web | `web_search` | Search the public web through the AI provider. Each result shows its source. TFS treats results as untrusted. |
+| Proposals | `prepare_portfolio_proposal` | Prepare a portfolio edit that you stated. Only you can confirm it. |
+
+No tool places trades, moves money or commits portfolio changes.
+
+## Testing and Documentation
+
+Run these commands from the repository root:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e "./backend[dev]"
-Copy-Item backend/.env.example backend/.env
-```
-
-Set `OPENAI_API_KEY` and `OPENAI_MODEL` in **backend/.env**. Choose a model available to your account that supports Responses API function calling and structured outputs. No model is silently selected. Never put credentials in frontend files or `NEXT_PUBLIC_*` variables.
-
-`backend/requirements-dev.lock` records the exact verified dependency versions. For a matching environment, install it with `python -m pip install -r backend/requirements-dev.lock` inside the virtualenv, then install the project with `python -m pip install --no-deps -e backend`. The frontend uses `package-lock.json` with `npm ci`.
-
-Start FastAPI in one terminal:
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn analyst.api:app --app-dir backend --host 127.0.0.1 --port 8000
-```
-
-Start Next.js in another:
-
-```powershell
-cd frontend
-npm ci
-npm run dev
-```
-
-Open http://localhost:3000. Without backend credentials, portfolio entry and CSV loading work, and question submission returns an explicit configuration error. The deployed application runs independently of Codex.
-
-For production, set the Next.js server's `BACKEND_URL` **before building**, run `npm run build`, then `npm start`. The default is `http://127.0.0.1:8000`. Run FastAPI separately; Next.js forwards `/api/*` to it on the server. Only the backend owns OpenAI credentials. These instructions target a local personal app; remote public hosting is outside ticket 01.
-
-## Snapshot entry and CSV
-
-Set an as-of date and reporting currency, add accounts, then holdings or cash rows. For direct stocks, use a stable **company ID shared across all accounts and listings** and a company name. A ticker plus exchange identifies the supplied listing. ETFs need a ticker and listing; indirect company exposure stays unknown. Identities remain user supplied unless independently reviewed backend source records resolve and verify them. Verified source metadata can fill omitted issuer/listing fields; conflicts remain unresolved.
-
-Supply shares, an unadjusted mark, its actual date and a source label. Cash uses a balance and currency. For foreign-currency positions, supply a direct FX pair into the reporting currency, its rate, actual date and source. Rates are reporting-currency units per one local-currency unit. Marks and FX must match the snapshot date to support valuation; older, future or missing data stays unknown. No cross rates or older dates are inferred. The optional Bank of Canada adapter supports dated CAD rates and discloses inverse conversion. Quote capture times and price basis can be added in the editor; unknown capture times remain unknown.
-
-Download the CSV header template in the app. A worked fictional example is [examples/portfolio.csv](examples/portfolio.csv), dated **2026-09-30** in **CAD**. Its expected totals are CAD 3,600 portfolio value, CAD 2,300 stock value, CAD 1,300 cash, and CAD 2,300 direct Acme exposure (63.89%). It contains two accounts, two listings and two cash balances. This is a calculation fixture, not an investment suggestion.
-
-The exact CSV header is:
-
-```csv
-row_type,id,account_id,account_name,ticker,listing,company_id,company_name,shares,cash,currency,mark,mark_date,mark_source,to_currency,fx_rate,fx_date,fx_source
-```
-
-Use `stock`, `etf`, `cash`, `fx`, or `account` row types. An `account` row preserves an empty account. Position rows carry a unique position `id` and consistent `account_id,account_name`; FX rows use `currency,to_currency,fx_rate,fx_date,fx_source`. Fields irrelevant to the row type must be empty. Import replaces the editor snapshot after successful validation; malformed input leaves the current snapshot intact. Files are limited to 1 MB, accounts to 100, positions to 2,000 and FX pairs to 100. This milestone accepts nonnegative shares and cash, and rejects shorts or negative balances explicitly.
-
-## Shared decision boundary
-
-`POST /api/analyze` accepts `{question, portfolio, settings?, proposed_changes?, comparison?, stock?, new_cash?}` and returns `{status, question, portfolio, recommendation, proposals, comparison, stock, allocation}`. `/docs` on FastAPI exposes the complete typed contract. `POST /api/portfolio/csv` accepts `{csv, as_of, reporting_currency}` and returns the same snapshot shape accepted by analysis.
-
-The backend validates the request, binds the snapshot from the data provider, asks the model to call `review_portfolio`, dispatches the allowlisted Python tool, returns its computed result to the model, validates the final recommendation and preserves the deterministic result in the response. The portfolio tool has no arguments: a model cannot replace the submitted holdings or valuation inputs. The loop is bounded to eight turns for exposure review, twelve for selected-stock research, and eighteen for bounded new-cash discovery. Backend-bound `resolve_identities`, `get_quotes` and `get_fx` tools share one request-local evidence set with `review_portfolio`. All take no financial inputs from the model. When alternatives are selected, the model must call `calculate_comparison` with explained future-driver judgments before answering. Production uses one backend-owned OpenAI Responses integration, without extra orchestration frameworks or a database. [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling) and [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) document the integration pattern.
-
-Python uses Decimal arithmetic, pandas grouping across accounts, and NumPy completeness checks. Values are serialized as decimal strings; weights are fractions rounded to eight decimal places. The browser only formats these fields. No adjusted-price returns, dividends, splits, costs or tax effects are inferred from a snapshot.
-
-Missing valuation makes the complete total and all portfolio weights `null`. A separately labeled known subtotal remains available. Missing baseline and guardrails remain `null`. Recommendations at this milestone are limited to review, clarification or no action, and amount must be `null`. Unknown tools, invalid arguments, extra output fields, unsupported numeric prose, trade direction, refusals and incomplete answers fail without a completed recommendation. Explicit hypothetical changes can be checked by `check_proposed_changes`; they are previews, never orders or justified sizing. Qualitative claims still require separate human judgment; schema and arithmetic checks do not establish reasoning quality.
-
-Ticket 02 adds dated financial evidence and refreshed valuation to `analyst.pipeline.analyze`. See [docs/financial-sources.md](docs/financial-sources.md) for source qualification, broker fallback, independently reviewed backend references and optional Bank of Canada FX. Quote source, status, as-of date, capture time and age appear in the same result. Cached/manual valuations are provisional; unusable identity, quote or FX leaves values unknown. `source_inputs_usable` describes source completeness; `sizing_eligible` stays false because this milestone checks exposures without establishing justified sizing. Issuer research, ETF look-through and saved decisions remain in later tickets.
-
-## Explicit portfolio settings and previews
-
-Ticket 03 adds optional `settings`: `single_company_cap`, `active_budget`, `baseline`, `indirect_cap_policy`, and `cash_is_deliberate_tilt`. Weights are decimal fractions between zero and one. No limits, baseline, cash intent or risk score are inferred. Settings live in the frontend form and request-local backend context; there is no persistence or risk-profile subsystem. Clearing a field restores unknown. A baseline can partially specify `stocks`, `diversified_etfs`, `sector_theme_etfs`, and `cash`; supplied weights cannot sum above one. Missing targets remain unknown and are not normalized or filled.
-
-Direct company caps aggregate all accounts and listings. Existing breaches show a conditional reduction to cash retained in the whole portfolio; this is a dated exposure gap before unknown costs and taxes, not an order or an approved exception. Individual stocks count toward the active budget. Each ETF needs an explicit `etf_role` of `diversified` or `sector_theme`, available in the editor after CSV import. Diversified ETFs are excluded; sector/theme ETFs count. Deliberate excess cash contributes `max(cash - baseline.cash × portfolio total, 0)` only with explicit cash intent and a cash baseline. An explicit false cash intent excludes that tilt; absent intent or baseline leaves the contribution unknown. A known active subtotal may breach a budget, but missing contributions cannot clear it.
-
-Choose `direct_only` or `include_known_indirect` as the indirect cap policy. ETF holdings data is still unavailable until ticket 09. If ETFs are present and a cap could depend on overlap, a below-cap direct position does not clear the cap; missing overlap stays unknown. A direct breach remains a breach and its reduction is only a lower bound when overlap could count.
-
-`proposed_changes` contains `new_cash: [{cash_position_id, amount}]` and `trades: [{position_id, shares_change, cash_position_id}]`. Both arrays are required when a preview is supplied. It references existing rows: new cash uses the selected balance's currency, and each share change must use a cash balance in the same account and quote currency. Positive share changes consume cash; negative changes return proceeds to cash. Duplicate changes, short positions and negative final cash are disallowed. The backend calculates pre/post weights with all existing cash and explicit new cash using the same dated marks and FX. It does not infer transfers, currency execution, costs or tax effects.
-
-The model's `check_proposed_changes` tool uses the same Python checks and cannot change holdings identities, valuation inputs or settings. Model previews must use exactly the user-supplied new cash, or none if absent. Every checked preview remains in the result. A cap/budget breach produces `blocked`; missing applicable inputs produce `unknown`. Either prevents the final recommendation from clearing the preview, regardless of model conviction. `within_limits` means only that the supplied limits passed under the dated valuation; allocation amount remains unknown. Automated tests cover the API and rendered browser result using fake providers only.
-
-## Conditional ETF, cash and no-action comparison
-
-Ticket 04 extends this same request with optional selected alternatives. Enable the comparison, select actual holdings/cash as a common capital basis, and choose a supplied diversified ETF, cash or short government bills, and/or no action. A candidate ETF can be entered with zero shares and a dated mark. No action keeps each actual selected holding and cash balance; retained stock outcomes remain unknown until stock-specific analysis is available.
-
-Supply available dated fund exposure, costs and income; blanks mean unknown and explicit zero means known zero. Optional transaction cost and terminal tax amounts are in reporting currency with their date and source. The backend validates model judgments, calculates all three cases and exposes future paths separately from supplied facts. Known subtotals exclude unknown effects; fully specified values remain conditional, nominal outcomes. Five years is not a sell date, and long-term real-wealth aspirations are not forecast hurdles. See [docs/etf-cash-comparison.md](docs/etf-cash-comparison.md) for the contract, formulas and fixture review.
-
-## Verify
-
-```powershell
+npm run test:startup
 cd backend
 ..\.venv\Scripts\python.exe -m pytest
 ..\.venv\Scripts\python.exe -m mypy analyst
 ..\.venv\Scripts\python.exe -m ruff check .
-cd ../frontend
+cd ..\frontend
 npm run typecheck
 npm test
 npm run build
 ```
 
-Browser tests use installed Microsoft Edge in headless mode and start dedicated Next.js and FastAPI test servers on ports 3100 and 8100. On another OS, set `TEST_PYTHON` to the virtualenv executable and change Playwright's browser channel to an installed browser. Every automated journey uses fake model/data providers, with real request handling and Python calculations. An HTTP transport fixture also exercises the production OpenAI SDK request shape. Tests prohibit external network connections and use dummy credentials only; no live model or market-data request occurs. Browser tests check rendered values, question correspondence, failure display, and actual browser-script absence of the dummy key.
+On macOS, use `../.venv/bin/python` in place of `..\.venv\Scripts\python.exe`. `npm run test:startup` needs free ports 8000 and 3000. `npm test` uses Microsoft Edge and ports 3100 and 8100. The tests use fake AI and market data.
 
-Tests are at the two seams approved by the ticket: the public FastAPI request/result boundary and the whole browser input-to-result journey. Fixed scripted answers validate the integration and rendering, not investment reasoning quality. No live answer-quality assessment is claimed.
+Detailed documentation:
 
-
-## US stock questions
-
-Ticket 05 adds the US stock selector to the existing question form and returns dated SEC/issuer evidence, company operating-driver cases, exit sensitivity and portfolio-aware conditional actions. Company, fund, cash and no-action alternatives use the shared comparison pipeline. Configure backend-only `RESEARCH_REFERENCE_FILE` with independently reviewed primary excerpts; missing records stay unknown. This adapter does not claim live filing retrieval. Allocation amounts remain undetermined. See [docs/us-stock-analysis.md](docs/us-stock-analysis.md) for provenance, methods, formulas, setup and verification limits.
-
-
-## New-cash questions
-
-Ticket 06 adds **Analyze new cash** beside the existing question input. Confirm the additional amount, intended account/currency balance, and loss/withdrawal context. The same backend pipeline performs a request-local bounded opportunity screen, researches at most two decision-changing stocks, compares them with broad ETF/cash/no action, and calculates an approximate range only when source inputs and post-allocation caps/budget justify it. Missing inputs produce completed conditional guidance. Optional backend-only `DISCOVERY_REFERENCE_FILE` widens the dated screen beyond supplied holdings; unavailable or older coverage is openly qualified. See [docs/new-cash-allocation.md](docs/new-cash-allocation.md) for the contracts, arithmetic, coverage limits and controlled answer review.
-
-
-## Portfolio re-underwriting
-
-Ticket 07 adds **Review holdings and rebalance** to the existing question flow. Supply optional dated prior company theses, risk context, limits and a baseline. The shared backend reviews current evidence and conditional cases, challenges material thesis changes, checks proposed outcomes and provides an approximate adjustment range only when all required inputs are supported. Baseline-free exposure review works; unknown ETF overlap and uncovered company cases remain explicit. See [docs/portfolio-reunderwriting.md](docs/portfolio-reunderwriting.md) for contracts, formulas, setup and limitations.
-
-
-## Theme discovery
-
-Ticket 08 adds **Explore a theme** to the existing question flow. Agree an economic mechanism, supplied US stock/ETF shortlist and tool-call effort before research. The same backend tests the mechanism against dated primary evidence, calculates instrument-appropriate cases, compares ETF/cash/no action and applies portfolio guardrails. A theme can lead to no action; unsupported amounts remain undetermined. See [docs/theme-discovery.md](docs/theme-discovery.md) for agreement, bounds, evidence and verification limits.
-
-## ETF indirect overlap and look-through
-
-Ticket 09 adds dated ETF company overlap look-through, recursive nested fund decomposition, honest coverage labeling (`full`, `partial`, `unknown`, `stale`, `none`), and enforcement of user's explicit `indirect_cap_policy` (`direct_only` vs `include_known_indirect`) without double counting or blocking sizing on partial coverage. Optional backend-only `SPONSOR_HOLDINGS_REFERENCE_FILE` supplies dated sponsor constituents; outdated or contradictory snapshots are marked stale. See [docs/etf-indirect-overlap.md](docs/etf-indirect-overlap.md) for contracts, formulas, cycle prevention, and limitations.
-
-## Canadian stock evidence support
-
-Ticket 10 extends stock assessment to Canadian issuers using permitted issuer evidence and exact user-opened SEDAR+ verification links (`www.sedarplus.ca`). Supported Canadian exchanges include `XTSE` (TSX), `XTSX` (TSX Venture), `NEOE` (Cboe Canada), and `XCNQ` (CSE). The single shared FastAPI decision pipeline dispatches `get_sedar_filings` dynamically for Canadian securities while forbidding SEC retrieval for non-US issuers and SEDAR retrieval for US issuers (enforced via 502 Bad Gateway). SEDAR+ links must target valid, specific document URLs; automated SEDAR+ scraping or local database construction is strictly prohibited. The feature integrates seamlessly across stock assessment, new cash allocation, portfolio review (re-underwriting), and theme exploration through the common evidence boundary. See [docs/canadian-stock-evidence.md](docs/canadian-stock-evidence.md) for contracts, evidence boundaries, and verification procedures.
-
+- [Technical reference: CSV format, calculations and persistence](docs/technical-reference.md)
+- [Startup and ChatGPT connection](docs/dev-chatgpt/README.md)
+- [Financial data sources](docs/financial-sources.md)
+- [US stock analysis](docs/us-stock-analysis.md) and [Canadian stock evidence](docs/canadian-stock-evidence.md)
+- [ETF, cash and no-action comparison](docs/etf-cash-comparison.md)
+- [New cash allocation](docs/new-cash-allocation.md)
+- [Portfolio re-underwriting](docs/portfolio-reunderwriting.md)
+- [Theme discovery](docs/theme-discovery.md)
+- [ETF indirect overlap](docs/etf-indirect-overlap.md)

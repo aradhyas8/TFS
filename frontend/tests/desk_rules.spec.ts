@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { openDetails } from "./test_helpers";
 
 const SAVED = {
   snapshot: {
@@ -64,7 +65,7 @@ async function open(page: Page, saved: object = SAVED) {
   );
   await seedPortfolio(page, saved);
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
 }
 
 test("typing changes draft state only without autosave; review opens differences and confirm adopts revision", async ({
@@ -73,7 +74,7 @@ test("typing changes draft state only without autosave; review opens differences
   await open(page);
 
   // Open details panel on Holdings tab
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   const stocksInput = details.getByRole("textbox", { name: "Stocks (%)" });
@@ -101,7 +102,7 @@ test("typing changes draft state only without autosave; review opens differences
 
   const dialog = page.getByRole("dialog", { name: "Review portfolio changes" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText("Portfolio settings modified")).toBeVisible();
+  await expect(dialog.getByRole("table", { name: "What changes" }).getByRole("row", { name: /Target cash/ })).toContainText("10%");
 
   // 3. Confirm adopts returned committed revision
   const confirmBtn = dialog.getByTestId("confirm-proposal");
@@ -132,7 +133,7 @@ test("typing changes draft state only without autosave; review opens differences
 test("cancel leaves committed state unchanged and preserves draft", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   const divEtfInput = details.getByRole("textbox", { name: "Diversified ETFs (%)" });
@@ -162,7 +163,7 @@ test("cancel leaves committed state unchanged and preserves draft", async ({ pag
 test("enforces target mix sum <= 100% and disables review", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   const stocksInput = details.getByRole("textbox", { name: "Stocks (%)" });
@@ -184,7 +185,7 @@ test("enforces target mix sum <= 100% and disables review", async ({ page }) => 
 test("rules, benchmark, and ETF-role edits follow the same action model", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   // 1. Edit ETF role
@@ -203,8 +204,9 @@ test("rules, benchmark, and ETF-role edits follow the same action model", async 
   await expect(dialog).toBeVisible();
 
   // Verify both differences exist
-  await expect(dialog.getByText(/Benchmark/)).toBeVisible();
-  await expect(dialog.getByText(/etf_role/)).toBeVisible();
+  const changes = dialog.getByRole("table", { name: "What changes" });
+  await expect(changes.getByRole("row", { name: /Benchmark/ })).toContainText("SPY");
+  await expect(changes.getByRole("row", { name: /XEQT/ })).toContainText("fund type");
 
   // Confirm changes
   await dialog.getByTestId("confirm-proposal").click();
@@ -229,7 +231,7 @@ test("rules, benchmark, and ETF-role edits follow the same action model", async 
 test("ordinary analysis uses committed state while draft differs", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   // Edit single company cap to 15% (committed is 50%)
@@ -249,14 +251,18 @@ test("ordinary analysis uses committed state while draft differs", async ({ page
 
   // Run ordinary analysis from composer
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("Review my portfolio");
+  await ask.fill("/review Review my portfolio");
   await page.keyboard.press("Enter");
 
   // Wait for analyze request and verify it used the COMMITTED single company cap (0.5), not the draft (0.15)
   await expect.poll(() => analyzeRequests.length).toBeGreaterThan(0);
   expect(analyzeRequests[0]?.settings?.single_company_cap).toBe("0.5");
 
+  // Switch back to Holdings tab if tab switched on analysis completion
+  await details.getByRole("tab", { name: "Holdings" }).click();
+
   // Verify draft input is STILL "15" and unsaved
+  await details.getByRole("tab", { name: "Holdings" }).click();
   await expect(capInput).toHaveValue("15");
   await expect(details.getByText("Unsaved draft edits")).toBeVisible();
 });
@@ -264,7 +270,7 @@ test("ordinary analysis uses committed state while draft differs", async ({ page
 test("stale previews preserve draft work and require fresh review", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   const stocksInput = details.getByRole("textbox", { name: "Stocks (%)" });
@@ -296,7 +302,8 @@ test("stale previews preserve draft work and require fresh review", async ({ pag
   await dialog.getByTestId("confirm-proposal").click();
 
   // Stale alert is displayed in dialog
-  await expect(dialog.getByText("This proposal is stale.", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("alert").filter({ hasText: "This proposal is out of date" })).toBeVisible();
+  await expect(dialog.getByTestId("confirm-proposal")).toBeDisabled();
 
   // Dismiss dialog
   await dialog.getByTestId("cancel-proposal").click();
@@ -309,7 +316,7 @@ test("stale previews preserve draft work and require fresh review", async ({ pag
 test("confirmation controls support keyboard operation", async ({ page }) => {
   await open(page);
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   const stocksInput = details.getByRole("textbox", { name: "Stocks (%)" });

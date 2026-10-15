@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { openDetails } from "./test_helpers";
 
 test("/classic returns 404 and no classic links or references exist in desk", async ({ page }) => {
   await page.route("**/*", route =>
@@ -18,7 +19,7 @@ test("/classic returns 404 and no classic links or references exist in desk", as
   await expect(classicLinks).toHaveCount(0);
 
   // 4. Verify Rail contains no "Classic view"
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   await expect(rail).not.toContainText("Classic view");
   await expect(rail).not.toContainText("classic");
 
@@ -32,7 +33,7 @@ test("/classic returns 404 and no classic links or references exist in desk", as
 
   // 6. Verify Panel (Holdings tab) has no "classic view" copy
   await ask.fill("");
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
   await expect(details).not.toContainText("classic");
   await expect(details).not.toContainText("classic view");

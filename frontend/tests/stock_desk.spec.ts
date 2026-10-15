@@ -20,7 +20,7 @@ const SAVED = {
   unresolved: [],
 };
 
-import { seedPortfolio } from "./test_helpers";
+import { checkPortfolio, openDetails, seedPortfolio } from "./test_helpers";
 
 /** Opens the desk on a saved portfolio and records every analysis request the page sends. */
 async function open(page: Page, saved: object = SAVED) {
@@ -29,7 +29,7 @@ async function open(page: Page, saved: object = SAVED) {
   const sent: { question: string; stock?: { position_id: string } }[] = [];
   page.on("request", request => { if (request.url().endsWith("/api/analyze")) sent.push(request.postDataJSON()); });
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   return sent;
 }
 
@@ -80,7 +80,7 @@ test("a natural ticker question becomes Stock Analysis with every section, and n
   await expect(memo).toContainText("Review the supplied settings and missing inputs");
 
   // Right panel: Evidence | Scenarios | Holdings | Guardrails.
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await expect(details.getByRole("tab")).toHaveText([/^Evidence/, "Scenarios", "Holdings", "Guardrails"]);
   await details.getByRole("tab", { name: /Evidence/ }).click();
   await expect(details.getByRole("list", { name: "Prices and rates used" })).toContainText("ACME");
@@ -120,11 +120,12 @@ test("/stock with a ticker runs Stock Analysis", async ({ page }) => {
   expect(sent.map(body => body.stock?.position_id)).toEqual(["tfsa-acme"]);
 });
 
-test("clicking a holding in the rail offers its Stock Analysis", async ({ page }) => {
+test("a holding in the portfolio offers its Stock Analysis", async ({ page }) => {
   const sent = await open(page);
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
-  await expect(rail.getByRole("button", { name: "Analyze BROAD" })).toHaveCount(0); // funds aren't single companies
-  await rail.getByRole("button", { name: "Analyze ACME" }).click();
+  await page.getByRole("navigation", { name: "Portfolio, conversations and decisions" }).getByRole("button", { name: /^Portfolio/ }).click();
+  const view = page.getByRole("region", { name: "Portfolio" });
+  await expect(view.getByRole("button", { name: "Analyze BROAD" })).toHaveCount(0); // funds aren't single companies
+  await view.getByRole("button", { name: "Analyze ACME" }).click();
   await expect(ask(page)).toHaveValue("/stock ACME");
   await expect(ask(page)).toBeFocused();
   expect(sent).toEqual([]); // offered, not sent
@@ -133,15 +134,15 @@ test("clicking a holding in the rail offers its Stock Analysis", async ({ page }
   expect(sent.map(body => body.stock?.position_id)).toEqual(["tfsa-acme"]);
 });
 
-test("review questions and /review still run a Portfolio Review", async ({ page }) => {
+test("/review, typed or chosen from the menu, still runs a Portfolio Review", async ({ page }) => {
   const sent = await open(page);
-  await send(page, "Review my portfolio");
+  await send(page, "/review Review my portfolio");
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo.getByRole("heading", { level: 2 })).toHaveText("Your portfolio breaks 2 of your rules.");
   await expect(page.locator(".ctx")).toContainText("Portfolio review");
   await ask(page).fill("/review");
   await ask(page).press("Enter");
-  await expect(ask(page)).toHaveValue("Review my portfolio");
+  await expect(ask(page)).toHaveValue("/review ");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   await expect(memo.getByRole("heading", { level: 2 })).toHaveText("Your portfolio breaks 2 of your rules.");
   expect(sent.map(body => [body.question, body.stock ?? null])).toEqual([["Review my portfolio", null], ["Review my portfolio", null]]);
@@ -193,14 +194,16 @@ test("an unowned stock candidate runs Stock Analysis with price source, no-cash 
   // Zero-cash comparison message
   await expect(memo).toContainText("No cash to compare on. Use /new-cash with an amount to compare against the fund and cash.");
 
-  // Rail excludes unowned candidate row
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
-  await expect(rail.locator(".holdings-mini")).not.toContainText("NVDA");
+  // The portfolio excludes the unowned candidate row
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("table", { name: "Holdings" })).not.toContainText("NVDA");
+  });
 
   // Holdings tab in details panel excludes unowned candidate row
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
-  await expect(details).not.toContainText("NVDA");
+  // The header names the analysis; the holdings below it must not list the candidate.
+  await expect(details.getByRole("tabpanel")).not.toContainText("NVDA");
 
   // Saved portfolio is never mutated
   await page.waitForTimeout(600);
@@ -267,7 +270,7 @@ test("named Canadian stock completes SEDAR+ research, company cases and cash com
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
   await expect(memo).toContainText("SEDAR+");
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: /Evidence/ }).click();
   await expect(details).toContainText("Acme Canadian annual filing (SEDAR+)");
   const sedarLink = details.locator('a[href*="sedarplus.ca/csa-party/records"]');
@@ -307,7 +310,7 @@ test("missing Canadian stock research returns a completed conditional answer wit
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
   await expect(memo).toContainText("Clarify missing inputs");
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Scenarios" }).click();
   await expect(details).toContainText("Unknown");
 });

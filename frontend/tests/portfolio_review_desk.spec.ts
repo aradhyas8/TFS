@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { checkPortfolio, openDetails, seedPortfolio } from "./test_helpers";
 
 // A portfolio saved earlier: the app should open straight into it.
 const SAVED = {
@@ -21,24 +22,26 @@ const SAVED = {
   unresolved: [],
 };
 
-test("portfolio review: the app opens on the saved portfolio and an ordinary question runs a review", async ({ page }) => {
+test("portfolio review: the app opens on the saved portfolio and /review runs a review", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.request.delete("/api/test/portfolio");
-  expect((await page.request.put("/api/portfolio", { data: SAVED })).ok()).toBeTruthy();
+  await seedPortfolio(page, SAVED);
   const stored = await (await page.request.get("/api/portfolio")).json();
 
   await page.goto("/");
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
-  await expect(rail).toContainText("ACME");
-  await expect(rail).toContainText("BROAD");
-  await expect(rail).toContainText("Rules · cap 15% · active 30%");
+  const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("row", { name: /ACME/ })).toBeVisible();
+    await expect(view.getByRole("row", { name: /BROAD/ })).toBeVisible();
+    await expect(view.getByRole("group", { name: "Rules" })).toContainText("Company cap 15%");
+    await expect(view.getByRole("group", { name: "Rules" })).toContainText("Active budget 30%");
+  });
   await expect(page.getByRole("heading", { name: "Start with what you own." })).toHaveCount(0);
   await expect(page.locator(".ctx")).toContainText("Portfolio as of Sep 30, 2026");
 
-  // No slash command: a plain question is a portfolio review.
+  // The explicit shortcut: a plain question would start a conversation instead.
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("Review my portfolio");
+  await ask.fill("/review Review my portfolio");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
 
   const memo = page.getByRole("region", { name: "Analyst memo" });
@@ -55,9 +58,12 @@ test("portfolio review: the app opens on the saved portfolio and an ordinary que
   await expect(memo).toContainText("Largest companies you own directly: Acme Corp 36.5%");
   await expect(memo).toContainText("Inside your funds: unknown");
   await expect(memo).toContainText("configured limits cannot be waived by conviction");
-  await expect(rail).toContainText(/Weights · .* analysis/);
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("group", { name: "Total value" })).toContainText("C$3,700");
+    await expect(view.getByRole("row", { name: /ACME/ })).toContainText("36.5%");
+  });
 
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Evidence" }).click();
   await expect(details.getByRole("list", { name: "Prices and rates used" })).toContainText("ACME");
   await expect(details.getByRole("list", { name: "Prices and rates used" })).toContainText("Broker display");
@@ -84,25 +90,23 @@ test("portfolio review: the app opens on the saved portfolio and an ordinary que
 });
 
 test("portfolio review: /review is a shortcut, and unidentified holdings block the question", async ({ page }) => {
-  await page.request.delete("/api/test/portfolio");
-  await page.request.put("/api/portfolio", { data: { ...SAVED, unresolved: [{ account_id: "tfsa", ticker: "MYST", shares: "5", average_cost: null, currency: null, listing: null, kind: null }] } });
+  await seedPortfolio(page, { ...SAVED, unresolved: [{ account_id: "tfsa", ticker: "MYST", shares: "5", average_cost: null, currency: null, listing: null, kind: null }] });
   await page.goto("/");
   await expect(page.getByRole("button", { name: "Identify 1 holding" })).toBeVisible();
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
   await ask.fill("/rev");
   await ask.press("Enter");
-  await expect(ask).toHaveValue("Review my portfolio");
+  await expect(ask).toHaveValue("/review ");
   await expect(page.getByText("Identify 1 holding first")).toBeVisible();
   await expect(page.getByRole("button", { name: "Ask", exact: true })).toBeDisabled();
 });
 
 test("portfolio review: without rules the analyst's own answer is shown and nothing is checked", async ({ page }) => {
-  await page.request.delete("/api/test/portfolio");
-  await page.request.put("/api/portfolio", { data: { ...SAVED, settings: null } });
+  await seedPortfolio(page, { ...SAVED, settings: {} });
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("How concentrated am I across accounts?");
+  await ask.fill("/review How concentrated am I across accounts?");
   await ask.press("Enter");
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo).toContainText("Regarding 'How concentrated am I across accounts?'");
@@ -110,7 +114,7 @@ test("portfolio review: without rules the analyst's own answer is shown and noth
   await expect(memo).toContainText("No rules set");
   await expect(memo.getByTestId("review-total")).toContainText("C$3,700");
   // A follow-up is a new review of the same saved portfolio.
-  await expect(ask).toHaveAttribute("placeholder", "Ask a follow-up. Each question is a fresh analysis of your saved portfolio.");
+  await expect(ask).toHaveAttribute("placeholder", "Ask anything, or type / for a workflow");
 });
 
 test("benchmark fund: configure in holdings rules, verify comparison alternative, absent from rail and weights, persist and clear", async ({ page }) => {
@@ -131,13 +135,13 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
     settings: { single_company_cap: "0.5" },
     unresolved: [],
   };
-  expect((await page.request.put("/api/portfolio", { data: stockOnly })).ok()).toBeTruthy();
+  await seedPortfolio(page, stockOnly);
 
   await page.goto("/");
-  await expect(page.getByTestId("portfolio-date")).toHaveText("As of Sep 30, 2026");
+  await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
 
   // Open details panel on Holdings tab
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
 
   // Benchmark fund rule input
@@ -149,12 +153,19 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   // Verify resolved benchmark info appears in rules
   await expect(details).toContainText("Current benchmark: SPY · SPDR S&P 500 ETF Trust");
 
+  // Review and confirm changes
+  await details.getByTestId("review-changes").click();
+  const dialog = page.getByRole("dialog", { name: "Review portfolio changes" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByTestId("confirm-proposal").click();
+  await expect(dialog).toHaveCount(0);
+
   // Verify persistence outside settings
   await expect.poll(async () => {
     const p = await (await page.request.get("/api/portfolio")).json();
-    return p?.benchmark?.ticker;
+    return p?.portfolio?.benchmark?.ticker;
   }).toBe("SPY");
-  const stored = await (await page.request.get("/api/portfolio")).json();
+  const stored = (await (await page.request.get("/api/portfolio")).json()).portfolio;
   expect(stored.benchmark).toEqual({
     ticker: "SPY",
     listing: "XNYS",
@@ -163,10 +174,12 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   });
   expect(stored.settings.benchmark).toBeUndefined();
 
-  // Benchmark is absent from rail
-  const rail = page.getByRole("navigation", { name: "Portfolio and decisions" });
-  await expect(rail).not.toContainText("SPY");
-  await expect(rail).toContainText("ACME");
+  // The benchmark is a rule, not a holding
+  await checkPortfolio(page, async view => {
+    await expect(view.getByRole("table", { name: "Holdings" })).not.toContainText("SPY");
+    await expect(view.getByRole("row", { name: /ACME/ })).toBeVisible();
+    await expect(view.getByRole("group", { name: "Rules" })).toContainText("SPY");
+  });
 
   // Run stock analysis for ACME
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
@@ -180,10 +193,14 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   const optionsCompared = memo.getByRole("list", { name: "Options compared" });
   await expect(optionsCompared.getByRole("listitem").filter({ hasText: "SPY" })).toContainText("Unknown");
 
-  // Rail shows updated weights from analysis, which sum ACME and cash only (SPY is absent)
-  await expect(rail).not.toContainText("SPY");
-  await expect(rail).toContainText("57.4%");
-  await expect(rail).toContainText("42.6%");
+  // The portfolio shows the weights from the analysis, which sum ACME and cash only (SPY is absent)
+  await checkPortfolio(page, async view => {
+    const table = view.getByRole("table", { name: "Holdings" });
+    await expect(table).not.toContainText("SPY");
+    await expect(table).toContainText("57.4%");
+    await expect(table).toContainText("42.6%");
+  });
+  await openDetails(page);
 
   // Check scenarios tab: benchmark SPY is present as comparison alternative
   await details.getByRole("tab", { name: "Scenarios" }).click();
@@ -194,9 +211,15 @@ test("benchmark fund: configure in holdings rules, verify comparison alternative
   // Clear benchmark in Holdings rules
   await details.getByRole("tab", { name: "Holdings" }).click();
   await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await details.getByTestId("review-changes").click();
+  const clearDialog = page.getByRole("dialog", { name: "Review portfolio changes" });
+  await expect(clearDialog).toBeVisible();
+  await clearDialog.getByTestId("confirm-proposal").click();
+  await expect(clearDialog).toHaveCount(0);
+
   await expect.poll(async () => {
     const p = await (await page.request.get("/api/portfolio")).json();
-    return p?.benchmark;
+    return p?.portfolio?.benchmark;
   }).toBeNull();
 });
 
@@ -221,7 +244,6 @@ test("malformed CSV reports a clear import error", async ({ page }) => {
 
 test("missing mark displays unknown total and qualifies the completed review", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.request.delete("/api/test/portfolio");
   const missingMark = {
     ...SAVED,
     snapshot: {
@@ -229,10 +251,10 @@ test("missing mark displays unknown total and qualifies the completed review", a
       positions: SAVED.snapshot.positions.map(p => p.id === "tfsa-acme" ? { ...p, mark: null } : p),
     },
   };
-  expect((await page.request.put("/api/portfolio", { data: missingMark })).ok()).toBeTruthy();
+  await seedPortfolio(page, missingMark);
   await page.goto("/");
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("Review the incomplete portfolio");
+  await ask.fill("/review Review the incomplete portfolio");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
@@ -242,19 +264,18 @@ test("missing mark displays unknown total and qualifies the completed review", a
 
 test("invalid model output clears the previous result and cannot display as a completed recommendation", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.request.delete("/api/test/portfolio");
-  expect((await page.request.put("/api/portfolio", { data: SAVED })).ok()).toBeTruthy();
+  await seedPortfolio(page, SAVED);
   await page.goto("/");
 
   // 1. Submit normal review
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("Review the portfolio");
+  await ask.fill("/review Review the portfolio");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
 
   // 2. Submit question returning invalid output
-  await ask.fill("Return invalid output");
+  await ask.fill("/review Return invalid output");
   const rejected = page.waitForResponse(response => response.url().endsWith("/api/analyze") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   expect((await rejected).status()).toBe(502);
@@ -266,23 +287,22 @@ test("invalid model output clears the previous result and cannot display as a co
 
 test("existing analysis journey works without saving", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
-  await page.request.delete("/api/test/portfolio");
-  expect((await page.request.put("/api/portfolio", { data: SAVED })).ok()).toBeTruthy();
+  await seedPortfolio(page, SAVED);
   await page.goto("/");
 
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
-  await ask.fill("Simple portfolio review without saving");
+  await ask.fill("/review Simple portfolio review without saving");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   const memo = page.getByRole("region", { name: "Analyst memo" });
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
 
   // Details panel can be navigated without saving
-  const details = page.getByRole("complementary", { name: "Details" });
+  const details = await openDetails(page);
   await details.getByRole("tab", { name: "Holdings" }).click();
   await expect(details.getByRole("group", { name: "Holdings to identify" })).toHaveCount(0);
 
   // A follow up question can be asked without saving
-  await ask.fill("How diversified am I?");
+  await ask.fill("/review How diversified am I?");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
 });

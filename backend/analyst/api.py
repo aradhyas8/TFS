@@ -1,11 +1,12 @@
+import asyncio
 import csv
 import io
 import json
-import sqlite3
+import threading
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-
 from decimal import Decimal
-from typing import Any
+from typing import Any, AsyncIterator, Literal, cast
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -15,6 +16,7 @@ from pydantic import ValidationError
 
 from .allocation import DiscoveryProvider
 from .config import Settings
+from .connection import Connection, ProviderChoice, local_request
 from .csv_input import COLUMNS, load_csv
 from .decisions import DecisionStore, extract_decision
 from .financial_data import (
@@ -24,11 +26,14 @@ from .financial_data import (
     eodhd_symbol,
 )
 from .issuer_research import IssuerResearchProvider
+from .orchestrator import Orchestrator
 from .persistence import (
     DatabaseLockError,
     InvalidProposalStateError,
     ProposalNotFoundError,
+    RunConflictError,
     StaleBaseRevisionError,
+    ThreadNotFoundError,
 )
 from .pipeline import InvalidReview, analyze
 from .portfolio import (
@@ -51,16 +56,19 @@ from .schemas import (
     BENCHMARK_FUND,
     AnalysisRequest,
     AnalysisResult,
+    ArtifactEnvelope,
+    ArtifactReference,
+    CancelProposalResult,
     CandidateListing,
     CandidateRequest,
     CandidateResult,
     CandidateUnresolved,
-    CancelProposalResult,
     ConfirmActionRequest,
     ConfirmationResult,
+    CreateArtifactRequest,
+    CreateThreadRequest,
     CSVRequest,
     FinancialEvidence,
-    IdentifyHolding,
     IdentifyHoldingRequest,
     ImportPortfolioRequest,
     Mark,
@@ -71,15 +79,16 @@ from .schemas import (
     ProposalStatus,
     RefreshPrices,
     RevisionedPortfolio,
+    RunRecord,
     SavedDecision,
     SaveDecisionRequest,
-    SavedPortfolio,
     Snapshot,
+    SubmitMessageRequest,
+    ThreadDetail,
+    ThreadSummary,
     UpdatePortfolioRequest,
 )
 from .sec_research import SecResearchProvider
-
-
 
 
 def create_app(
@@ -92,13 +101,145 @@ def create_app(
     discovery: DiscoveryProvider | None = None,
     store: DecisionStore | None = None,
     portfolio_store: PortfolioStore | None = None,
+    orchestrator: Orchestrator | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Personal Investment Analyst", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        yield
+        connection.cancel.set()
+        if connection.task:
+            await connection.task
+        if orch is not None and model is None and orchestrator is None:
+            await orch.transport.close()
+
+    app = FastAPI(title="Personal Investment Analyst", version="0.1.0", lifespan=lifespan)
     source = data or SuppliedDataProvider()
     decisions = store or DecisionStore()
     portfolios = portfolio_store or PortfolioStore()
+    app_settings = settings or Settings.from_environment()
+    connection = Connection(app_settings, managed=settings is None or not app_settings.api_key)
+
+    # Recover interrupted runs on startup without replaying
+    portfolios.db.recover_interrupted_runs()
+
+    # Create orchestrator if provided or lazily initialized
+    orch: Orchestrator | None = orchestrator
+    if orch is None:
+        transport: Any = None
+        if model is not None:
+            transport = getattr(model, "transport", model)
+        else:
+            try:
+                from .providers import OpenAIResponseTransport
+                transport = OpenAIResponseTransport(app_settings, allow_routed=True)
+            except ValueError:
+                # API key/model not configured at creation time; will error if orchestrator is called
+                transport = None
+        if transport is not None:
+            orch = Orchestrator(db=portfolios.db, transport=transport, settings=app_settings, financial=financial, research=research, discovery=discovery, data=source)
+
     app.state.portfolio_store = portfolios
     app.state.decision_store = decisions
+    app.state.orchestrator = orch
+
+    provider_lock = asyncio.Lock()
+
+    async def get_orchestrator() -> Orchestrator:
+        nonlocal orch
+        if model is not None or orchestrator is not None:
+            assert orch is not None
+            return orch
+        async with provider_lock:
+            config = await asyncio.to_thread(connection.resolve)
+            if orch is not None and orch.settings == config:
+                return orch
+            ensure_idle()
+            from .providers import OpenAIResponseTransport
+            try:
+                transport = OpenAIResponseTransport(config, allow_routed=True)
+            except ValueError:
+                raise HTTPException(503, "Select a configured AI provider in AI connection.") from None
+            if orch is not None:
+                await orch.transport.close()
+            orch = Orchestrator(db=portfolios.db, transport=transport, settings=config, financial=financial, research=research, discovery=discovery, data=source)
+            app.state.orchestrator = orch
+            return orch
+
+    def ensure_idle() -> None:
+        if orch is not None and orch.has_active_runs or legacy_active:
+            raise HTTPException(409, "Finish or cancel current AI work before changing the connection.")
+
+    legacy_active = 0
+
+    @app.get("/api/ai/connection")
+    async def connection_status(request: Request) -> dict[str, Any]:
+        local_request(request)
+        return await asyncio.to_thread(connection.status)
+
+    @app.post("/api/ai/login")
+    async def start_login(request: Request) -> dict[str, Any]:
+        local_request(request)
+        async with provider_lock:
+            ensure_idle()
+            if connection.task and not connection.task.done():
+                raise HTTPException(409, "A sign-in is already in progress.")
+            if connection.status()["chatgpt_state"] == "unavailable":
+                raise HTTPException(503, connection.status()["message"])
+            connection.cancel = threading.Event()
+            connection.error = None
+            connection.error_state = "failed"
+            connection.task = asyncio.create_task(connection.sign_in())
+            return connection.status()
+
+    @app.post("/api/ai/login/cancel")
+    async def cancel_login(request: Request) -> dict[str, Any]:
+        local_request(request)
+        connection.cancel.set()
+        if connection.task:
+            await connection.task
+        return connection.status()
+
+    @app.post("/api/ai/logout")
+    async def sign_out(request: Request) -> dict[str, Any]:
+        nonlocal orch
+        local_request(request)
+        async with provider_lock:
+            ensure_idle()
+            if connection.task and not connection.task.done():
+                raise HTTPException(409, "Finish or cancel sign-in before signing out.")
+            result = await connection.sign_out()
+            if orch is not None and orch.settings.provider == "chatgpt_plan":
+                await orch.transport.close()
+                orch = None
+                app.state.orchestrator = None
+            return result
+
+    @app.post("/api/ai/refresh")
+    async def refresh_connection(request: Request) -> dict[str, Any]:
+        local_request(request)
+        async with provider_lock:
+            ensure_idle()
+            return await connection.refresh()
+
+    @app.post("/api/ai/provider")
+    async def select_provider(request: Request, choice: ProviderChoice) -> dict[str, Any]:
+        local_request(request)
+        async with provider_lock:
+            ensure_idle()
+            if connection.task and not connection.task.done():
+                raise HTTPException(409, "Finish or cancel sign-in before changing providers.")
+            if choice.provider == "chatgpt_plan":
+                await connection.refresh()
+                if choice.model not in {row["slug"] for row in connection.catalog}:
+                    raise HTTPException(422, "Choose an available ChatGPT model. Refresh or reconnect to retry.")
+            elif choice.provider != connection.api_settings.provider or not connection.api_ready:
+                raise HTTPException(422, "Configure the API-key provider in backend/.env before selecting it.")
+            selected_model = choice.model if choice.provider == "chatgpt_plan" else connection.api_settings.model
+            from .chatgpt_plan import _write, home
+            await asyncio.to_thread(_write, home() / "selection.json", json.dumps({"provider": choice.provider, "model": selected_model}).encode())
+            connection.provider, connection.model = choice.provider, selected_model
+            connection.managed = True
+            return connection.status()
 
     @app.exception_handler(RequestValidationError)
     async def invalid_input(_request: Request, error: RequestValidationError) -> JSONResponse:
@@ -135,6 +276,20 @@ def create_app(
 
     @app.exception_handler(InvalidProposalStateError)
     async def handle_invalid_proposal_state(_request: Request, exc: InvalidProposalStateError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(ThreadNotFoundError)
+    async def handle_thread_not_found(_request: Request, exc: ThreadNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)},
+        )
+
+    @app.exception_handler(RunConflictError)
+    async def handle_run_conflict(_request: Request, exc: RunConflictError) -> JSONResponse:
         return JSONResponse(
             status_code=409,
             content={"detail": str(exc)},
@@ -276,6 +431,46 @@ def create_app(
     async def cancel_proposal(proposal_id: str, request: Request) -> CancelProposalResult:
         await _assert_empty_request(request)
         return cancel_portfolio_action(portfolios.db, proposal_id)
+
+    @app.post("/api/portfolio/artifacts", response_model=ArtifactReference)
+    def create_portfolio_artifact(request: CreateArtifactRequest) -> ArtifactReference:
+        return portfolios.store_hypothetical_artifact(
+            request.portfolio,
+            label=request.label,
+            source_artifact_id=request.source_artifact_id,
+            originating_run_id=request.originating_run_id,
+        )
+
+    @app.get("/api/portfolio/artifacts/{artifact_id}", response_model=ArtifactReference)
+    def get_portfolio_artifact(artifact_id: str) -> ArtifactReference:
+        ref = portfolios.get_artifact_reference(artifact_id)
+        if not ref:
+            raise HTTPException(404, f"Artifact '{artifact_id}' not found.")
+        return ref
+
+    @app.get("/api/portfolio/artifacts/{artifact_id}/payload")
+    def get_portfolio_artifact_payload(
+        artifact_id: str,
+        projection: Literal["human", "model"] = "human",
+    ) -> dict[str, Any]:
+        payload = portfolios.get_artifact(artifact_id, projection=projection)
+        if payload is None:
+            raise HTTPException(404, f"Artifact '{artifact_id}' not found.")
+        return cast(dict[str, Any], payload)
+
+    @app.post("/api/artifacts", response_model=ArtifactReference)
+    def create_artifact_alias(request: CreateArtifactRequest) -> ArtifactReference:
+        return create_portfolio_artifact(request)
+
+    @app.get("/api/artifacts/{artifact_id}", response_model=ArtifactEnvelope)
+    def get_generic_artifact(
+        artifact_id: str,
+        projection: Literal["human", "model"] = "human",
+    ) -> ArtifactEnvelope:
+        envelope = portfolios.get_artifact_envelope(artifact_id, projection=projection)
+        if envelope is None:
+            raise HTTPException(404, f"Artifact '{artifact_id}' not found.")
+        return envelope
 
 
 
@@ -429,10 +624,21 @@ def create_app(
 
     @app.post("/api/analyze", response_model=AnalysisResult)
     async def analysis(request: AnalysisRequest) -> AnalysisResult:
-        config = settings or Settings.from_environment()
+        if request.artifact_id and request.artifact_reference is None:
+            ref = portfolios.get_artifact_reference(request.artifact_id)
+            if ref:
+                request = request.model_copy(update={"artifact_reference": ref})
+        nonlocal legacy_active
+        needs_ai = not (request.theme and not request.theme.confirmed)
+        if needs_ai and connection.task and not connection.task.done() and model is None:
+            raise HTTPException(409, "Finish or cancel ChatGPT sign-in before starting AI work.")
+        async with provider_lock:
+            config = app_settings if not needs_ai or model is not None else await asyncio.to_thread(connection.resolve)
+            legacy_active += int(needs_ai)
         provider = model
-        if provider is None and not (request.theme and not request.theme.confirmed):
+        if provider is None and needs_ai:
             if not config.api_key or not config.model:
+                legacy_active -= 1
                 raise HTTPException(
                     503, "Configure the backend OpenAI API key and model to analyze."
                 )
@@ -485,6 +691,7 @@ def create_app(
                 502, "The model service could not complete the review. Try again."
             ) from None
         finally:
+            legacy_active -= int(needs_ai)
             if isinstance(provider, OpenAIModel):
                 await provider.client.close()
 
@@ -495,14 +702,23 @@ def create_app(
     @app.post("/api/decisions", response_model=SavedDecision)
     def save_decision(request: SaveDecisionRequest) -> SavedDecision:
         if request.result is not None:
+            if request.artifact_id:
+                existing = decisions.get_by_artifact_id(request.artifact_id)
+                if existing is not None:
+                    return existing
             record = extract_decision(
                 request.result,
                 confirmed_action=request.confirmed_action,
                 workflow=request.workflow,
                 subject=request.subject,
+                artifact_id=request.artifact_id,
             )
         elif request.decision is not None:
             record = request.decision
+            if request.artifact_id:
+                existing = decisions.get_by_artifact_id(request.artifact_id)
+                if existing is not None and existing.id != record.id:
+                    return existing
             updates: dict[str, Any] = {}
             if request.confirmed_action is not None:
                 updates["confirmed_action"] = request.confirmed_action
@@ -510,6 +726,8 @@ def create_app(
                 updates["workflow"] = request.workflow
             if request.subject is not None:
                 updates["subject"] = request.subject
+            if request.artifact_id is not None:
+                updates["artifact_id"] = request.artifact_id
             if updates:
                 record = record.model_copy(update=updates)
         else:
@@ -538,6 +756,72 @@ def create_app(
             return decisions.confirm_action(decision_id, action=request.action, notes=request.notes)
         except KeyError:
             raise HTTPException(404, "Decision not found.")
+
+    # =========================================================================
+    # Conversation & Run Endpoints (Ticket 03)
+    # =========================================================================
+
+    @app.post("/api/threads", response_model=ThreadSummary, status_code=201)
+    def create_thread(request: CreateThreadRequest | None = None) -> ThreadSummary:
+        tid = request.id if request else None
+        return portfolios.db.create_thread(thread_id=tid)
+
+    @app.get("/api/threads", response_model=list[ThreadSummary])
+    def list_threads() -> list[ThreadSummary]:
+        return portfolios.db.list_threads()
+
+    @app.get("/api/threads/{thread_id}", response_model=ThreadDetail)
+    def get_thread(thread_id: str) -> ThreadDetail:
+        thread = portfolios.db.get_thread(thread_id)
+        if thread is None:
+            raise HTTPException(404, f"Thread '{thread_id}' not found.")
+        return thread
+
+    @app.post("/api/threads/{thread_id}/messages", response_model=RunRecord, status_code=202)
+    async def submit_thread_message(thread_id: str, request: SubmitMessageRequest) -> RunRecord:
+        if request.hypothetical_artifact_id is not None:
+            selected = portfolios.get_artifact_reference(request.hypothetical_artifact_id)
+            if selected is None or selected.kind != "portfolio_snapshot" or selected.basis != "hypothetical":
+                raise HTTPException(422, "Select a stored hypothetical portfolio.")
+
+        if connection.task and not connection.task.done() and model is None and orchestrator is None:
+            raise HTTPException(409, "Finish or cancel ChatGPT sign-in before starting AI work.")
+        selected_orch = await get_orchestrator()
+        # Bind revision once at acceptance: latest committed portfolio revision or None if absent
+        current_rev = portfolios.get_revisioned()
+        bound_revision = current_rev.revision if current_rev else None
+
+        run_record, is_new = portfolios.db.submit_message(
+            thread_id=thread_id,
+            request=request,
+            bound_revision=bound_revision,
+        )
+
+        if is_new:
+            selected_orch.submit_supervised_run(
+                thread_id=thread_id,
+                run_record=run_record,
+                user_text=request.text,
+                workflow_input=request.workflow_input,
+                hypothetical_artifact_id=request.hypothetical_artifact_id,
+            )
+
+        return run_record
+
+    @app.get("/api/threads/{thread_id}/runs/{run_id}", response_model=RunRecord)
+    def get_thread_run(thread_id: str, run_id: str) -> RunRecord:
+        # Cross-thread lookups must return 404
+        run_record = portfolios.db.get_run(thread_id, run_id)
+        if run_record is None:
+            raise HTTPException(404, f"Run '{run_id}' not found in thread '{thread_id}'.")
+        return run_record
+
+    @app.post("/api/threads/{thread_id}/runs/{run_id}/cancel", response_model=RunRecord)
+    async def cancel_thread_run(thread_id: str, run_id: str) -> RunRecord:
+        run_record = await orch.cancel_run(thread_id, run_id) if orch is not None else portfolios.db.cancel_run(thread_id, run_id)
+        if run_record is None:
+            raise HTTPException(404, f"Run '{run_id}' not found in thread '{thread_id}'.")
+        return run_record
 
     return app
 
