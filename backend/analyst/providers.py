@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import json
 import logging
@@ -203,6 +204,14 @@ class ModelServiceError(OpenAIError):
     """A model-service failure whose message is safe to show the user: no upstream body, key or request detail."""
 
 
+class ModelIncomplete(ModelServiceError, ValueError):
+    """The provider returned a response that stopped before any tool call or answer (e.g. reasoning only)."""
+
+    def __init__(self, message: str, *, reason: str | None) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 def openrouter_failure(exc: APIError, model: str) -> ModelServiceError:
     """Classify an OpenRouter failure. Upstream bodies are read only to classify and logged by status, never echoed."""
     status = getattr(exc, "status_code", None)
@@ -217,9 +226,10 @@ def openrouter_failure(exc: APIError, model: str) -> ModelServiceError:
     elif status == 404 and "that support" in upstream and "reasoning" in upstream:
         reason = ("does not support the configured reasoning effort at the allowed price. "
                   "Unset OPENAI_REASONING_EFFORT or choose a model that supports reasoning; no other model was used")
-    elif status == 404 and "that support" in upstream:
-        reason = ("does not support the required tools, tool choice and structured outputs at the allowed price. "
-                  "Choose a model that does; no other model was used")
+    elif status == 404 and ("that support" in upstream or "can handle the requested parameters" in upstream):
+        reason = ("does not support every parameter TFS requires (tools, named tool choice, strict structured outputs "
+                  "and any configured reasoning effort) at the allowed price. Retrying will not help; choose a model whose "
+                  "provider supports all of them. No other model was used")
     elif status == 402:
         reason = "rejected the request for insufficient credits. No other model was used"
     elif status == 400:
@@ -306,7 +316,13 @@ class OpenAIResponseTransport:
                 del params["max_output_tokens"]
                 response = await stream_response(self.client, params, effective_timeout)
             else:
-                response = await self.client.responses.create(**params)
+                # The SDK timeout bounds each socket read, not the request: a provider streaming keep-alives could hold
+                # a call open indefinitely. This is the real per-call limit.
+                response = await asyncio.wait_for(self.client.responses.create(**params), effective_timeout)
+        except TimeoutError:
+            prefix = f"OpenRouter {self.settings.model}: " if openrouter else ""
+            raise ModelServiceError(f"{prefix}the model did not respond within {effective_timeout:.0f} seconds. "
+                                    "Nothing was retried; try again later.") from None
         except APIError as exc:
             if not openrouter:
                 raise
@@ -342,7 +358,7 @@ class OpenAIResponseTransport:
                 f"max_output_tokens=16000, reasoning_effort={effort}, partial_tools={partial_tools}"
             )
             logging.error("OPENAI INCOMPLETE RESPONSE: %s", msg)
-            raise ValueError(msg)
+            raise ModelIncomplete(msg, reason=inc_reason)
 
         # Check for model refusals in output items
         for item in response.output:

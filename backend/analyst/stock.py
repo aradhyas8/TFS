@@ -1,6 +1,7 @@
 """Conditional company arithmetic; reviewed facts never come from the model."""
 from datetime import date
 from decimal import Decimal, localcontext
+from typing import Any
 
 from .calculations import money
 from .schemas import (
@@ -35,11 +36,104 @@ BASIS = (
 )
 
 
+def fact_problem(candidate: ResearchFact, metric: str, research: CompanyResearch, row: PositionResult, as_of: date) -> str | None:
+    """Why a cited fact cannot start a company case for `metric`, or None when it can. The only fact gate."""
+    documents = {doc.id: doc for doc in research.documents}
+    expected_unit = "shares" if metric == "shares" else "currency"
+    refs = [documents[ref] for ref in candidate.document_ids]
+    is_canadian = is_canadian_security(row.supplied.currency, row.supplied.listing) or any(doc.authority in {"sedar", "sedar_plus"} for doc in research.documents)
+    required_filing = {"sedar", "sedar_plus"} if is_canadian else {"sec"}
+    if (candidate.metric != metric or candidate.unit != expected_unit
+            or candidate.currency != (None if metric == "shares" else row.supplied.currency)
+            or candidate.value is None or candidate.period_end > as_of
+            or candidate.period_start is not None and candidate.period_start > candidate.period_end
+            or metric in {"revenue", "ffo"} and (candidate.period_start is None or not 350 <= (candidate.period_end - candidate.period_start).days <= 380)
+            # Automated SEC XBRL facts pass on their automated checks; footnotes are not read, which is disclosed below.
+            or not all((candidate.filing_checked, candidate.review in {"sec_xbrl", "issuer_report"} or candidate.notes_checked,
+                        candidate.custom_tags_checked, candidate.segments_checked))
+            # The issuer's own published report is the primary source for issuer_report facts; SEDAR+ is optional there.
+            or not any(doc.available and (doc.authority in required_filing or candidate.review == "issuer_report" and doc.authority == "issuer")
+                       for doc in refs)
+            or any(not doc.available or doc.published_on > as_of or doc.as_of > as_of or doc.as_of < candidate.period_end for doc in refs)):
+        return f"{metric}: period, unit, definition or primary filing checks are unusable; fact remains unknown."
+    matches = [other for other in research.facts if other.metric == candidate.metric
+               and other.period_end == candidate.period_end and other.period_start == candidate.period_start]
+    if any((other.value, other.unit, other.currency, other.definition) !=
+           (candidate.value, candidate.unit, candidate.currency, candidate.definition) for other in matches):
+        return f"{metric}: contradictory reported facts remain unknown."
+    return None
+
+
+def case_inputs(position_id: str, research: CompanyResearch, portfolio: PortfolioReview) -> dict[str, Any]:
+    """The compact, already-validated starting point for company cases: which cited facts pass `fact_problem`, reported
+    history ratios derived from them, and the rules calculate_company_cases enforces. Context only: nothing here is
+    a judgment, and the calculation re-validates whatever IDs the model cites."""
+    row = next(row for row in portfolio.positions if row.supplied.id == position_id)
+
+    def usable(metric: str) -> list[ResearchFact]:
+        rows = [fact for fact in research.facts if fact.metric == metric
+                and fact_problem(fact, metric, research, row, portfolio.as_of) is None]
+        return sorted(rows, key=lambda fact: fact.period_end, reverse=True)
+
+    def same_period(metric: str, period: ResearchFact) -> ResearchFact | None:
+        return next((fact for fact in usable(metric) if fact.period_end == period.period_end
+                     and (metric == "shares" or fact.period_start == period.period_start)), None)
+
+    method = {"financial": "book_exit", "reit": "ffo_exit"}.get(research.sector, "earnings_exit or fcf_exit")
+    revenue, shares = usable("revenue"), usable("shares")
+    if method == "book_exit":  # starting book needs period-end shares outstanding, never a weighted-average count
+        shares = [fact for fact in shares if fact.period_start is None]
+    history = []
+    for index, period in enumerate(revenue):
+        assert period.value is not None
+        line: dict[str, Any] = {"period_start": str(period.period_start), "period_end": str(period.period_end), "fact_ids": [period.id]}
+        for metric in ("operating_income", "net_income", "operating_cash_flow", "capex", "free_cash_flow"):
+            found = same_period(metric, period)
+            if found is not None and found.value is not None and period.value:
+                line[f"{metric}_to_revenue"] = fixed(found.value / period.value, 4)
+                line["fact_ids"].append(found.id)
+        earnings, fcf = same_period("net_income", period), same_period("free_cash_flow", period)
+        if earnings and fcf and earnings.value and fcf.value is not None:
+            line["free_cash_flow_to_net_income"] = fixed(fcf.value / earnings.value, 4)
+        prior = next((fact for fact in revenue[index + 1:] if 350 <= (period.period_end - fact.period_end).days <= 380), None)
+        if prior is not None and prior.value:
+            line["revenue_growth"] = fixed(period.value / prior.value - 1, 4)
+        count = same_period("shares", period)
+        prior_count = same_period("shares", prior) if prior is not None else None
+        if count and prior_count and count.value is not None and prior_count.value:
+            line["share_change"] = fixed(count.value / prior_count.value - 1, 4)
+        history.append(line)
+
+    same_currency = row.supplied.currency == portfolio.reporting_currency
+    requirements = [
+        f"Sector {research.sector}: use {method}." if research.sector != "unknown"
+        else "Sector is unknown: no valuation method is established and every case stays unknown.",
+        "Cite revenue_fact_id and shares_fact_id from the lists below with the same period_end; other IDs leave the cases unknown."
+        if method != "book_exit" and method != "ffo_exit" else
+        "Cite metric_fact_id and shares_fact_id from the lists below with the same period_end; other IDs leave the cases unknown.",
+        {"book_exit": "book_exit: margins and cash_conversion 1, reinvestment 0 and growth 0 every year; return_on_equity is "
+                      "required every year and Python derives book growth as ROE x (1 - payout).",
+         "ffo_exit": "ffo_exit: margins and cash_conversion 1 and reinvestment 0 every year; return_on_equity is null."}.get(
+            method, "margins are net earnings over revenue. earnings_exit needs cash_conversion 1 and reinvestment 0 every year; "
+                    "fcf_exit applies cash_conversion and reinvestment to those earnings. return_on_equity is null."),
+        "mid_cycle_context is required: cyclicality is " + ("cyclical" if research.cyclical else "unknown")
+        + "; without it every case stays unknown." if research.cyclical is not False else "mid_cycle_context may be null.",
+        "fx_multipliers must be 1 every year (same currency as the portfolio)." if same_currency
+        else "fx_multipliers are judged factors on today's dated FX for each year.",
+        "Python calculates every path, per-share value, exit, discounting and sensitivity: supply judgments only.",
+    ]
+    issues = [problem for fact in research.facts if fact.metric in {"revenue", "shares", "book_value", "ffo"}
+              for problem in [fact_problem(fact, fact.metric, research, row, portfolio.as_of)] if problem]
+    return {"revenue_fact_ids": [fact.id for fact in revenue], "shares_fact_ids": [fact.id for fact in shares],
+            "metric_fact_ids": [fact.id for metric in ("book_value", "ffo") for fact in usable(metric)],
+            "reported_history": history, "unusable": list(dict.fromkeys([*issues, *research.issues])),
+            "requirements": requirements}
+
+
 def calculate_company_cases(position_id: str, research: CompanyResearch,
                             judgment: CompanyJudgments, portfolio: PortfolioReview) -> StockResult:
     row = next(row for row in portfolio.positions if row.supplied.id == position_id)
     issues = list(research.issues)
-    documents = {doc.id: doc for doc in research.documents}
     facts = {fact.id: fact for fact in research.facts}
 
     def fact(key: str | None, metric: str) -> ResearchFact | None:
@@ -47,29 +141,9 @@ def calculate_company_cases(position_id: str, research: CompanyResearch,
         if candidate is None:
             issues.append(f"{metric}: reported fact unavailable; not assumed zero.")
             return None
-        expected_unit = "shares" if metric == "shares" else "currency"
-        refs = [documents[ref] for ref in candidate.document_ids]
-        is_canadian = is_canadian_security(row.supplied.currency, row.supplied.listing) or any(doc.authority in {"sedar", "sedar_plus"} for doc in research.documents)
-        required_filing = {"sedar", "sedar_plus"} if is_canadian else {"sec"}
-        if (candidate.metric != metric or candidate.unit != expected_unit
-                or candidate.currency != (None if metric == "shares" else row.supplied.currency)
-                or candidate.value is None or candidate.period_end > portfolio.as_of
-                or candidate.period_start is not None and candidate.period_start > candidate.period_end
-                or metric in {"revenue", "ffo"} and (candidate.period_start is None or not 350 <= (candidate.period_end - candidate.period_start).days <= 380)
-                # Automated SEC XBRL facts pass on their automated checks; footnotes are not read, which is disclosed below.
-                or not all((candidate.filing_checked, candidate.review in {"sec_xbrl", "issuer_report"} or candidate.notes_checked,
-                            candidate.custom_tags_checked, candidate.segments_checked))
-                # The issuer's own published report is the primary source for issuer_report facts; SEDAR+ is optional there.
-                or not any(doc.available and (doc.authority in required_filing or candidate.review == "issuer_report" and doc.authority == "issuer")
-                           for doc in refs)
-                or any(not doc.available or doc.published_on > portfolio.as_of or doc.as_of > portfolio.as_of or doc.as_of < candidate.period_end for doc in refs)):
-            issues.append(f"{metric}: period, unit, definition or primary filing checks are unusable; fact remains unknown.")
-            return None
-        matches = [other for other in research.facts if other.metric == candidate.metric
-                   and other.period_end == candidate.period_end and other.period_start == candidate.period_start]
-        if any((other.value, other.unit, other.currency, other.definition) !=
-               (candidate.value, candidate.unit, candidate.currency, candidate.definition) for other in matches):
-            issues.append(f"{metric}: contradictory reported facts remain unknown.")
+        problem = fact_problem(candidate, metric, research, row, portfolio.as_of)
+        if problem:
+            issues.append(problem)
             return None
         if candidate.review == "issuer_report":
             issues.append(f"{metric}: read automatically from the issuer's published report ({candidate.id}); period, unit and conflicts are "

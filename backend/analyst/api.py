@@ -26,7 +26,7 @@ from .financial_data import (
     eodhd_symbol,
 )
 from .issuer_research import IssuerResearchProvider
-from .orchestrator import Orchestrator
+from .orchestrator import MAX_DEADLINE_SECONDS, Orchestrator
 from .persistence import (
     DatabaseLockError,
     InvalidProposalStateError,
@@ -52,6 +52,7 @@ from .portfolio_actions import (
 )
 from .providers import (
     DataProvider,
+    ModelIncomplete,
     ModelProvider,
     ModelServiceError,
     OpenAIModel,
@@ -95,6 +96,9 @@ from .schemas import (
     UpdatePortfolioRequest,
 )
 from .sec_research import SecResearchProvider
+
+# The same whole-run budget as a conversation run; on expiry the in-flight model request is cancelled.
+ANALYZE_DEADLINE_SECONDS = MAX_DEADLINE_SECONDS
 
 
 def create_app(
@@ -649,6 +653,7 @@ def create_app(
                     503, "Configure the backend OpenAI API key and model to analyze."
                 )
             provider = OpenAIModel(config)
+        budget = asyncio.timeout(ANALYZE_DEADLINE_SECONDS)
         try:
             financial_source = financial or PersonalFinancialProvider.from_environment()
             # Stock Analysis, portfolio review, new cash, and confirmed theme read SEC EDGAR live
@@ -664,15 +669,23 @@ def create_app(
                 if needs_research
                 else None
             )
-            return await analyze(
-                request,
-                provider,
-                source,
-                secret=config.api_key,
-                financial=financial_source,
-                research=research_source,
-                discovery=discovery,
-            )
+            async with budget:
+                return await analyze(
+                    request,
+                    provider,
+                    source,
+                    secret=config.api_key,
+                    financial=financial_source,
+                    research=research_source,
+                    discovery=discovery,
+                )
+        except TimeoutError:
+            if not budget.expired():
+                raise HTTPException(503, "Backend financial source configuration is invalid.") from None
+            raise HTTPException(504, f"The analysis did not finish within its {ANALYZE_DEADLINE_SECONDS:g}-second deadline and was "
+                                     "stopped. No recommendation was completed.") from None
+        except ModelIncomplete as exc:
+            raise HTTPException(502, str(exc)) from None
         except (ValueError, OSError):
             raise HTTPException(503, "Backend financial source configuration is invalid.") from None
         except InvalidReview as exc:

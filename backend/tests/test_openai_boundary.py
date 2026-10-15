@@ -18,6 +18,7 @@ from tests.test_stock import (
     research_fixture,
     stock_answer,
     stock_comparison_judgments,
+    stock_comparison_request,
     stock_request,
 )
 
@@ -41,7 +42,9 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
         if len(sent) == 1 or (failure == "financial_tools" and len(sent) <= 4) or (failure == "comparison" and len(sent) == 2) or (failure == "stock" and len(sent) <= 5):
             assert request.url == "https://api.openai.com/v1/responses"
             assert request.headers["Authorization"] == "Bearer sk-test-backend-only-never-browser"
-            assert payload["tool_choice"] == ({"type": "function", "name": "review_portfolio"} if len(sent) == 1 else "auto")
+            stock_steps = ["review_portfolio", "get_sec_filings", "get_issuer_material", "calculate_company_cases", "calculate_comparison"]
+            forced = stock_steps[len(sent) - 1] if failure == "stock" or len(sent) == 1 else None
+            assert payload["tool_choice"] == ({"type": "function", "name": forced} if forced else "auto")
             assert {tool["name"] for tool in payload["tools"]} == {
                 "review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes", "calculate_comparison", "get_sec_filings", "get_issuer_material", "calculate_company_cases", "get_sponsor_holdings"
             }
@@ -374,7 +377,7 @@ def test_tiered_reasoning_pipeline_scripted_model():
 @pytest.mark.parametrize("configured", [None, "high"])
 def test_openrouter_turns_send_only_the_configured_reasoning_effort(configured):
     """require_parameters drops every endpoint that cannot honour a sent parameter, so TFS never adds its own
-    tool-turn effort on OpenRouter. An explicitly configured effort is still sent on every turn."""
+    tool-turn effort on OpenRouter. An explicitly configured effort is sent on every turn, capped at medium on tool turns."""
     from analyst.pipeline import analyze
     from analyst.providers import ModelTurn, ScriptedModel, ToolCall
     from analyst.schemas import AnalysisRequest
@@ -391,7 +394,7 @@ def test_openrouter_turns_send_only_the_configured_reasoning_effort(configured):
     model = ScriptedModel(turns, settings=settings)
     req = AnalysisRequest.model_validate({"question": "Review my exposure", "portfolio": snapshot()})
     asyncio.run(analyze(req, model, FakeDataProvider()))
-    assert model.reasoning_efforts == [configured, configured]
+    assert model.reasoning_efforts == [{None: None, "high": "medium"}[configured], configured]
 
 
 def test_incomplete_response_detailed_diagnostics(monkeypatch):
@@ -559,7 +562,8 @@ def raising(error):
 @pytest.mark.parametrize("provider", ["openrouter", "openai"])  # an OpenRouter URL is OpenRouter whatever the label
 @pytest.mark.parametrize("handler, expected", [
     (failing(429), "rate limit reached"),
-    (failing(404, "No endpoints found that support the provided 'tool_choice' value"), "does not support the required"),
+    (failing(404, "No endpoints found that support the provided 'tool_choice' value"), "does not support every parameter TFS requires"),
+    (failing(404, "No endpoints found that can handle the requested parameters."), "does not support every parameter TFS requires"),
     (failing(404, "No endpoints found that support the provided 'reasoning' value"), "OPENAI_REASONING_EFFORT"),
     (failing(404, "No endpoints found for vendor/model:free."), "is unavailable"),
     (failing(400), "rejected the request (HTTP 400)"),
@@ -632,3 +636,47 @@ async def test_conversation_run_records_the_specific_openrouter_failure(monkeypa
     assert failed is not None and failed.status == "failed"
     assert "OpenRouter vendor/model:free: rate limit reached" in (failed.error or "")
     assert len(sent) == 1
+
+
+
+def forced_choice(name):
+    return {"type": "function", "name": name}
+
+
+@pytest.mark.parametrize("workflow", ["us_supplied_comparison", "us_default_comparison", "canadian"])
+def test_openrouter_stock_analysis_forces_each_mandatory_step_when_the_model_prefers_answering(monkeypatch, workflow):
+    """Regression: a free OpenRouter model ignored prose MANDATORY instructions under tool_choice=auto and answered
+    early (until the loop bound, or once per research step). Python forces each required stock step by name."""
+    from analyst.providers import WorkflowModelAdapter
+    from tests.test_canadian_stock import (
+        canadian_research_fixture,
+        canadian_stock_answer,
+        canadian_stock_request,
+    )
+    request, answer, records, filing = {
+        "us_supplied_comparison": (stock_comparison_request(), stock_answer(), {"acme": research_fixture()}, "get_sec_filings"),
+        "us_default_comparison": (stock_request(), stock_answer(), {"acme": research_fixture()}, "get_sec_filings"),
+        "canadian": (canadian_stock_request(), canadian_stock_answer(), {"acme:XTSE": canadian_research_fixture()}, "get_sedar_filings"),
+    }[workflow]
+    bound = AnalysisRequest.model_validate(request).model_dump(mode="json")  # stock requests always bind a comparison
+    arguments = {"calculate_company_cases": json.dumps(company_judgments()),
+                 "calculate_comparison": json.dumps(stock_comparison_judgments(bound))}
+
+    def prefers_answering(request):
+        # Obeys a named tool_choice and answers whenever the choice is left to it.
+        choice = json.loads(request.content).get("tool_choice")
+        if not isinstance(choice, dict):
+            return openrouter_response(openrouter_message(json.dumps(answer)))
+        name = choice["name"]
+        return openrouter_response([{"type": "function_call", "id": f"fc_{name}", "call_id": f"call_{name}", "name": name,
+                                     "arguments": arguments.get(name, "{}"), "status": "completed"}])
+
+    transport, sent = openrouter_transport(monkeypatch, prefers_answering)
+    research = ReviewedResearchProvider({key: CompanyResearch.model_validate(value) for key, value in records.items()})
+    response = TestClient(create_app(model=WorkflowModelAdapter(transport), data=FakeDataProvider(), research=research)).post(
+        "/api/analyze", json=request)
+    assert response.status_code == 200, response.text
+    assert response.json()["stock"] is not None and response.json()["comparison"] is not None
+    steps = ["review_portfolio", filing, "get_issuer_material", "calculate_company_cases", "calculate_comparison"]
+    # One request per mandatory step, then exactly one final answer: no premature answers.
+    assert [payload.get("tool_choice") for payload in sent] == [*map(forced_choice, steps), "auto"]
