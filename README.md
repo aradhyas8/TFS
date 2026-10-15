@@ -105,7 +105,7 @@ TFS can use your ChatGPT plan for AI requests. This sign-in connects the AI prov
 5. Select a model in **ChatGPT model**. The list shows only the models that your account can use.
 6. Select **Use ChatGPT plan**.
 
-If no models show, select **Refresh connection**. If the connection expires, select **Reconnect ChatGPT**. To remove the saved sign-in, select **Sign out of ChatGPT**.
+If no models show, select **Refresh connection**. If the error says HTTP 520, see the known upstream issue under **Limitations**. If the connection expires, select **Reconnect ChatGPT**. To remove the saved sign-in, select **Sign out of ChatGPT**.
 
 **API-key alternative:** If you cannot use ChatGPT sign-in, use an OpenAI API key.
 
@@ -126,7 +126,9 @@ If no models show, select **Refresh connection**. If the connection expires, sel
 - Model availability and usage limits depend on your ChatGPT plan.
 - You cannot change the provider while an AI request or sign-in is in progress.
 - The automated tests use a mocked sign-in. No test has yet used a real ChatGPT account.
-- The live model catalog returned HTTP 520 in one real-account test. If this occurs, select **Refresh connection** later. You do not need to sign in again.
+- **Known upstream issue (October 2026):** With a real ChatGPT sign-in, OpenAI's `api.openai.com` returns a Cloudflare HTTP 520 for both the model catalog (`GET /v1/models`) and inference (`POST /v1/responses`). TFS shows "OpenAI's model catalog is unavailable (HTTP 520)". Requests without a valid token still get a normal HTTP 401. That means the fault is OpenAI's handling of ChatGPT sign-in tokens, not TFS or your network. Other apps report the same error ([OpenAI community thread](https://community.openai.com/t/persistent-http-520-cloudflare-on-post-v1-responses-with-sign-in-with-chatgpt-oauth-tokens/1406366)). Signing in again does not help. Until OpenAI fixes it:
+  1. Use the API-key alternative above for AI questions.
+  2. Select **Refresh connection** later. Your login stays saved, so the model list loads without a new sign-in once OpenAI fixes the issue.
 
 ## First Use
 
