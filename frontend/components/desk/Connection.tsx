@@ -38,7 +38,7 @@ export default function Connection() {
   async function act(path: string, body?: object) {
     setBusy(true); setError("");
     if (details.current) details.current.open = true;
-    try { await request(path, body); }
+    try { await request(path, body); if (path === "logout") setModel(""); }
     catch (failure) { setError(failure instanceof Error ? failure.message : "Connection failed. Try again."); }
     finally { setBusy(false); }
   }
@@ -62,6 +62,7 @@ export default function Connection() {
             : <div className={styles.actions}>
               {status?.state !== "unavailable" && <Button size="sm" loading={busy} onClick={() => void act("login")}>{connected || status?.state === "expired" ? "Reconnect ChatGPT" : "Continue with ChatGPT"}</Button>}
               <Button variant="secondary" size="sm" disabled={busy} onClick={() => void act("refresh")}>Refresh connection</Button>
+              {status?.account && <Button variant="ghost" size="sm" disabled={busy} onClick={() => void act("logout")}>Sign out of ChatGPT</Button>}
             </div>}
           {!!status?.models.length && <form className={styles.models} onSubmit={event => { event.preventDefault(); void act("provider", { provider: "chatgpt_plan", model: model || status.model }); }}>
             <label htmlFor="chatgpt-model">ChatGPT model</label>

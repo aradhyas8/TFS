@@ -131,6 +131,24 @@ class Connection:
             self.error = "The saved connection or model catalog could not be read. Use Refresh connection to retry."
         return self.status()
 
+    async def sign_out(self) -> dict[str, Any]:
+        try:
+            revoked = await asyncio.to_thread(plan.logout)
+        except plan.PlanError as exc:
+            raise HTTPException(409 if exc.code == "login_busy" else 503,
+                                "ChatGPT sign-out is unavailable. Finish any other sign-in and retry on native Windows.") from None
+        self.catalog = []
+        if self.provider == "chatgpt_plan":
+            self.model = ""
+        self.managed = True
+        if self.initial.provider == "chatgpt_plan":
+            self.initial = replace(self.initial, api_key="")
+        self.error_state = "disconnected"
+        self.error = (None if revoked else "Signed out locally. Remote revocation was not confirmed. Disconnect Greedy/TFS in ChatGPT Settings if needed.")
+        await asyncio.to_thread(plan._write, plan.home() / "selection.json",
+                                json.dumps({"provider": self.provider, "model": self.model}).encode())
+        return self.status()
+
     async def sign_in(self) -> None:
         try:
             await asyncio.to_thread(plan.login, self.cancel)

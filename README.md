@@ -232,3 +232,8 @@ The application uses an explicit action model and an ACID SQLite store (`portfol
 - **Restart Guarantees**: App restarts preserve all committed revisions, pending proposals, and receipts. Unconfirmed proposals remain in `pending` status and can be reviewed or confirmed after restart.
 
 
+
+
+### Sign out of ChatGPT
+
+Open **AI connection**, choose **Sign out of ChatGPT**, then use **Continue with ChatGPT** to sign in again. This also works when a saved connection's model catalog is unavailable. TFS attempts to revoke the renewable session and clears its local encrypted tokens; if remote revocation cannot be confirmed, it displays a warning. Registration and host identity remain available for re-login to the same registered account. Finish or cancel current AI work or sign-in before signing out. Portfolio data is unaffected.

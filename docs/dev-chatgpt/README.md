@@ -49,7 +49,7 @@ Connection-state screenshots use mocked status responses and a fictional account
 | Failed | [Missing permission recovery](screenshots/failed.png) |
 | Mobile | [Phone connection controls](screenshots/mobile.png) |
 
-Remaining limits: native Windows credential storage; one saved ChatGPT registration (reconnect preserves its identity); no new multi-account picker or sign-out/revocation feature; real plan/model availability depends on the account; startup was not run on macOS/Linux. The referenced `.claude/skills/arc` design skill/checklist is absent; the existing installed Arc controls and checked-in Direction 5 guidance were used.
+Remaining limits: native Windows credential storage; one saved ChatGPT registration (reconnect preserves its identity); no new multi-account picker; real plan/model availability depends on the account; startup was not run on macOS/Linux. The referenced `.claude/skills/arc` design skill/checklist is absent; the existing installed Arc controls and checked-in Direction 5 guidance were used.
 
 Recommendation: **CONDITIONAL GO**, pending a user-controlled real ChatGPT sign-in and inference smoke test. Mocked authentication cannot establish real account eligibility or consent behavior.
 
@@ -89,3 +89,14 @@ A final real Windows browser smoke test used empty, isolated auth/portfolio dire
 A user-driven sign-in reached the callback and saved the existing registration. The user reported an authorization-update email under the legacy Greedy registration name. The subsequent authenticated public `/v1/models` request repeatedly returned a Cloudflare HTTP 520 HTML response; an unauthenticated control request returned the expected HTTP 401. No inference success is claimed.
 
 TFS now preserves the saved login, reports the specific safe HTTP status as unavailable, and offers Refresh connection without requiring repeated sign-in. The callback text asks users to return to TFS to check connection status and select a model. A regression test covers HTTP 520, absence of response-body secrets, and recovery when the catalog becomes available. Focused auth/transport suite: 26 passed; mypy and Ruff passed. Recommendation remains CONDITIONAL GO, with live model discovery/inference blocked until the upstream failure is resolved.
+
+
+## Sign out and sign in again
+
+Open AI connection and choose **Sign out of ChatGPT**, then **Continue with ChatGPT**. Sign-out is available for a saved account even when its model catalog is unavailable. It attempts refresh-token revocation through OpenAI's discovered HTTPS revocation endpoint, then removes the encrypted local token record and clears the model picker. If remote revocation fails after a bounded retry, local sign-out completes with an explicit warning to disconnect Greedy/TFS in ChatGPT Settings if needed.
+
+Host identity and the account/client/subject mapping are retained. Re-login uses fresh state, nonce and PKCE without the deleted ID-token hint. The retained registration remains bound to its original account; this is not a new multi-account picker. Sign-out is rejected during active AI work or an in-progress login, and closes an idle ChatGPT transport. API-key selection is preserved. If retaining account identity fails, credentials are left intact and sign-out returns a safe storage error.
+
+Validation: the mocked external-boundary auth/transport suite covers revocation, repeat logout, sign-in again with the same client/host, failed-revocation local cleanup, blocked sign-out during active work, cross-origin rejection, storage-write failure and rejecting a mismatched identity. Browser sign-out control passed; production build and frontend typecheck passed. No real session was revoked by the automated tests.
+
+Final sign-out validation: **885 backend tests passed**, mypy/Ruff passed, the focused browser sign-out test passed, and frontend typecheck/production build passed. Review's identity-storage failure finding was fixed and confirmed; no unresolved sign-out review finding remains. TFS was restarted with the control available. Real revocation is left to the user's explicit Sign out action; automated tests used temporary mocked sessions only.

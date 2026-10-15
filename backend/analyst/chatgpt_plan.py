@@ -317,7 +317,8 @@ def _login(cancel: threading.Event) -> None:
     tokens = _post_form({"grant_type": "authorization_code", "client_id": client_id, "code": received["code"],
                          "code_verifier": verifier, "redirect_uri": REDIRECT, "resource": RESOURCE})
     claims = verify_id_token(tokens["id_token"], client_id, nonce)
-    if previous and previous.get("subject") != claims["sub"]:
+    expected_subject = previous.get("subject") if previous else host.get("subject")
+    if expected_subject and expected_subject != claims["sub"]:
         raise PlanError("identity_mismatch")
     scopes = sorted(tokens.get("scope", "").split())
     if PLAN_SCOPE not in scopes or "refresh_token" not in tokens:
@@ -362,7 +363,8 @@ def access_token() -> str:
         return _access_token()
 
 
-def login(cancel: threading.Event | None = None) -> None:
+@contextlib.contextmanager
+def login_lock() -> Iterator[None]:
     if sys.platform != "win32":
         raise PlanError("unsupported_storage")
     import msvcrt
@@ -378,10 +380,55 @@ def login(cancel: threading.Event | None = None) -> None:
         except OSError:
             raise PlanError("login_busy") from None
         try:
-            _login(cancel or threading.Event())
+            yield
         finally:
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def login(cancel: threading.Event | None = None) -> None:
+    with login_lock():
+        _login(cancel or threading.Event())
+
+
+def logout() -> bool:
+    """End the renewable session, clear tokens, and retain the account/client and host mapping."""
+    with login_lock(), credential_lock():
+        host = _host()
+        path = home() / f"{host.get('client_id')}.dpapi"
+        if path.resolve().parent != home().resolve():
+            raise PlanError("invalid_storage")
+        if not path.exists():
+            return True
+        record = load()
+        try:
+            _save_host({**host, "subject": record["subject"]})
+        except OSError:
+            raise PlanError("storage_unavailable") from None
+        revoked = False
+        try:
+            metadata = httpx.get(f"{ISSUER}/.well-known/openid-configuration", timeout=10)
+            metadata.raise_for_status()
+            endpoint = metadata.json()["revocation_endpoint"]
+            parsed = urllib.parse.urlsplit(endpoint)
+            if (parsed.scheme != "https" or parsed.hostname != "auth.openai.com"
+                    or parsed.port not in {None, 443} or parsed.username or parsed.password or parsed.fragment):
+                raise ValueError("Invalid revocation endpoint")
+            for attempt in range(2):
+                try:
+                    response = httpx.post(endpoint, data={"token": record["refresh_token"],
+                                          "token_type_hint": "refresh_token", "client_id": record["client_id"]}, timeout=10)
+                    revoked = response.status_code == 200
+                    if response.status_code < 500:
+                        break
+                except httpx.RequestError:
+                    pass
+                if attempt == 0:
+                    time.sleep(0.25)
+        except (PlanError, httpx.HTTPError, OSError, ValueError, KeyError):
+            pass
+        path.unlink(missing_ok=True)
+        return revoked
 
 
 def models() -> list[dict[str, Any]]:

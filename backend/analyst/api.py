@@ -187,6 +187,7 @@ def create_app(
                 raise HTTPException(503, connection.status()["message"])
             connection.cancel = threading.Event()
             connection.error = None
+            connection.error_state = "failed"
             connection.task = asyncio.create_task(connection.sign_in())
             return connection.status()
 
@@ -197,6 +198,21 @@ def create_app(
         if connection.task:
             await connection.task
         return connection.status()
+
+    @app.post("/api/ai/logout")
+    async def sign_out(request: Request) -> dict[str, Any]:
+        nonlocal orch
+        local_request(request)
+        async with provider_lock:
+            ensure_idle()
+            if connection.task and not connection.task.done():
+                raise HTTPException(409, "Finish or cancel sign-in before signing out.")
+            result = await connection.sign_out()
+            if orch is not None and orch.settings.provider == "chatgpt_plan":
+                await orch.transport.close()
+                orch = None
+                app.state.orchestrator = None
+            return result
 
     @app.post("/api/ai/refresh")
     async def refresh_connection(request: Request) -> dict[str, Any]:

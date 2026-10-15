@@ -56,3 +56,25 @@ test('connection controls fit a phone and preserve API-key choice', async ({ pag
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: '../docs/dev-chatgpt/screenshots/mobile.png', fullPage: true });
 });
+
+test('a saved unavailable ChatGPT connection can sign out and sign in again', async ({ page }) => {
+  let signedOut = false;
+  let logoutPosts = 0;
+  await page.route('**/api/ai/**', async route => {
+    if (route.request().url().endsWith('/logout')) {
+      expect(route.request().method()).toBe('POST');
+      expect(route.request().headers()['x-tfs-local']).toBe('1');
+      signedOut = true; logoutPosts++;
+    }
+    await route.fulfill({ json: { state: signedOut ? 'disconnected' : 'unavailable', provider: 'chatgpt_plan', model: '',
+      account: signedOut ? null : 'investor@example.test', models: [], api_key_available: false, api_provider: 'openai',
+      message: signedOut ? 'Connect your ChatGPT plan for AI questions.' : 'Your login is saved, but the model catalog is unavailable (HTTP 520).' } });
+  });
+  await page.goto('/');
+  await page.locator('summary').filter({ hasText: 'AI connection' }).click();
+  await page.getByRole('button', { name: 'Sign out of ChatGPT', exact: true }).click();
+  await expect(page.getByText('investor@example.test')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Sign out of ChatGPT' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Continue with ChatGPT', exact: true }).first()).toBeVisible();
+  expect(logoutPosts).toBe(1);
+});

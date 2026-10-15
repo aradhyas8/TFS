@@ -45,6 +45,8 @@ def oauth(monkeypatch, tmp_path):
     original_get = httpx.get
 
     def get(url, **kwargs):
+        if url == f"{plan.ISSUER}/.well-known/openid-configuration":
+            return httpx.Response(200, request=httpx.Request("GET", url), json={"revocation_endpoint": f"{plan.ISSUER}/test/revoke"})
         if url == plan.JWKS:
             return httpx.Response(200, json={"keys": [{"kid": "test", "kty": "RSA", "n": key['n'].replace('+', '-').replace('/', '_').rstrip('='), "e": "AQAB"}]})
         if url == f"{plan.RESOURCE}/models":
@@ -57,6 +59,9 @@ def oauth(monkeypatch, tmp_path):
         return original_get(url, **kwargs)
 
     def post(url, **kwargs):
+        if url == f"{plan.ISSUER}/test/revoke":
+            state.setdefault("revocations", []).append(kwargs["data"])
+            return httpx.Response(state.get("revocation_status", 200), request=httpx.Request("POST", url))
         assert url == plan.TOKEN
         fields = kwargs["data"]
         if state["token_error"]:
@@ -64,7 +69,7 @@ def oauth(monkeypatch, tmp_path):
         if fields["grant_type"] == "authorization_code":
             assert fields["code"] == "dummy-code"
             assert plan._b64url(hashlib.sha256(fields["code_verifier"].encode()).digest()) == state["params"]["code_challenge"][0]
-        claims = {"iss": plan.ISSUER, "aud": "test-client", "sub": "test-subject", "email": "investor@example.test", "nonce": state["params"]["nonce"][0], "exp": time.time() + 3600}
+        claims = {"iss": plan.ISSUER, "aud": "test-client", "sub": state.get("subject", "test-subject"), "email": "investor@example.test", "nonce": state["params"]["nonce"][0], "exp": time.time() + 3600}
         head = plan._b64url(json.dumps({"alg": "RS256", "kid": "test"}).encode())
         body = plan._b64url(json.dumps(claims).encode())
         payload = f"{head}.{body}"
@@ -173,6 +178,7 @@ def test_provider_switch_cannot_change_an_active_run(oauth):
         run = client.post(f'/api/threads/{thread}/messages', json={"text": "Explain diversification", "client_request_id": "active"}).json()
         assert client.post('/api/ai/provider', headers=LOCAL, json={"provider": "openai"}).status_code == 409
         assert client.post('/api/ai/login', headers=LOCAL).status_code == 409
+        assert client.post('/api/ai/logout', headers=LOCAL).status_code == 409
         assert client.post(f'/api/threads/{thread}/runs/{run["id"]}/cancel').json()['status'] == 'cancelled'
         oauth['hold'] = False
         time.sleep(.05)
@@ -228,6 +234,7 @@ def test_local_auth_rejects_cross_origin_missing_header_and_remote_proxy(oauth):
     with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
         assert client.post('/api/ai/login', headers={'Origin': 'http://localhost:3000'}).status_code == 403
         assert client.post('/api/ai/login', headers={'X-TFS-Local': '1'}).status_code == 403
+        assert client.post('/api/ai/logout', headers={'Origin': 'https://attacker.example', 'X-TFS-Local': '1'}).status_code == 403
         assert client.get('/api/ai/connection', headers={'Host': 'attacker.example'}).status_code == 403
         assert client.get('/api/ai/connection', headers={'X-Forwarded-For': '203.0.113.1'}).status_code == 403
 
@@ -282,3 +289,66 @@ def test_catalog_upstream_failure_keeps_login_and_explains_safe_retry(oauth):
         recovered = client.post('/api/ai/refresh', headers=LOCAL).json()
         assert recovered['state'] == 'connected'
         assert recovered['models'][0]['slug'] == 'supported-test-model'
+
+
+def test_logout_revokes_session_preserves_registration_and_allows_login_again(oauth):
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        client.post('/api/ai/login', headers=LOCAL)
+        assert wait_login(client)['state'] == 'connected'
+        host_id = oauth['params']['ext_agent_host_id'][0]
+        response = client.post('/api/ai/logout', headers=LOCAL)
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result['state'] == 'disconnected' and result['account'] is None
+        assert result['models'] == [] and result['model'] == ''
+        assert oauth['revocations'] == [{"token": "dummy-refresh", "token_type_hint": "refresh_token", "client_id": "test-client"}]
+        for secret in ('dummy-access', 'dummy-refresh', 'id_token', 'code_verifier'):
+            assert secret not in response.text
+        assert client.post('/api/ai/logout', headers=LOCAL).status_code == 200
+        assert len(oauth['revocations']) == 1
+        assert client.post('/api/ai/login', headers=LOCAL).status_code == 200
+        assert wait_login(client)['state'] == 'connected'
+        assert oauth['params']['client_id'] == ['test-client']
+        assert oauth['params']['ext_agent_host_id'] == [host_id]
+        assert 'id_token_hint' not in oauth['params']
+
+
+def test_logout_clears_local_login_even_when_remote_revocation_fails(oauth):
+    oauth['catalog_status'] = 520
+    oauth['revocation_status'] = 520
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        client.post('/api/ai/login', headers=LOCAL)
+        assert wait_login(client)['state'] == 'unavailable'
+        response = client.post('/api/ai/logout', headers=LOCAL)
+        assert response.status_code == 200, response.text
+        assert response.json()['state'] == 'disconnected'
+        assert 'revocation was not confirmed' in response.json()['message']
+        assert response.json()['account'] is None
+        assert len(oauth['revocations']) == 2
+        assert client.get('/api/ai/connection').json()['account'] is None
+
+
+def test_logout_cannot_lose_account_binding_when_storage_write_fails(oauth, monkeypatch):
+    import os
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        client.post('/api/ai/login', headers=LOCAL)
+        wait_login(client)
+        replace = os.replace
+        def fail_host_update(source, destination):
+            if Path(destination).name == 'host.json':
+                raise OSError('simulated disk failure')
+            return replace(source, destination)
+        monkeypatch.setattr(os, 'replace', fail_host_update)
+        assert client.post('/api/ai/logout', headers=LOCAL).status_code == 503
+        assert client.get('/api/ai/connection').json()['account'] == 'investor@example.test'
+
+
+def test_login_after_logout_cannot_replace_registration_with_another_identity(oauth):
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        client.post('/api/ai/login', headers=LOCAL)
+        wait_login(client)
+        assert client.post('/api/ai/logout', headers=LOCAL).json()['state'] == 'disconnected'
+        oauth['subject'] = 'another-account'
+        client.post('/api/ai/login', headers=LOCAL)
+        status = wait_login(client)
+        assert status['state'] == 'failed' and status['account'] is None
