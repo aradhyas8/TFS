@@ -8,6 +8,7 @@ import copy
 import dataclasses
 import json
 import time
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -20,7 +21,14 @@ from analyst.api import create_app
 from analyst.config import Settings
 from analyst.providers import FakeDataProvider, OpenAIResponseTransport, WorkflowModelAdapter
 from analyst.research import ReviewedResearchProvider
-from analyst.schemas import AnalysisRequest, CompanyResearch
+from analyst.schemas import (
+    FX,
+    AnalysisRequest,
+    CompanyResearch,
+    Identity,
+    Quote,
+    SourceQualification,
+)
 from tests.test_analysis import recommendation
 from tests.test_openai_boundary import openrouter_message, openrouter_response, openrouter_transport
 from tests.test_stock import stock_comparison_judgments
@@ -136,11 +144,11 @@ class Model:
         return openrouter_response(openrouter_message(json.dumps(msft_answer())), model="deepseek/deepseek-v4.1-flash")
 
 
-def run(monkeypatch, model, *, research: dict | None = None, effort: str | None = "max", request: dict | None = None):
+def run(monkeypatch, model, *, research: dict | None = None, effort: str | None = "max", request: dict | None = None, financial=None):
     transport, _ = openrouter_transport(monkeypatch, model, model="deepseek/deepseek-v4.1-flash")
     transport.settings = dataclasses.replace(transport.settings, reasoning_effort=effort)
     source = ReviewedResearchProvider({CIK: CompanyResearch.model_validate(research or msft_research())})
-    app = create_app(model=WorkflowModelAdapter(transport), data=FakeDataProvider(), research=source)
+    app = create_app(model=WorkflowModelAdapter(transport), data=FakeDataProvider(), research=source, financial=financial)
     return TestClient(app).post("/api/analyze", json=request or msft_request())
 
 
@@ -344,3 +352,117 @@ def test_corrected_answer_that_still_fails_returns_an_explicit_error(monkeypatch
     detail = response.json()["detail"]
     assert "still failed validation" in detail and reason.lower() in detail.lower()
     assert len(model.sent) == 7
+
+
+class Market:
+    """A dated market-data provider: verified identities, same-day indicative quotes and provider FX, all configurable."""
+
+    def __init__(self, *, fx_date: str = "2026-10-13", fx_status: str = "indicative", unverified: frozenset = frozenset(),
+                 no_quote: frozenset = frozenset()):
+        self.fx_date, self.fx_status = date.fromisoformat(fx_date), fx_status
+        self.unverified, self.no_quote = unverified, no_quote
+
+    async def identity(self, position, as_of):
+        return Identity(status="supplied" if position.id in self.unverified else "verified", ticker=position.ticker,
+                        listing=position.listing, currency=position.currency, kind=position.kind, company_id=position.company_id,
+                        company_name=position.company_name, source="Test registry", source_url="https://registry.example.com/listing",
+                        as_of=as_of, captured_at=datetime(2026, 10, 14, 20, tzinfo=UTC))
+
+    async def quote(self, position, as_of):
+        if position.id in self.no_quote:
+            return None
+        terms = SourceQualification(source="Test feed", terms_url="https://feed.example.com/terms", checked_on=as_of,
+                                    personal_use_permitted=True, covered_listings=[position.listing])
+        return Quote(value=position.mark.value, as_of=as_of, source="Test feed", captured_at=datetime(2026, 10, 14, 20, tzinfo=UTC),
+                     ticker=position.ticker, listing=position.listing, currency=position.currency, status="indicative", qualification=terms)
+
+    async def fx(self, from_currency, to_currency, as_of):
+        return FX(from_currency=from_currency, to_currency=to_currency, rate=Decimal("1.4"), as_of=self.fx_date,
+                  source="Test central bank", captured_at=datetime(2026, 10, 14, 20, tzinfo=UTC), status=self.fx_status)
+
+    async def sponsor_holdings(self, position, as_of):
+        return None
+
+
+def cad_request():
+    request = msft_request()
+    request["portfolio"]["reporting_currency"] = "CAD"  # the USD stock, ETF and cash all need dated FX
+    return request
+
+
+def values(result):
+    # comparison_value: the known value before costs and taxes, which stay unknown (listed in `unmodeled`), never zero.
+    return {alt["selection"]["id"]: [case["comparison_value"] for case in alt["cases"]] for alt in result["comparison"]["alternatives"]}
+
+
+def test_etf_cash_and_keep_alternatives_are_valued_with_the_latest_published_provider_fx(monkeypatch):
+    # Provider FX is published for the previous business day; it values the holdings, so it must value the cases too.
+    response = run(monkeypatch, Model(cad_request()), request=cad_request(), financial=Market())
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert all(value is not None for row in values(result).values() for value in row), values(result)
+    starting = Decimal(result["comparison"]["starting_value"])
+    assert starting == (20 * Decimal(500) + 3000) * Decimal("1.4")
+    # Cash: the shared starting capital compounds at the judged annual rates and converts back at the dated rate.
+    cash = next(alt for alt in result["comparison"]["alternatives"] if alt["selection"]["id"] == "cash")
+    growth = Decimal(1)
+    for rate in ("0.04", "0.03", "0.02", "0.01", "0"):
+        growth *= 1 + Decimal(rate)
+    assert abs(Decimal(cash["cases"][1]["comparison_value"]) - starting * growth) <= Decimal("0.01")
+    # No action keeps the actual scope: the company case for the shares and the cash path for the cash.
+    keep = next(alt for alt in result["comparison"]["alternatives"] if alt["selection"]["id"] == "keep")
+    assert {row["position_id"]: row["known_terminal_value"] is not None for row in keep["cases"][1]["components"]} == {"msft": True, "cash": True}
+    assert result["recommendation"]["preferred_action"] == "hold"
+
+
+@pytest.mark.parametrize("market", [
+    Market(fx_status="stale"),
+    Market(fx_date="2026-10-01"),                        # older than the recent window
+    Market(fx_date="2026-10-15"),                        # dated after the snapshot
+    Market(fx_date="2026-10-13", fx_status="manual"),    # a manual rate must be dated on the snapshot
+], ids=["stale", "too_old", "future", "manual_previous_day"])
+def test_unusable_fx_leaves_every_converted_alternative_unknown(monkeypatch, market):
+    response = run(monkeypatch, Model(cad_request()), request=cad_request(), financial=market)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert all(value is None for row in values(result).values() for value in row)
+    assert result["recommendation"]["preferred_action"] == "wait_for_inputs"
+
+
+def test_missing_stock_quote_is_never_filled_in(monkeypatch):
+    # No provider quote and no user-entered mark: nothing may stand in for the price.
+    request = cad_request()
+    del request["portfolio"]["positions"][0]["mark"]
+    response = run(monkeypatch, Model(request), request=request, financial=Market(no_quote=frozenset({"msft"})))
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert all(case["terminal_price"] is None for case in result["stock"]["cases"])
+    assert values(result)["company"] == [None] * 3 and result["recommendation"]["preferred_action"] == "wait_for_inputs"
+
+
+def test_unverified_fund_identity_is_valued_provisionally_and_qualified(monkeypatch):
+    response = run(monkeypatch, Model(cad_request()), request=cad_request(), financial=Market(unverified=frozenset({"vti"})))
+    assert response.status_code == 200, response.text
+    result = response.json()
+    fund = next(alt for alt in result["comparison"]["alternatives"] if alt["selection"]["id"] == "fund")
+    assert all(case["comparison_value"] is not None for case in fund["cases"])
+    vti = next(row for row in result["portfolio"]["positions"] if row["supplied"]["id"] == "vti")
+    assert vti["source_inputs_usable"] is False and "Identity is not verified by a primary source; valuation is provisional." in vti["issues"]
+
+
+def test_reason_cut_off_at_the_length_limit_is_corrected_not_shown(monkeypatch):
+    cut = ("Hold conditionally while the filings support durable cloud cash generation " * 20)[:1000]
+    assert len(cut) == 1000 and not cut.endswith(".")
+    model = Model(msft_request(), script={6: answer_with(reason=cut)})
+    response = run(monkeypatch, model)
+    assert response.status_code == 200, response.text
+    assert response.json()["recommendation"]["reason"] == msft_answer()["reason"]
+    assert len(model.sent) == 7 and "cut off mid-sentence" in json.dumps(model.sent[6]["input"][-1])
+
+
+def test_complete_text_at_the_length_limit_is_accepted(monkeypatch):
+    complete = ("Hold conditionally while the filings support durable cloud cash generation " * 20)[:999] + "."
+    model = Model(msft_request(), script={6: answer_with(reason=complete)})
+    response = run(monkeypatch, model)
+    assert response.status_code == 200, response.text
+    assert response.json()["recommendation"]["reason"] == complete.strip() and len(model.sent) == 6

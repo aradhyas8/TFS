@@ -92,7 +92,9 @@ No action retains the actual scope; cash uses explicit changing annual rate path
 Identify pivotal assumptions and uncertainty; do not invent probabilities or a weighted
 expected value, purchasing-power claims, return hurdles or a mandatory exit date.
 Explain comparative tradeoffs in the final qualitative answer using the computed cases.
-Keep qualitative prose concise. Omit the words probability and probabilities, even in disclaimers.
+Keep qualitative prose concise. Every prose field holds at most a thousand characters: keep reason to a short,
+complete summary that ends with its conclusion, and put supporting detail in assumptions, uncertainty and what_could_change.
+Omit the words probability and probabilities, even in disclaimers.
 Describe operating resilience without the phrase invested capital. Say personal account limits
 are unknown instead of discussing contribution room. These omissions do not authorize any trade or amount.
 For a plain exposure review, describe it as review only; omit trading verbs even in disclaimers.
@@ -127,6 +129,18 @@ def validate_recommendation(answer: dict[str, Any], *, stock: bool = False) -> R
         ]
     )
     validate_prose(prose, stock=stock, explanatory=stock)
+    # Strict structured output enforces the schema's length limit by stopping the text: a field at the limit without a
+    # sentence ending was cut off, and is returned for one correction rather than shown silently truncated.
+    fields = [("reason", recommendation.reason), ("downside", recommendation.downside),
+              *(("assumptions", text) for text in recommendation.assumptions), *(("uncertainty", text) for text in recommendation.uncertainty),
+              *(("what_could_change", text) for text in recommendation.what_could_change),
+              *(("alternatives", row.reason) for row in recommendation.alternatives)]
+    # Text strips whitespace, so a cut that ended on spaces is stored a few characters under the limit.
+    cut = next((name for name, text in fields if len(text) > TEXT_LIMIT - 10 and not text.endswith((".", "!", "?", ")", '"'))), None)
+    if cut:
+        raise InvalidReview(f"The {cut} text reached the {TEXT_LIMIT}-character limit and was cut off mid-sentence. Return a complete "
+                            f"{cut} well under the limit that ends with its conclusion; move supporting detail into assumptions, "
+                            "uncertainty or what_could_change.")
     return recommendation
 
 
@@ -538,6 +552,7 @@ def normalize_comparison_judgments(
 
 
 EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+TEXT_LIMIT = 1000  # schemas.Text max_length, which strict structured output enforces by stopping the text
 FACT_PLUMBING = {"sources", "filing_checked", "notes_checked", "custom_tags_checked", "segments_checked"}
 # The model wrote these (judgments) or already read them (research); results keep them, model context does not.
 ECHOED_CASE_FIELDS: Any = {"research": True, "judgments": True, "cases": {"__all__": {"judgment"}}}
