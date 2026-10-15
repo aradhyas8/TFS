@@ -151,10 +151,21 @@ function extractError(data: unknown): string {
   return "The request could not be completed.";
 }
 
+/** The JSON body of a response. A failed response whose body is not JSON (a proxy or server error page) reads as a
+ *  plain message naming its status, never as a parsing error. */
+async function readBody(response: Response): Promise<any> {
+  try {
+    return await response.json();
+  } catch {
+    if (response.ok) throw new Error("The analyst service sent a reply that could not be read. Try again.");
+    return { detail: `The analyst service had an error (HTTP ${response.status}). Try again.` };
+  }
+}
+
 export async function put<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     signal: AbortSignal.timeout(30_000) });
-  const data = await response.json();
+  const data = await readBody(response);
   if (!response.ok) throw new Error(extractError(data));
   return data as T;
 }
@@ -265,7 +276,7 @@ export async function get<T>(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Prom
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(timeoutMs),
   });
-  const data = await response.json();
+  const data = await readBody(response);
   if (!response.ok) {
     // The status lets a caller tell a record that no longer exists from a request that merely failed.
     throw Object.assign(new Error(typeof data.detail === "string" ? data.detail : "The request could not be completed."), { status: response.status });
@@ -279,7 +290,7 @@ export async function post<T>(path: string, body: unknown, timeoutMs?: number): 
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeout),
   });
-  const data = await response.json();
+  const data = await readBody(response);
   if (!response.ok) {
     const fields = Array.isArray(data.fields) ? ` Fields: ${data.fields.join(", ")}` : "";
     throw new Error(extractError(data) + fields);
@@ -484,7 +495,7 @@ export async function postEmpty<T>(path: string, timeoutMs?: number): Promise<T>
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(timeout),
   });
-  const data = await response.json();
+  const data = await readBody(response);
   if (!response.ok) {
     throw new Error(extractError(data));
   }

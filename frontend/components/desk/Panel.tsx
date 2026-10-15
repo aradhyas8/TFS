@@ -83,6 +83,11 @@ const KIND: Record<string, string> = { sec: "SEC filing", sedar: "SEDAR+ filing"
 const Pending = ({ what }: { what: string }) => <p className="cap">{what} open{what.startsWith("The ") ? "s" : ""} when the answer arrives.</p>;
 const NotSaved = ({ what }: { what: string }) => <p className="cap">{what} weren&apos;t saved with this decision. Re-run with today&apos;s portfolio to see them.</p>;
 
+
+/** What a valuation was made from. A result that names its holdings date is from the portfolio as of that date; an
+ *  older one that does not is dated only as an analysis, never as the portfolio. */
+const valuedFrom = (review: Analysis["portfolio"]) =>
+  review.holdings_as_of ? `your portfolio as of ${fullDate(review.holdings_as_of)}` : `an analysis as of ${fullDate(review.as_of)}`;
 function EvidenceTab({ items, missing, numbers, focus, result, decision, snapshot }: ReturnType<typeof evidenceFor> & { focus: string | null; result: Analysis | null; decision: SavedDecision | null; snapshot: Snapshot | null }) {
   const focused = useRef<HTMLDivElement>(null);
   useEffect(() => { focused.current?.scrollIntoView({ block: "nearest" }); }, [focus]);
@@ -208,7 +213,7 @@ function ProposedTab({ result, snapshot }: { result: Analysis; snapshot: Snapsho
   const undecided = plan.filter(item => item.move === "undecided").length;
   return <>
     <div><div>{moving ? `${moving} of ${plan.length} positions would move` : undecided ? `Undecided for ${undecided} of ${plan.length} positions; nothing moves yet` : "Nothing would move"}</div>
-      <div className="cap">Now: valued {shortDate(result.portfolio.reviewed_at)} from your portfolio as of {fullDate(result.portfolio.as_of)} · your saved holdings are not changed</div></div>
+      <div className="cap">Now: valued {shortDate(result.portfolio.reviewed_at)} from {valuedFrom(result.portfolio)} · your saved holdings are not changed</div></div>
     <BeforeAfter result={result} plan={plan} />
     {rw.previews.length > 0 ? <div className="pgroup pnote"><span className="lbl">Checked size</span>
       {rw.amount && <span className="n">{money(rw.amount.minimum, rw.amount.currency)} to {money(rw.amount.maximum, rw.amount.currency)} · {plan.find(item => item.row.supplied.id === rw.amount!.position_id)?.ticker}</span>}
@@ -589,7 +594,7 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
         })}</div>
       </div>;
     })}
-    <p className="cap pnote">{review ? `Valued ${shortDate(review.reviewed_at)} from your portfolio as of ${fullDate(review.as_of)}.` : `Portfolio as of ${fullDate(snapshot.as_of)}. Prices, values and weights come back with the analysis.`}
+    <p className="cap pnote">{review ? `Valued ${shortDate(review.reviewed_at)} from ${valuedFrom(review)}.` : `Portfolio as of ${fullDate(snapshot.as_of)}. Prices, values and weights come back with the analysis.`}
       {snapshot.fx.map(fx => ` ${fx.from_currency}/${fx.to_currency} ${fx.rate}.`)}</p>
 
     <RulesEditor settings={settings} setSettings={setSettings} benchmark={benchmark} setBenchmark={setBenchmark} editable={editable} onError={onError}

@@ -18,12 +18,13 @@ const sameHolding = (a: Position, b: Position) =>
   text(a.etf_role) === text(b.etf_role) && amount(a.shares) === amount(b.shares) && amount(a.cash) === amount(b.cash) && sameMark(a.mark, b.mark);
 
 /** Without a revision, a result counts only when it shows it was made from exactly these inputs: the same holdings
- *  in every field above, the same reporting currency and holdings date, and, for each foreign currency held, the
+ *  in every field above, the same reporting currency and the holdings date it names, and, for each foreign currency held, the
  *  exchange rate on file now. A rate the analysis used that is not on file, or one on file it did not use, can not
  *  be shown to be the same input, so the result is not used. */
 function sameInputs(review: Review, snapshot: Snapshot): boolean {
   if (review.reporting_currency !== snapshot.reporting_currency) return false;
-  if (review.holdings_as_of && review.holdings_as_of !== snapshot.as_of) return false;
+  // A legacy result that does not name its holdings date can not be shown to be of these holdings.
+  if (review.holdings_as_of !== snapshot.as_of) return false;
   const valued = review.positions.filter(row => !isSynthetic(row.supplied.id));
   const held = snapshot.positions.filter(row => !isSynthetic(row.id));
   if (valued.length !== held.length || !held.every(row => valued.some(item => item.supplied.id === row.id && sameHolding(row, item.supplied)))) return false;
