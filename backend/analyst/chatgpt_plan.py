@@ -1,8 +1,8 @@
 """ChatGPT plan usage through OpenAI's official Sign in with ChatGPT flow for open-source local apps.
 https://developers.openai.com/siwc/token-sharing-open-source
 
-Greedy registers itself (dynamic_agent_client, PKCE S256), keeps the tokens DPAPI-encrypted for the current Windows
-user under %LOCALAPPDATA%\\Greedy\\chatgpt-plan and rotates the refresh token. It never reads Codex or other tools'
+Greedy registers itself (dynamic_agent_client, PKCE S256), keeps the tokens encrypted for the current OS user
+(Windows DPAPI under %LOCALAPPDATA%\\Greedy\\chatgpt-plan, or the macOS login Keychain) and rotates the refresh token. It never reads Codex or other tools'
 credentials. Inference uses the public Responses API with store=false and stream=true; the stream is consumed here
 under one deadline per model turn.
 
@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import secrets
+import socketserver
 import sys
 import threading
 import time
@@ -56,7 +57,11 @@ class PlanError(openai.OpenAIError):
 
 
 def home() -> Path:
-    return Path(os.environ.get("CHATGPT_PLAN_DIR") or Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Greedy" / "chatgpt-plan")
+    if os.environ.get("CHATGPT_PLAN_DIR"):
+        return Path(os.environ["CHATGPT_PLAN_DIR"])
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Greedy" / "chatgpt-plan"
+    return Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Greedy" / "chatgpt-plan"
 
 
 # --- Responses stream: one deadline for the whole turn ---
@@ -106,12 +111,18 @@ async def _terminal(stream: Any, seen: collections.Counter[str]) -> Any:
     raise PlanError("no_terminal_event", "The stream ended without response.completed.")
 
 
-# --- Credentials: DPAPI-encrypted record per issued client, atomic writes ---
+# --- Credentials: one encrypted record per issued client. Windows: DPAPI file. macOS: login Keychain item ---
+
+SUPPORTED_PLATFORMS = {"win32", "darwin"}
+KEYCHAIN_SERVICE = "TFS ChatGPT plan"
+
+
+def _require_storage() -> None:
+    if sys.platform not in SUPPORTED_PLATFORMS:
+        raise PlanError("unsupported_storage", "Encrypted ChatGPT plan credentials need Windows DPAPI or the macOS Keychain.")
+
 
 def _dpapi(data: bytes, protect: bool) -> bytes:
-    if sys.platform != "win32":
-        # ponytail: Windows DPAPI only; add an OS keychain backend when the app runs elsewhere.
-        raise PlanError("unsupported_storage", "Encrypted ChatGPT plan credentials need Windows DPAPI.")
     from ctypes import wintypes
 
     class Blob(ctypes.Structure):
@@ -136,7 +147,15 @@ def _write(path: Path, data: bytes) -> None:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(tmp, path)
+    for attempt in range(50):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            # Windows refuses to replace a file while another thread reads it (status polls host.json during sign-in).
+            if attempt == 49:
+                raise
+            time.sleep(0.02)
 
 
 def _host() -> dict[str, Any]:
@@ -152,16 +171,74 @@ def _save_host(host: dict[str, Any]) -> None:
     _write(home() / "host.json", json.dumps(host).encode())
 
 
+def _dpapi_path(client_id: str) -> Path:
+    path = home() / f"{client_id}.dpapi"
+    if path.resolve().parent != home().resolve():
+        raise PlanError("invalid_storage")
+    return path
+
+
+@contextlib.contextmanager
+def _keychain() -> Iterator[Any]:
+    """The macOS login Keychain through Security.framework (keyring's ctypes binding): no shell, no plaintext file."""
+    from keyring.backends.macOS import Keyring  # type: ignore[import-not-found, unused-ignore]
+    from keyring.errors import (  # type: ignore[import-not-found, unused-ignore]
+        KeyringError,
+        KeyringLocked,
+    )
+    try:
+        yield Keyring()
+    except KeyringLocked:
+        raise PlanError("keychain_locked", "Unlock the macOS login Keychain and allow TFS to use it, then retry.") from None
+    except KeyringError:
+        raise PlanError("keychain_error", "The macOS Keychain refused the ChatGPT credentials. Check Keychain Access, then reconnect.") from None
+
+
+def _keychain_account(client_id: str) -> str:
+    # One item per credential directory and issued client, like the per-directory DPAPI file.
+    return f"{home().resolve()}:{client_id}"
+
+
+def _read_record(client_id: str) -> bytes | None:
+    _require_storage()
+    if sys.platform == "darwin":
+        with _keychain() as keychain:
+            secret = keychain.get_password(KEYCHAIN_SERVICE, _keychain_account(client_id))
+        return None if secret is None else str(secret).encode()
+    path = _dpapi_path(client_id)
+    return _dpapi(path.read_bytes(), False) if path.exists() else None
+
+
+def _write_record(client_id: str, data: bytes) -> None:
+    _require_storage()
+    if sys.platform == "darwin":
+        # ponytail: keyring replaces an item by delete-then-add; a crash between the two needs a new sign-in.
+        with _keychain() as keychain:
+            keychain.set_password(KEYCHAIN_SERVICE, _keychain_account(client_id), data.decode())
+        return
+    _write(_dpapi_path(client_id), _dpapi(data, True))
+
+
+def _delete_record(client_id: str) -> None:
+    _require_storage()
+    if sys.platform == "darwin":
+        with _keychain() as keychain:
+            if keychain.get_password(KEYCHAIN_SERVICE, _keychain_account(client_id)) is not None:
+                keychain.delete_password(KEYCHAIN_SERVICE, _keychain_account(client_id))
+        return
+    _dpapi_path(client_id).unlink(missing_ok=True)
+
+
 def save(record: dict[str, Any]) -> None:
-    _write(home() / f"{record['client_id']}.dpapi", _dpapi(json.dumps(record).encode(), True))
+    _write_record(record["client_id"], json.dumps(record).encode())
 
 
 def load() -> dict[str, Any]:
     client_id = _host().get("client_id")
-    path = home() / f"{client_id}.dpapi"
-    if not client_id or not path.exists():
+    data = _read_record(client_id) if client_id else None
+    if data is None:
         raise PlanError("not_signed_in", "Run: python -m analyst.chatgpt_plan login")
-    return dict(json.loads(_dpapi(path.read_bytes(), False)))
+    return dict(json.loads(data))
 
 
 def _post_form(fields: dict[str, str]) -> dict[str, Any]:
@@ -240,8 +317,7 @@ def verify_id_token(id_token: str, client_id: str, nonce: str) -> dict[str, Any]
 
 
 def _login(cancel: threading.Event) -> None:
-    if sys.platform != "win32":
-        raise PlanError("unsupported_storage")
+    _require_storage()
     host = _host()
     saved = host.get("client_id")
     state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(64)
@@ -282,8 +358,14 @@ def _login(cancel: threading.Event) -> None:
         def log_message(self, *args: Any) -> None:  # the callback query carries the code: never log it
             pass
 
+    class CallbackServer(HTTPServer):
+        def server_bind(self) -> None:
+            # HTTPServer.server_bind does a reverse DNS lookup (getfqdn) that takes seconds on some Macs.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = "127.0.0.1", 1455
+
     try:
-        server = HTTPServer(("127.0.0.1", 1455), Callback)
+        server = CallbackServer(("127.0.0.1", 1455), Callback)
     except OSError:
         raise PlanError("callback_port_busy") from None
     server.timeout = 0.25
@@ -337,25 +419,43 @@ _thread_lock = threading.RLock()
 
 
 @contextlib.contextmanager
-def credential_lock() -> Iterator[None]:
-    """Serialize refresh-token rotation across threads and native Windows processes."""
-    if sys.platform != "win32":
-        raise PlanError("unsupported_storage")
-    import msvcrt
-    with _thread_lock:
-        home().mkdir(parents=True, exist_ok=True)
-        with open(home() / "session.lock", "a+b") as handle:
-            handle.seek(0)
-            if not handle.read(1):
+def _file_lock(name: str, wait: bool) -> Iterator[None]:
+    """An exclusive lock on a file in the credential directory, shared by all native TFS processes."""
+    _require_storage()
+    home().mkdir(parents=True, exist_ok=True)
+    with open(home() / name, "a+b") as handle:
+        if sys.platform == "win32":
+            import msvcrt
+            if handle.seek(0, os.SEEK_END) == 0:  # never read the byte: another process may hold its lock
                 handle.write(b"0")
                 handle.flush()
             handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK, 1)
+            except OSError:
+                raise PlanError("login_busy") from None
             try:
                 yield
             finally:
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise PlanError("login_busy") from None
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def credential_lock() -> Iterator[None]:
+    """Serialize refresh-token rotation across threads and native processes."""
+    with _thread_lock, _file_lock("session.lock", wait=True):
+        yield
 
 
 def access_token() -> str:
@@ -365,25 +465,8 @@ def access_token() -> str:
 
 @contextlib.contextmanager
 def login_lock() -> Iterator[None]:
-    if sys.platform != "win32":
-        raise PlanError("unsupported_storage")
-    import msvcrt
-    home().mkdir(parents=True, exist_ok=True)
-    with open(home() / "login.lock", "a+b") as handle:
-        handle.seek(0)
-        if not handle.read(1):
-            handle.write(b"0")
-            handle.flush()
-        handle.seek(0)
-        try:
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError:
-            raise PlanError("login_busy") from None
-        try:
-            yield
-        finally:
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    with _file_lock("login.lock", wait=False):
+        yield
 
 
 def login(cancel: threading.Event | None = None) -> None:
@@ -395,10 +478,7 @@ def logout() -> bool:
     """End the renewable session, clear tokens, and retain the account/client and host mapping."""
     with login_lock(), credential_lock():
         host = _host()
-        path = home() / f"{host.get('client_id')}.dpapi"
-        if path.resolve().parent != home().resolve():
-            raise PlanError("invalid_storage")
-        if not path.exists():
+        if not host.get("client_id") or _read_record(host["client_id"]) is None:
             return True
         record = load()
         try:
@@ -427,7 +507,7 @@ def logout() -> bool:
                     time.sleep(0.25)
         except (PlanError, httpx.HTTPError, OSError, ValueError, KeyError):
             pass
-        path.unlink(missing_ok=True)
+        _delete_record(record["client_id"])
         return revoked
 
 

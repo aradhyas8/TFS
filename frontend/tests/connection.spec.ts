@@ -21,7 +21,7 @@ for (const state of ['disconnected', 'connecting', 'connected', 'expired', 'unav
       connecting: 'Complete sign-in in the browser window.',
       connected: 'ChatGPT connected. Select a supported model for AI questions.',
       expired: 'The access token expired. Reconnect, or refresh the connection to renew the session.',
-      unavailable: 'ChatGPT sign-in needs native Windows and DPAPI. Run TFS in Windows, or use the API-key provider here.',
+      unavailable: 'ChatGPT sign-in needs Windows DPAPI or the macOS Keychain. Use the API-key provider here.',
       failed: 'Plan permission was not granted. Reconnect and allow ChatGPT plan usage.',
     };
     let selected = '';
@@ -77,4 +77,16 @@ test('a saved unavailable ChatGPT connection can sign out and sign in again', as
   await expect(page.getByRole('button', { name: 'Sign out of ChatGPT' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Continue with ChatGPT', exact: true }).first()).toBeVisible();
   expect(logoutPosts).toBe(1);
+});
+
+test('a configured API-key provider shows as ready, and connection text stays on the Arc type scale', async ({ page }) => {
+  await page.route('**/api/ai/**', route => route.fulfill({ json: { state: 'connected', chatgpt_state: 'connected', provider: 'openai', model: '',
+    account: 'investor@example.test', models: [], api_key_available: true, api_provider: 'openai', message: 'API-key provider ready. AI questions use api-model.' } }));
+  await page.goto('/');
+  await page.getByText('AI connection · connected', { exact: true }).click();
+  await expect(page.getByText('API-key provider ready. AI questions use api-model.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Connect your ChatGPT plan', { exact: false })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Reconnect ChatGPT', exact: true })).toBeVisible();
+  const weights = await page.locator('section[aria-label="AI connection"] *').evaluateAll(nodes => nodes.map(node => Number(getComputedStyle(node).fontWeight)));
+  expect(Math.max(...weights)).toBeLessThanOrEqual(500);
 });

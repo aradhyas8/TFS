@@ -3,9 +3,10 @@
 .caption { color: var(--text-secondary); font-size: 12px; }
 .details summary { cursor: pointer; min-height: 36px; display: flex; align-items: center; gap: 4px; border-radius: var(--radius-pill); padding: 4px 12px; background: var(--surface); }
 .card { position: absolute; right: 24px; top: calc(100% + 8px); width: min(400px, calc(100vw - 32px)); max-height: 75vh; overflow: auto; padding: 24px; border-radius: 20px; background: var(--surface-raised); box-shadow: var(--shadow-floating); }
-.card h2 { font-size: 18px; font-weight: 600; margin: 0 0 12px; }
+.card h2 { font-size: var(--text-lg); font-weight: 500; margin: 0 0 12px; }
 .card p { margin: 0 0 16px; }
-.account { overflow-wrap: anywhere; font-weight: 600; }
+.account { overflow-wrap: anywhere; font-weight: 500; }
+.card strong { font-weight: 500; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .models { display: grid; gap: 8px; margin-top: 20px; }
 .models select { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; background: var(--surface); color: var(--foreground); font: inherit; }

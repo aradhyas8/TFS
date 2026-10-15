@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -44,6 +45,15 @@ def test_api_key_provider_without_key_is_refused_and_not_saved(monkeypatch, tmp_
         assert "backend/.env" in response.json()["detail"]
         assert client.get("/api/ai/connection").json()["provider"] == "chatgpt_plan"
     assert not (tmp_path / "credentials" / "selection.json").exists()
+
+def test_configured_api_key_provider_is_reported_as_the_ready_provider(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATGPT_PLAN_DIR", str(tmp_path / "credentials"))
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        status = client.get("/api/ai/connection").json()
+    assert status["provider"] == "openai" and status["state"] == "connected"
+    assert status["message"] == "API-key provider ready. AI questions use test-model."
+    assert status["chatgpt_state"] in {"disconnected", "unavailable"}
+    assert "sk-test" not in json.dumps(status)
 
 @pytest.fixture
 def oauth(monkeypatch, tmp_path):
@@ -222,6 +232,8 @@ def test_sign_in_timeout_is_recoverable(oauth, monkeypatch):
 def test_callback_port_conflict_does_not_touch_its_owner(oauth):
     import socket
     with socket.socket() as owner:
+        if sys.platform != "win32":  # earlier callbacks leave TIME_WAIT on 1455; Windows REUSEADDR would let TFS steal the port
+            owner.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         owner.bind(('127.0.0.1', 1455))
         owner.listen()
         with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:

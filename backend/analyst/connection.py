@@ -41,6 +41,13 @@ def local_request(request: Request) -> None:
         raise HTTPException(403, "Use the local TFS connection controls.")
 
 
+STORAGE_ERRORS = {
+    "unsupported_storage": "Use Windows or macOS for ChatGPT sign-in, or choose the API-key provider.",
+    "keychain_locked": "Unlock the macOS login Keychain and allow TFS to use it, then retry.",
+    "keychain_error": "The macOS Keychain refused the ChatGPT credentials. Check Keychain Access, then reconnect.",
+}
+
+
 class Connection:
     def __init__(self, settings: Settings, *, managed: bool = True) -> None:
         self.initial = settings
@@ -65,8 +72,8 @@ class Connection:
 
     def status(self) -> dict[str, Any]:
         state, message, account = "disconnected", "Connect your ChatGPT plan for AI questions.", None
-        if sys.platform != "win32":
-            state, message = "unavailable", "ChatGPT sign-in needs native Windows and DPAPI. Run TFS in Windows, or use the API-key provider here. WSL/Linux storage is not supported."
+        if sys.platform not in plan.SUPPORTED_PLATFORMS:
+            state, message = "unavailable", "ChatGPT sign-in needs Windows DPAPI or the macOS Keychain. Use the API-key provider here. WSL/Linux storage is not supported."
         else:
             try:
                 record = plan.load()
@@ -79,15 +86,23 @@ class Connection:
                     state, message = "connected", "ChatGPT connected. Select a supported model for AI questions."
             except plan.PlanError as exc:
                 if exc.code != "not_signed_in":
-                    state, message = "failed", "Saved ChatGPT connection could not be read. Reconnect on the Windows account that created it."
+                    state, message = "failed", STORAGE_ERRORS.get(
+                        exc.code, "Saved ChatGPT connection could not be read. Reconnect on the computer account that created it.")
             except (OSError, ValueError, KeyError):
                 state, message = "failed", "Saved connection is unavailable. Reconnect to recover."
         if self.task and not self.task.done():
             state, message = "connecting", "Complete sign-in in the browser window."
         elif self.error:
             state, message = self.error_state, self.error
-        return {"provider": self.provider, "model": self.model, "state": state, "message": message,
-                "account": account, "models": self.catalog,
+        # state/message describe the provider that answers AI questions; chatgpt_state drives the sign-in controls.
+        chatgpt_state, active_state = state, state
+        if self.provider != "chatgpt_plan":
+            active_state = "connected" if self.api_ready else "failed"
+            api_message = (f"API-key provider ready. AI questions use {self.api_settings.model}." if self.api_ready
+                           else "The API-key provider is not configured. Follow API-key setup in README.md, then restart TFS.")
+            message = f"{api_message} ChatGPT: {message}" if chatgpt_state == "connecting" or self.error else api_message
+        return {"provider": self.provider, "model": self.model, "state": active_state, "chatgpt_state": chatgpt_state,
+                "message": message, "account": account, "models": self.catalog,
                 "api_provider": self.api_settings.provider, "api_key_available": self.api_ready}
 
     @property
@@ -121,7 +136,7 @@ class Connection:
                 "not_signed_in": "Continue with ChatGPT to connect your account.",
                 "plan_scope_missing": "Plan permission is missing. Reconnect and grant ChatGPT plan usage.",
                 "invalid_grant": "Session expired or revoked. Reconnect with ChatGPT.",
-                "unsupported_storage": "Use native Windows for ChatGPT sign-in, or choose the API-key provider.",
+                **STORAGE_ERRORS,
             }.get(exc.code, "ChatGPT connection failed. Reconnect to recover.")
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code
@@ -139,8 +154,8 @@ class Connection:
         try:
             revoked = await asyncio.to_thread(plan.logout)
         except plan.PlanError as exc:
-            raise HTTPException(409 if exc.code == "login_busy" else 503,
-                                "ChatGPT sign-out is unavailable. Finish any other sign-in and retry on native Windows.") from None
+            raise HTTPException(409 if exc.code == "login_busy" else 503, STORAGE_ERRORS.get(
+                exc.code, "ChatGPT sign-out is unavailable. Finish any other sign-in and retry.")) from None
         self.catalog = []
         if self.provider == "chatgpt_plan":
             self.model = ""
@@ -164,7 +179,8 @@ class Connection:
                 "cancelled": "Sign-in cancelled. Continue with ChatGPT to try again.",
                 "timeout": "Sign-in timed out. Continue with ChatGPT to try again.",
                 "plan_scope_missing": "Plan permission was not granted. Reconnect and allow ChatGPT plan usage.",
-                "browser_unavailable": "The sign-in browser could not open. Run TFS in an interactive Windows session and retry.",
+                "browser_unavailable": "The sign-in browser could not open. Run TFS in an interactive desktop session and retry.",
+                **STORAGE_ERRORS,
             }.get(exc.code, "Sign-in failed. Continue with ChatGPT to try again.")
         except Exception:
             self.error = "Sign-in failed. Continue with ChatGPT to try again."

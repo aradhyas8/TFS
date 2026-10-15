@@ -55,3 +55,8 @@ urllib3==2.8.0
 uvicorn==0.54.0
 websockets==17.2
 yfinance==1.7.0
+jaraco.classes==3.4.0 ; sys_platform == 'darwin'
+jaraco.context==6.1.2 ; sys_platform == 'darwin'
+jaraco.functools==4.6.0 ; sys_platform == 'darwin'
+keyring==25.7.0 ; sys_platform == 'darwin'
+more-itertools==11.2.1 ; sys_platform == 'darwin'
