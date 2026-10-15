@@ -29,47 +29,53 @@ The browser never receives API keys or ChatGPT tokens. Both servers listen only 
 
 ## Requirements
 
-- **Operating system:** Windows 10 or 11 (native, not WSL). ChatGPT sign-in uses Windows DPAPI (Data Protection API) to encrypt tokens.
+- **Operating system:** Windows 10 or 11 (native, not WSL), or macOS.
 - **Python:** 3.11 or later.
 - **Node.js:** 20.9 or later, with npm.
 - **Git.**
 - **AI access (optional):** an eligible ChatGPT account or an OpenAI API (application programming interface) key. You can view and edit a portfolio without AI access.
 
-Startup tests ran only on Windows. On macOS and Linux, ChatGPT sign-in is not available. Use the API-key provider there. The [startup notes](docs/dev-chatgpt/README.md#macos-and-linux) show the commands.
+ChatGPT sign-in encrypts tokens with Windows DPAPI (Data Protection API) or stores them in the macOS login Keychain. Linux is not supported. On Linux, ChatGPT sign-in is not available, and startup is not tested.
 
 ## Quick Start
 
-Do steps 1 to 4 one time. Run all commands in PowerShell.
+Do steps 1 to 4 one time.
 
-1. Get the code:
+1. Get the code. Until PR #48 merges, use the `feat/dev-start-chatgpt` branch. The `main` branch does not have `npm run dev` yet.
 
-   ```powershell
-   git clone https://github.com/aradhyas8/TFS.git
+   ```sh
+   git clone --branch feat/dev-start-chatgpt https://github.com/aradhyas8/TFS.git
    cd TFS
    ```
 
-2. Install the backend:
+2. Install the backend.
+
+   On Windows (PowerShell):
 
    ```powershell
    python -m venv .venv
    .\.venv\Scripts\python.exe -m pip install -e "./backend[dev]"
-   ```
-
-3. Copy the sample configuration. Do not commit `backend/.env`.
-
-   ```powershell
    Copy-Item backend/.env.example backend/.env
    ```
 
+   On macOS (Terminal):
+
+   ```sh
+   python3 -m venv .venv
+   .venv/bin/python -m pip install -e './backend[dev]'
+   cp backend/.env.example backend/.env
+   ```
+
+3. Do not commit `backend/.env`. It holds your configuration and keys.
 4. Install the frontend:
 
-   ```powershell
+   ```sh
    npm --prefix frontend ci
    ```
 
 5. Start TFS from the repository root:
 
-   ```powershell
+   ```sh
    npm run dev
    ```
 
@@ -114,11 +120,13 @@ If no models show, select **Refresh connection**. If the connection expires, sel
 
 **Limitations:**
 
-- ChatGPT sign-in works only on native Windows.
+- ChatGPT sign-in works only on native Windows and macOS.
+- On macOS, the Keychain can ask you to allow access. Select **Always Allow**.
 - TFS keeps one saved ChatGPT account.
 - Model availability and usage limits depend on your ChatGPT plan.
 - You cannot change the provider while an AI request or sign-in is in progress.
 - The automated tests use a mocked sign-in. No test has yet used a real ChatGPT account.
+- The live model catalog returned HTTP 520 in one real-account test. If this occurs, select **Refresh connection** later. You do not need to sign in again.
 
 ## First Use
 
@@ -170,7 +178,7 @@ npm test
 npm run build
 ```
 
-`npm run test:startup` needs free ports 8000 and 3000. `npm test` uses Microsoft Edge and ports 3100 and 8100. The tests use fake AI and market data.
+On macOS, use `../.venv/bin/python` in place of `..\.venv\Scripts\python.exe`. `npm run test:startup` needs free ports 8000 and 3000. `npm test` uses Microsoft Edge and ports 3100 and 8100. The tests use fake AI and market data.
 
 Detailed documentation:
 

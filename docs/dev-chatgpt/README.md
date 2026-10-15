@@ -105,7 +105,8 @@ Final sign-out validation: **885 backend tests passed**, mypy/Ruff passed, the f
 
 | Problem | Action |
 | --- | --- |
-| ChatGPT sign-in is unavailable on WSL, Linux or macOS | Use native Windows, or configure the API-key provider in `backend/.env`. |
+| ChatGPT sign-in is unavailable on WSL or Linux | Use native Windows or macOS, or configure the API-key provider in `backend/.env`. |
+| macOS reports a locked or refused Keychain | Unlock the login Keychain. Allow TFS access in Keychain Access, then reconnect. |
 | Sign-in callback port `1455` is busy | Finish or cancel the other sign-in attempt. Then try again. |
 | The connection expired, a permission is missing or no models show | Open **AI connection**. Select **Refresh connection**. If that fails, select **Reconnect ChatGPT**. |
 | TFS refuses a provider change | Finish or cancel the running AI request or sign-in. Then try again. |
@@ -114,15 +115,11 @@ Final sign-out validation: **885 backend tests passed**, mypy/Ruff passed, the f
 
 ## macOS and Linux
 
-The launcher has macOS and Linux paths, but real startup is verified only on Windows. ChatGPT sign-in needs Windows DPAPI, so use the API-key provider:
+macOS uses the same launcher. ChatGPT credentials are stored in the login Keychain through Security.framework (the `keyring` macOS backend, installed only on macOS). Each Keychain item has the service `TFS ChatGPT plan` and the account `<credential directory>:<client ID>`. The credential directory is `~/Library/Application Support/Greedy/chatgpt-plan` and holds only `host.json`, `selection.json` and lock files. Login and refresh rotation use `fcntl.flock` locks shared by all processes. Keychain errors show as `keychain_locked` or `keychain_error` with a recovery message and no secret text.
 
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -e './backend[dev]'
-cp backend/.env.example backend/.env
-npm --prefix frontend ci
-npm run dev
-```
+If macOS asks whether Python can use the Keychain item, select **Always Allow**. A new Python build in `.venv` can ask again.
+
+Linux is not supported: ChatGPT sign-in reports the API-key path, and startup is not tested.
 
 For reproducible dependency versions, see `backend/requirements-dev.lock` and `frontend/package-lock.json`. TFS is a personal, loopback-only installation. Do not expose it as a public server.
 
@@ -145,3 +142,25 @@ Integration base: PR #49 merge `5d9bad2` on `ticket-02-to-09-actions-and-persist
 Defect fixed: `POST /api/ai/provider` accepted the API-key provider without a configured key and model, and saved that selection across restarts. AI requests then had no usable provider. The endpoint now returns 422 and saves nothing; a regression test covers it.
 
 Not verified: real ChatGPT sign-in and inference, a real OpenAI API-key answer, and macOS or Linux startup.
+
+## Cross-platform update (2026-10-15)
+
+| Check | Windows 11 (local) | macOS 26.6.2 (GitHub-hosted runner) |
+| --- | --- | --- |
+| Credential store | DPAPI files; the existing saved session loaded unchanged | login Keychain through Security.framework |
+| Auth and storage tests (native store, cross-process locks) | 39 passed, repeated 8 times | 39 passed |
+| Launcher tests | 5 passed | 5 passed |
+| `npm run dev` start, stop, restart | approved Windows audit above | two cycles: ready in 9–10 s; SIGINT left no TFS processes; Uvicorn shut down cleanly |
+| Connection browser tests | 10 passed | not run |
+
+The macOS runner used a temporary unlocked Keychain because it has no interactive login session. It did not sign in to a real ChatGPT account.
+
+Fixed during this update:
+
+- Windows credential writes failed with `WinError 5` when status polling read `host.json` during sign-in. Writes now retry the atomic replace. The failure also made the auth tests fail about half of the time.
+- A second process that tried to sign in got a raw `PermissionError` instead of `login_busy`.
+- The sign-in callback server did a reverse DNS lookup before it listened. On the macOS runner, this made sign-in take more than 5 seconds.
+- A configured API-key provider showed as "Connect your ChatGPT plan". It now shows as the ready provider.
+- The connection card used font weights 600 and 700. It now uses Arc weight 500.
+
+Not verified: a real ChatGPT sign-in, model selection, inference, and Keychain permission prompts on an interactive Mac. The earlier live model-catalog HTTP 520 is a separate upstream limitation.
