@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import socket
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -438,6 +439,8 @@ for _file in decision_store.directory.glob("*.json"):
 pipeline.market_today = lambda: date(2000, 1, 1)
 portfolio_store = PortfolioStore(Path(__file__).parent / "data" / "e2e_portfolio")
 portfolio_store.path.unlink(missing_ok=True)
+
+os.environ["CHATGPT_PLAN_DIR"] = str(Path(__file__).parent / "data" / "e2e_chatgpt")
 
 app = create_app(
     model=BrowserTestModel(),

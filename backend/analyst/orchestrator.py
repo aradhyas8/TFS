@@ -59,6 +59,10 @@ class Orchestrator:
         self.data = data or SuppliedDataProvider()
         self._active_tasks: dict[str, asyncio.Task[None]] = {}
 
+    @property
+    def has_active_runs(self) -> bool:
+        return any(not task.done() for task in self._active_tasks.values())
+
     def submit_supervised_run(
         self,
         thread_id: str,
