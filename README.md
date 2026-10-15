@@ -41,10 +41,10 @@ ChatGPT sign-in encrypts tokens with Windows DPAPI (Data Protection API) or stor
 
 Do steps 1 to 4 one time.
 
-1. Get the code. Until PR #48 merges, use the `feat/dev-start-chatgpt` branch. The `main` branch does not have `npm run dev` yet.
+1. Get the code. Use the `ticket-02-to-09-actions-and-persistence` branch. The `main` branch does not have `npm run dev` yet.
 
    ```sh
-   git clone --branch feat/dev-start-chatgpt https://github.com/aradhyas8/TFS.git
+   git clone --branch ticket-02-to-09-actions-and-persistence https://github.com/aradhyas8/TFS.git
    cd TFS
    ```
 
