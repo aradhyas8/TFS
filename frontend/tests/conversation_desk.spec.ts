@@ -177,7 +177,7 @@ test("a failed send and a failed answer stay distinct from the saved conversatio
   expect((await (await page.request.get("/api/portfolio")).json()).portfolio.settings.single_company_cap).toBe("0.15");
 });
 
-test("slash shortcuts, natural workflow routes and the decision register still work, and none of them creates a thread", async ({ page }) => {
+test("slash shortcuts, natural workflow routes and the decision register still work, and each answer is saved as a conversation", async ({ page }) => {
   await open(page, SAVED);
   await ask(page).fill("/rev");
   await ask(page).press("Enter");
@@ -189,18 +189,18 @@ test("slash shortcuts, natural workflow routes and the decision register still w
   await page.getByRole("button", { name: "Save decision" }).click();
   await expect(rail(page).getByTestId("all-decisions-link")).toContainText("1 open");
 
-  // The cached last answer and the saved decision come back after a reload; neither becomes a conversation.
+  // The answer and the saved decision come back after a reload, and the answer is a saved conversation.
   await page.reload();
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
-  await expect(rail(page)).toContainText("No conversations yet");
-  expect(await (await page.request.get("/api/threads")).json()).toEqual([]);
+  await expect(rail(page)).toContainText("Review my portfolio");
+  expect(await (await page.request.get("/api/threads")).json()).toHaveLength(1);
 
   await send(page, "What do you think about ACME?");
   await expect(page.locator(".ctx")).toContainText("Stock analysis · ACME");
   await expect(page.getByRole("main").getByRole("heading", { level: 2 })).toContainText("ACME");
   await rail(page).getByTestId("all-decisions-link").click();
   await expect(page.getByRole("heading", { name: "Decisions", level: 1 })).toBeVisible();
-  expect(await (await page.request.get("/api/threads")).json()).toEqual([]);
+  expect(await (await page.request.get("/api/threads")).json()).toHaveLength(2); // the review and the stock analysis
 
   // Back from Decisions to the answer on screen, a question starts its own conversation; a shortcut there still
   // opens its workflow and the conversation stays in the list.
@@ -210,7 +210,7 @@ test("slash shortcuts, natural workflow routes and the decision register still w
   await ask(page).fill("/new-cash");
   await ask(page).press("Enter");
   await expect(page.getByLabel("Amount", { exact: true })).toBeVisible();
-  await expect(rail(page).getByTestId("thread-item")).toHaveCount(1);
+  await expect(rail(page).getByTestId("thread-item")).toHaveCount(3); // two saved answers and the plain question
 });
 
 test("conversation state shows result references but never credentials, private continuation or average costs", async ({ page }) => {

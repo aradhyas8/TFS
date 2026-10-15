@@ -107,18 +107,13 @@ class InvalidReview(Exception):
 
 class ProseRejected(InvalidReview):
     """Names the rejected phrase and why, so the model's one correction can fix it. The phrase is model text, so the
-    user-facing AnswerRejected shows only the fixed public reason."""
+    user-facing withheld answer shows only the fixed public reason."""
 
     public = "Unsupported quantitative claims or execution direction."
 
     def __init__(self, phrase: str, reason: str) -> None:
         super().__init__(f"{self.public} Rejected phrase {phrase.strip(' .!?;:')!r}: {reason}. Rephrase or remove that wording; "
                          "descriptive valuation terms such as the exit multiple are allowed.")
-
-
-class AnswerRejected(InvalidReview):
-    """The final recommendation still failed validation after its one correction. The message is a fixed validator
-    reason (never model text), so it is safe to show."""
 
 
 def public_reason(err: InvalidReview) -> str:
@@ -312,11 +307,33 @@ def validate_review_baseline(prose: str, request: AnalysisRequest) -> None:
             raise InvalidReview("Partial baselines cannot authorize unsupplied category targets or a complete target mix.")
 
 
+def validate_case_prose(prose: str) -> None:
+    """Tool-argument prose explains calculator inputs. It follows the Stock Analysis explanation rules (no probabilities,
+    guarantees, trade sizes or execution claims); the exposure-only ban on every adjustment verb applies to final review
+    answers, not to describing an exit multiple or a reinvestment path."""
+    validate_prose(prose, stock=True, explanatory=True)
+
+
 def validate_company_judgments(judgments: CompanyJudgments) -> None:
     for case in judgments.cases:
-        validate_prose(" ".join([*case.assumptions, *case.uncertainty]), explanatory=True)
+        validate_case_prose(" ".join([*case.assumptions, *case.uncertainty]))
     if judgments.mid_cycle_context:
-        validate_prose(judgments.mid_cycle_context, explanatory=True)
+        validate_case_prose(judgments.mid_cycle_context)
+
+
+def withheld_answer(reason: str, *, stock: bool) -> Recommendation:
+    """The written answer failed validation after its one correction. The completed research, calculations and checks
+    are still returned; only the model's direction is withheld. `reason` is a fixed validator reason, never model text."""
+    fields: dict[str, Any] = dict(
+        preferred_action="wait_for_inputs", amount=None,
+        reason="The research, calculated cases and checks below are complete, but the written recommendation did not pass "
+               "validation after one correction, so no direction is given. Review the calculated results directly.",
+        alternatives=[Alternative(action="no_action", reason="Keep the dated snapshot while the calculated results are reviewed.")],
+        downside="The calculated cases alone do not establish a direction; losses remain possible in every alternative.",
+        assumptions=["Calculations, evidence and portfolio checks are produced by the backend and are unaffected by the rejected wording."],
+        uncertainty=[f"The written recommendation was withheld: {reason}"],
+        what_could_change=["Running the analysis again may produce a written recommendation that passes validation."])
+    return StockRecommendation(**fields, evidence_ids=[]) if stock else Recommendation(**fields)
 
 
 def enforce_guardrails(
@@ -1147,7 +1164,8 @@ async def analyze(
                         for alternative in judgments.alternatives:
                             for comparison_case in alternative.cases:
                                 comparison_prose = " ".join([*comparison_case.assumptions, comparison_case.downside, *comparison_case.uncertainty])
-                                validate_prose(comparison_prose)
+                                # Company cases explain reported figures; a plain exposure comparison keeps the exposure-only rules.
+                                (validate_case_prose if current_stocks else validate_prose)(comparison_prose)
                                 validate_review_baseline(comparison_prose, request)
                         assert computed is not None
                         if theme:
@@ -1382,19 +1400,23 @@ async def analyze(
                 if request.stock is not None and allocation is None:
                     forced_tool_next = "calculate_comparison"
                 continue
+            stock_answer = request.stock is not None or allocation is not None or reunderwriting is not None or theme is not None
+            withheld = False
             try:
-                recommendation = validate_recommendation(turn.answer, stock=request.stock is not None or allocation is not None or reunderwriting is not None or theme is not None)
+                recommendation = validate_recommendation(turn.answer, stock=stock_answer)
             except (InvalidReview, ValidationError) as err:
-                if answer_retried:
-                    reason = public_reason(err) if isinstance(err, InvalidReview) else "it does not match the recommendation schema"
-                    raise AnswerRejected(f"The corrected final recommendation still failed validation: {reason}") from None
-                answer_retried = True
-                logging.warning("Final answer rejected (%s); returning it once to correct.", err)
-                messages.extend(turn.continuation or [{"role": "assistant", "content": json.dumps(turn.answer)}])
-                messages.append({"role": "user", "content": "Final answer rejected: " + str(err) +
-                                 " Return corrected qualitative prose only, with amount null. Omit numerical claims, probability wording, trading disclaimers, contribution-room wording and execution claims. Keep evidence IDs and all financial restrictions unchanged."})
-                final_next = True
-                continue
+                if not answer_retried:
+                    answer_retried = True
+                    logging.warning("Final answer rejected (%s); returning it once to correct.", err)
+                    messages.extend(turn.continuation or [{"role": "assistant", "content": json.dumps(turn.answer)}])
+                    messages.append({"role": "user", "content": "Final answer rejected: " + str(err) +
+                                     " Return corrected qualitative prose only, with amount null. Omit numerical claims, probability wording, trading disclaimers, contribution-room wording and execution claims. Keep evidence IDs and all financial restrictions unchanged."})
+                    final_next = True
+                    continue
+                # The tool results are valid; only the wording failed twice. Return them with the direction withheld.
+                reason = public_reason(err) if isinstance(err, InvalidReview) else "it does not match the recommendation schema."
+                logging.warning("Corrected final answer still rejected (%s); returning calculated results without a direction.", err)
+                recommendation, withheld = withheld_answer(reason, stock=stock_answer), True
             if reunderwriting and not answer_retried:
                 # The checks below fail the whole run; a review answer gets one chance to correct citations or target wording first.
                 available = {doc.id for record in reunderwriting.research.values() for doc in record.documents if doc.available}
@@ -1469,24 +1491,27 @@ async def analyze(
                     else:
                         reunderwriting.amount = None
                 validate_review_baseline(" ".join([recommendation.reason, recommendation.downside, *recommendation.assumptions, *recommendation.uncertainty, *recommendation.what_could_change, *(row.reason for row in recommendation.alternatives)]), request)
-            if stock_result is not None:
+            if stock_result is not None and not withheld:
                 try:
-                    recommendation = validate_stock_recommendation(recommendation, stock_result, computed, proposals)
+                    recommendation = validate_stock_recommendation(recommendation, stock_result, computed, proposals, check_price=True)
                 except InvalidReview as err:
                     if answer_retried:
-                        raise AnswerRejected(f"The corrected final recommendation still failed validation: {public_reason(err)}") from None
-                    # Research, cases and comparison are complete: one answer-only turn (no tools) to fix the cited problem.
-                    answer_retried = True
-                    citable = sorted(doc.id for doc in stock_result.research.documents if doc.available)
-                    logging.warning("Stock answer rejected (%s); returning it once to correct.", err)
-                    messages.extend(turn.continuation or [{"role": "assistant", "content": json.dumps(turn.answer)}])
-                    messages.append({"role": "user", "content": f"Your final recommendation was rejected: {err} "
-                                     f"Cite only these available document IDs: {citable}. Transcript Q&A is not available: never "
-                                     "say a transcript or Q&A was reviewed, says, shows, supports or confirms anything; if you mention it, "
-                                     "say only that it was not available, in a sentence with no other claim. Research, company cases and "
-                                     "comparison are complete. Return only the corrected final recommendation, with every other rule unchanged."})
-                    final_next = True
-                    continue
+                        logging.warning("Corrected stock answer still rejected (%s); returning calculated results without a direction.", err)
+                        recommendation, withheld = withheld_answer(public_reason(err), stock=True), True
+                    else:
+                        # Research, cases and comparison are complete: one answer-only turn (no tools) to fix the cited problem.
+                        answer_retried = True
+                        citable = sorted(doc.id for doc in stock_result.research.documents if doc.available)
+                        logging.warning("Stock answer rejected (%s); returning it once to correct.", err)
+                        messages.extend(turn.continuation or [{"role": "assistant", "content": json.dumps(turn.answer)}])
+                        messages.append({"role": "user", "content": f"Your final recommendation was rejected: {err} "
+                                         f"Cite only these available document IDs: {citable}. Transcript Q&A is not available: never "
+                                         "say a transcript or Q&A was reviewed, says, shows, supports or confirms anything; if you mention it, "
+                                         "say only that it was not available, in a sentence with no other claim. Research, company cases and "
+                                         "comparison are complete. Return only the corrected final recommendation, with every other rule unchanged."})
+                        final_next = True
+                        continue
+            if stock_result is not None:
                 stock_result.sizing_withheld = sizing_withheld(stock_result, computed, proposals)
             if allocation:
                 assert isinstance(recommendation, StockRecommendation)
@@ -1495,7 +1520,7 @@ async def analyze(
                 allocation_evidence.update({doc.id: doc for row in allocation.stocks for doc in row.research.documents if doc.available and doc.published_on <= supplied.as_of and doc.as_of <= supplied.as_of})
                 if any(key not in allocation_evidence for key in recommendation.evidence_ids):
                     raise InvalidReview("Allocation cannot cite invented or unavailable evidence.")
-                if chosen_stock:
+                if chosen_stock and not withheld:
                     checked_answer = validate_stock_recommendation(recommendation, chosen_stock, computed, [], check_add=False, evidence_scope=allocation_evidence)
                     if checked_answer.preferred_action == "wait_for_inputs":
                         allocation.missing_inputs.append("Selected company lacks usable cited primary evidence.")
@@ -1554,7 +1579,7 @@ Required tool sequence:
 2. For US stocks call get_sec_filings; for Canadian stocks (such as on TSX or with CAD currency) call get_sedar_filings. Never call get_sec_filings for Canadian stocks.
 3. Call get_issuer_material.
 4. Call calculate_company_cases with operating judgments for this company.
-5. After calculate_company_cases, you MUST call calculate_comparison using judgments that cover exactly the alternatives in comparison_inputs (by alternative_id). Every stock analysis requires calculate_comparison before the final recommendation. Never return the final recommendation before calling calculate_comparison.
+5. After calculate_company_cases, you MUST call calculate_comparison using judgments that cover exactly the alternatives in comparison_inputs. Its alternatives is an object keyed by the exact alternative IDs: set the company alternative (and no_action, when offered as true) to true so Python reuses the calculated company cases; supply {cases: [...]} only for the fund and cash alternatives. Every stock analysis requires calculate_comparison before the final recommendation. Never return the final recommendation before calling calculate_comparison.
 6. In your final recommendation, evidence_ids must cite both the filing document ID (from get_sec_filings or get_sedar_filings) and the issuer document ID (from get_issuer_material); when the figures come from the issuer's own published report and no SEDAR+ link is returned, citing that issuer report is enough. Do not cite quote IDs or invented IDs.
 7. Return the final recommendation.
 
@@ -1580,7 +1605,10 @@ Anchor the first modeled year to the reported figures: for fcf_exit, margin x ca
 revenue for the same period, and explain any deliberate gap. Give an investment view even when the quote is
 delayed, FX is indicative or no personal rules are set: those only withhold exact sizing, which the backend
 states separately. Say whether the stock looks attractive at today's price against the downside, base and
-upside values. Use wait_for_inputs only when company facts or cases are missing.
+upside values. valuation.position is Python's comparison of today's price with the cases' values discounted to today
+(valuation.downside, base, upside); exit prices are five-year future prices, never today's values, so never compare today's
+price with them. Set price_position to valuation.position exactly; your prose must agree with it.
+Use wait_for_inputs only when company facts or cases are missing.
 With earnings_exit, cash_conversion must be 1 and reinvestment 0 in every year (margins are net margins);
 to model cash conversion and reinvestment from the reported cash flows, use fcf_exit instead. Use
 net-earnings/FCF operating exit cases for operating companies, book-value cases for
@@ -1690,14 +1718,16 @@ def compact_review_call(call: ToolCall, output: dict[str, Any], review: Reunderw
 
 def validate_stock_recommendation(answer: Recommendation, stock: StockResult,
                                   current: PortfolioReview, proposals: list[ProposalReview], *, check_add: bool = True,
-                                  evidence_scope: dict[str, ResearchDocument] | None = None, either_source: bool = False) -> Recommendation:
+                                  evidence_scope: dict[str, ResearchDocument] | None = None, either_source: bool = False,
+                                  check_price: bool = False) -> Recommendation:
     assert isinstance(answer, StockRecommendation)
     available = evidence_scope if evidence_scope is not None else {doc.id: doc for doc in stock.research.documents if doc.available}
     unavailable = [key for key in answer.evidence_ids if key not in available]
     if unavailable:
         # Only available documents may be cited. A stray ID beside real citations is removed and said so; an answer
         # citing nothing available is fabricated evidence and fails.
-        if len(unavailable) == len(answer.evidence_ids):
+        # With no available documents at all, the missing-evidence answer below explains what is missing instead.
+        if len(unavailable) == len(answer.evidence_ids) and available:
             raise InvalidReview("Material claims cannot cite unavailable primary evidence.")
         logging.warning("Removed citations to unavailable documents: %s", unavailable)
         answer = answer.model_copy(update={"evidence_ids": [key for key in answer.evidence_ids if key in available],
@@ -1742,6 +1772,14 @@ def validate_stock_recommendation(answer: Recommendation, stock: StockResult,
             assumptions=["Cases are conditional judgments using backend-bound primary evidence and dated valuation."],
             uncertainty=["Missing or contradictory facts, personal context, costs and taxes remain unknown."],
             what_could_change=["Verified primary facts, appropriate company drivers and explicit portfolio limits could change the conclusion."])
+    valuation = stock.valuation
+    if check_price and valuation is not None and valuation.position != "unknown" and answer.price_position != valuation.position:
+        # Python's valuation is the source of truth; the view must start from where the price actually sits.
+        raise InvalidReview(
+            f"price_position must be {valuation.position}: today's price {valuation.price} {valuation.currency} compared with the "
+            f"cases' values discounted to today (downside {valuation.downside}, base {valuation.base}, upside {valuation.upside}). "
+            "Exit prices are five-year future prices, not today's values; never compare today's price with them. Describe the "
+            "price against these discounted values only.")
     return answer
 
 

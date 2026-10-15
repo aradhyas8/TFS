@@ -404,10 +404,13 @@ test("a stored result is saved as a decision with its workflow and subject, jour
   await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
   expect(analyses.map(body => body.stock?.position_id)).toEqual(["tfsa-acme"]);
 
-  // The conversation and its stored result are still there, untouched by the re-run.
-  await rail.getByTestId("thread-item").first().click();
+  // The conversation and its stored result are still there, untouched by the re-run (saved as its own conversation).
+  await rail.getByTestId("thread-item").filter({ hasText: "Analyze a stock in chat" }).click();
   await expect(result.getByRole("region", { name: "Stock analysis" })).toBeVisible();
-  expect((await detail(page)).runs).toHaveLength(2);
+  const threads: { id: string; title: string }[] = await (await page.request.get("/api/threads")).json();
+  expect(threads).toHaveLength(2);
+  const original = threads.find(item => item.title === "Analyze a stock in chat")!;
+  expect((await (await page.request.get(`/api/threads/${original.id}`)).json()).runs).toHaveLength(2);
 });
 
 test("a calculation that needs a saved portfolio asks for it instead of showing an empty result", async ({ page }) => {

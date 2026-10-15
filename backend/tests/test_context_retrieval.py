@@ -1,6 +1,7 @@
 """Ticket 04 behavior at the FastAPI request/result and fake transport seams."""
 
 import copy
+import dataclasses
 import json
 import time
 from pathlib import Path
@@ -13,7 +14,7 @@ from analyst.api import create_app
 from analyst.config import Settings
 from analyst.orchestrator import Orchestrator
 from analyst.portfolio import PortfolioStore
-from analyst.providers import ModelTurn, ToolCall
+from analyst.providers import ModelTurn, ToolCall, latest_price_position
 from analyst.schemas import SavedDecision, SavedPortfolio, ToolOutcome
 
 
@@ -35,7 +36,12 @@ class CapturingTransport:
 
     async def respond(self, messages: Any, **kwargs: Any) -> ModelTurn:
         self.requests.append(copy.deepcopy({"messages": messages, **kwargs}))
-        return next(self.turns)
+        turn = next(self.turns)
+        position = latest_price_position(messages) if isinstance(messages, list) else None
+        if isinstance(turn, ModelTurn) and isinstance(turn.answer, dict) and "price_position" not in turn.answer and position:
+            # A scripted stock answer reads where the price sits from the tool output, as a correct model does.
+            turn = dataclasses.replace(turn, answer={**turn.answer, "price_position": position})
+        return turn
 
 
 def client_for(store: PortfolioStore, model: CapturingTransport) -> TestClient:

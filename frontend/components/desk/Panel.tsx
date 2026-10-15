@@ -273,7 +273,7 @@ function RulesSummary({ settings }: { settings: PortfolioSettings }) {
     <span className="cap">They&apos;re checked against the portfolio after the new cash when the answer arrives. Edit them under Holdings.</span></div>;
 }
 
-const EXCHANGES = [["XNAS", "Nasdaq"], ["XNYS", "NYSE"], ["XASE", "NYSE American"], ["XTSE", "TSX"], ["XTSX", "TSX Venture"], ["NEOE", "Cboe Canada"], ["XCNQ", "CSE"]];
+const EXCHANGES = [["XNAS", "Nasdaq"], ["XNYS", "NYSE"], ["XASE", "NYSE American"], ["ARCX", "NYSE Arca"], ["XTSE", "TSX"], ["XTSX", "TSX Venture"], ["NEOE", "Cboe Canada"], ["XCNQ", "CSE"]];
 
 /** Where analysis prices come from. Delayed or cached quotes are never called live. */
 function PriceStatus({ prices, refreshing, disabled, onRefresh }: { prices: PriceRefresh | null; refreshing: boolean; disabled: boolean; onRefresh: () => void }) {

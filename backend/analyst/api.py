@@ -2,11 +2,14 @@ import asyncio
 import csv
 import io
 import json
+import logging
+import sqlite3
 import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, AsyncIterator, Literal, cast
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -35,7 +38,7 @@ from .persistence import (
     StaleBaseRevisionError,
     ThreadNotFoundError,
 )
-from .pipeline import AnswerRejected, InvalidReview, analyze
+from .pipeline import InvalidReview, analyze
 from .portfolio import (
     HOLDINGS_COLUMNS,
     PortfolioStore,
@@ -487,7 +490,7 @@ def create_app(
 
     @app.post("/api/market/refresh")
     async def refresh_prices(request: RefreshPrices) -> dict[str, Any]:
-        """Fills the local quote cache for the saved holdings. Analyses only read that cache."""
+        """Fills the local quote cache for the saved holdings now. Analyses also fill missing or earlier-day prices themselves."""
         current = portfolios.get()
         provider = market_data()
         if current is None or not isinstance(provider, PersonalFinancialProvider):
@@ -632,6 +635,27 @@ def create_app(
     def reference_identities() -> FinancialEvidence | None:
         return getattr(market_data(), "reference", None)
 
+    def save_analysis(request: AnalysisRequest, result: AnalysisResult) -> None:
+        """A completed workflow answer is kept as a conversation: the question, then its stored result."""
+        label = ("Stock analysis" if request.stock else "New cash allocation" if request.new_cash
+                 else "Portfolio rebalance" if request.portfolio_review else "Theme exploration" if request.theme else "Exposure review")
+        draft = request.artifact_reference
+        current = portfolios.get_revisioned()
+        # The committed revision only when the answer was computed on exactly that snapshot.
+        revision = current.revision if draft is None and current and current.portfolio.snapshot == request.portfolio else None
+        reference = ArtifactReference(
+            id=f"art-ana-{uuid4().hex}", kind="analysis_result", label=label, created_at=datetime.now(UTC), revision=revision,
+            basis="hypothetical" if draft else "committed" if revision else "none",
+            source_artifact_id=ArtifactReference.model_validate(draft).id if draft else None)
+        try:
+            portfolios.db.store_artifact(reference, result)
+            thread = portfolios.db.create_thread()
+            portfolios.db.add_message(thread.id, "user", request.question)
+            portfolios.db.add_message(thread.id, "assistant", result.recommendation.reason, artifact_ids=[reference.id])
+        except (sqlite3.Error, OSError):
+            # The answer is still returned; only its saved copy is missing.
+            logging.exception("The completed analysis could not be saved.")
+
     @app.post("/api/analyze", response_model=AnalysisResult)
     async def analysis(request: AnalysisRequest) -> AnalysisResult:
         if request.artifact_id and request.artifact_reference is None:
@@ -670,7 +694,7 @@ def create_app(
                 else None
             )
             async with budget:
-                return await analyze(
+                result = await analyze(
                     request,
                     provider,
                     source,
@@ -679,6 +703,9 @@ def create_app(
                     research=research_source,
                     discovery=discovery,
                 )
+            if needs_ai:
+                save_analysis(request, result)
+            return result
         except TimeoutError:
             if not budget.expired():
                 raise HTTPException(503, "Backend financial source configuration is invalid.") from None
@@ -692,11 +719,7 @@ def create_app(
             import logging
 
             logging.error("InvalidReview in /api/analyze: %s", exc, exc_info=True)
-            raise HTTPException(
-                502,
-                f"{exc} No recommendation was completed." if isinstance(exc, AnswerRejected)
-                else "The model did not produce a valid portfolio review. No recommendation was completed.",
-            ) from None
+            raise HTTPException(502, "The model did not produce a valid portfolio review. No recommendation was completed.") from None
 
         except OpenAIError as exc:
             import logging

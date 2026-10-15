@@ -188,9 +188,11 @@ def test_missing_prices_stay_unknown_and_are_summarized_once(tmp_path):
 
 
 def test_quotes_from_an_earlier_day_are_labelled_cached(tmp_path):
-    api = app(tmp_path, Market())
+    market = Market()
+    api = app(tmp_path, market)
     saved = imported(api)
     api.post("/api/market/refresh", json={})
+    market.used = 20  # the analysis's own refresh finds the daily limit reached, so the earlier quotes are kept
     cache = QuoteCache(tmp_path / "market")
     yesterday = datetime.now(UTC) - timedelta(days=1)
     # Backdate the source qualification too: a quote captured before it would be rejected outright.

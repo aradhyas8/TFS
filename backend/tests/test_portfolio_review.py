@@ -822,7 +822,12 @@ def test_final_prose_gets_one_correction_without_waiving_validation():
     corrected, _ = run_review(answers=[invalid, review_answer()])
     assert corrected.status_code == 200, corrected.text
     assert corrected.json()["recommendation"]["reason"] == review_answer()["reason"]
-    assert run_review(answers=[invalid, invalid])[0].status_code == 502
+    # Failing twice keeps the completed re-underwriting and comparison, with the direction withheld rather than HTTP 502.
+    withheld, _ = run_review(answers=[invalid, invalid])
+    assert withheld.status_code == 200, withheld.text
+    assert withheld.json()["recommendation"]["preferred_action"] == "wait_for_inputs"
+    assert withheld.json()["reunderwriting"]["stocks"] and withheld.json()["comparison"] is not None
+    assert "probability" not in json.dumps(withheld.json()["recommendation"])
 
 
 def test_plan_rebalance_uses_medium_synthesis_after_complete_checked_cases():

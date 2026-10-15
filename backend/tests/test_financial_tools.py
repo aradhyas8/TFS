@@ -359,3 +359,12 @@ def test_unresolved_saved_holdings_prevent_complete_portfolio_claims(tmp_path, n
     run, artifacts, _ = tool_run(tmp_path, name, args, saved=SavedPortfolio.model_validate(saved))
     assert run["status"] == "completed"
     assert artifacts[0]["payload"]["clarification_required"]["code"] == "unresolved_identity"
+
+
+def test_nyse_arca_etf_is_a_priced_us_listing():
+    """Most US ETFs (VTI, VOO, SPY) list on NYSE Arca; a holding identified there is priced like any US listing."""
+    from analyst.financial_data import eodhd_symbol, yahoo_symbol
+    from analyst.schemas import Position, is_canadian_security
+    vti = Position(id="vti", account_id="taxable", kind="etf", currency="USD", ticker="VTI", listing="ARCX", shares="5")
+    assert eodhd_symbol(vti) == "VTI.US" and yahoo_symbol(vti) == "VTI"
+    assert not is_canadian_security("USD", "ARCX")

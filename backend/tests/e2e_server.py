@@ -15,7 +15,7 @@ from analyst.config import Settings
 from analyst.decisions import DecisionStore
 from analyst.financial_data import FakeFinancialProvider
 from analyst.portfolio import PortfolioStore
-from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
+from analyst.providers import FakeDataProvider, ModelTurn, ToolCall, latest_price_position
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import (
     NEW_CASH_DESTINATION,
@@ -183,6 +183,8 @@ class BrowserTestModel:
                 answer["evidence_ids"] = ["sedar_filing", "issuer_release"]
             if "Review unavailable primary" in request["question"]:
                 answer["evidence_ids"] = []
+            # Where today's price sits, read from the valuation the tools returned, as a correct model does.
+            answer["price_position"] = latest_price_position(messages)
             return ModelTurn(answer=answer)
         if request.get("comparison") and "total_value" in tool:
             template = judgments()["alternatives"][0]["cases"]

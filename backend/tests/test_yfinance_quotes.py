@@ -1,4 +1,5 @@
-"""yfinance is the primary quote source behind the daily cache; EODHD covers what it misses; analysis never calls either."""
+"""yfinance is the primary quote source behind the daily cache; EODHD covers what it misses; analysis
+refreshes missing or earlier-day prices once a day and otherwise reads the cache."""
 
 import json
 from datetime import UTC, datetime, timedelta
@@ -183,3 +184,16 @@ def test_yahoo_quotes_adapts_yfinance_output_and_drops_failures(monkeypatch):
     assert set(rows) == {"CM.TO"}
     assert rows["CM.TO"] == {"price": 154.57, "currency": "CAD", "time": 1791403201,
                              "history": [("2026-10-06", 153.0), ("2026-10-07", 154.57)]}
+
+
+def test_analysis_fetches_missing_prices_itself_once_a_day(tmp_path):
+    """No manual Refresh prices: the first analysis fills the empty cache through the same source-limited refresh, and a
+    second analysis the same day reuses those prices without another provider call."""
+    market, yahoo = Market(), Yahoo()
+    api = app(tmp_path, market, yahoo, reviews=2)
+    saved = imported(api)
+    portfolio = reviewed(api, saved["snapshot"])
+    assert len(yahoo.calls) == 1 and len(yahoo.calls[0]) == 9
+    assert all(row["quote_used"]["source"] == YAHOO_SOURCE for row in portfolio["positions"] if row["supplied"]["kind"] != "cash")
+    reviewed(api, saved["snapshot"])
+    assert len(yahoo.calls) == 1 and market.eodhd == ["search"]

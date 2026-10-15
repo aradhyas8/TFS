@@ -19,7 +19,12 @@ from openai import AsyncOpenAI
 
 from analyst.api import create_app
 from analyst.config import Settings
-from analyst.providers import FakeDataProvider, OpenAIResponseTransport, WorkflowModelAdapter
+from analyst.providers import (
+    FakeDataProvider,
+    OpenAIResponseTransport,
+    WorkflowModelAdapter,
+    latest_price_position,
+)
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import (
     FX,
@@ -137,11 +142,26 @@ class Model:
         self.sent.append(payload)
         scripted = self.script.get(len(self.sent))
         if scripted is not None:
-            return scripted() if callable(scripted) else scripted
+            return reads_valuation(scripted() if callable(scripted) else scripted, payload)
         choice = payload.get("tool_choice")
         if isinstance(choice, dict):
             return call(choice["name"], self.arguments.get(choice["name"], "{}"))
-        return openrouter_response(openrouter_message(json.dumps(msft_answer())), model="deepseek/deepseek-v4.1-flash")
+        return reads_valuation(openrouter_response(openrouter_message(json.dumps(msft_answer())), model="deepseek/deepseek-v4.1-flash"), payload)
+
+
+def reads_valuation(response, payload):
+    """An answer without price_position takes it from the valuation the tools returned, as a correct model does."""
+    position = latest_price_position(payload.get("input", []))
+    body = json.loads(response.content)
+    for item in body.get("output", []):
+        for part in item.get("content") or [] if item.get("type") == "message" else []:
+            try:
+                answer = json.loads(part.get("text", ""))
+            except ValueError:
+                continue
+            if isinstance(answer, dict) and "preferred_action" in answer and "price_position" not in answer and position:
+                part["text"] = json.dumps({**answer, "price_position": position})
+    return httpx.Response(response.status_code, json=body)
 
 
 def run(monkeypatch, model, *, research: dict | None = None, effort: str | None = "max", request: dict | None = None, financial=None):
@@ -343,24 +363,28 @@ def test_rejected_transcript_claim_is_corrected_once_without_repeating_research_
     (answer_with(uncertainty=TRANSCRIPT_CLAIM), "transcript Q&A cannot be claimed reviewed"),
     # A correction that brings in unsupported evidence or a numerical claim is not accepted either.
     (answer_with(evidence_ids=["sec-10-k-invented"]), "cannot cite unavailable primary evidence"),
-    (answer_with(reason="Hold: there is a 90% probability that revenue doubles within two years."), "still failed validation"),
+    (answer_with(reason="Hold: there is a 90% probability that revenue doubles within two years."), "unsupported quantitative claims"),
 ])
-def test_corrected_answer_that_still_fails_returns_an_explicit_error(monkeypatch, second, reason):
+def test_corrected_answer_that_still_fails_keeps_the_results_and_withholds_the_direction(monkeypatch, second, reason):
     model = Model(msft_request(), script={6: answer_with(uncertainty=TRANSCRIPT_CLAIM), 7: second})
     response = run(monkeypatch, model)
-    assert response.status_code == 502
-    detail = response.json()["detail"]
-    assert "still failed validation" in detail and reason.lower() in detail.lower()
+    assert response.status_code == 200, response.text
+    result = response.json()
+    # The research, cases and comparison are valid tool results and are returned; only the model's direction is withheld.
+    assert all(case["terminal_price"] is not None for case in result["stock"]["cases"]) and result["comparison"] is not None
+    recommendation = result["recommendation"]
+    assert recommendation["preferred_action"] == "wait_for_inputs" and recommendation["evidence_ids"] == []
+    assert reason.lower() in " ".join(recommendation["uncertainty"]).lower()
     assert len(model.sent) == 7
 
 
-def test_final_answer_rejection_shown_to_the_user_never_quotes_model_text(monkeypatch):
+def test_withheld_answer_shown_to_the_user_never_quotes_model_text(monkeypatch):
     model = Model(msft_request(), script={6: answer_with(uncertainty=TRANSCRIPT_CLAIM), 7: answer_with(reason="There is a high probability that Microsoft recovers.")})
     response = run(monkeypatch, model)
-    assert response.status_code == 502
-    detail = response.json()["detail"]
-    assert "still failed validation: Unsupported quantitative claims or execution direction." in detail
-    assert "probability" not in detail and "Rejected phrase" not in detail
+    assert response.status_code == 200, response.text
+    shown = json.dumps(response.json()["recommendation"])
+    assert "Unsupported quantitative claims or execution direction." in shown
+    assert "probability" not in shown and "Rejected phrase" not in shown
 
 
 def judgments_with(text: str) -> str:
@@ -374,9 +398,15 @@ def company_turns(model) -> list[dict]:
     return [p for p in model.sent if isinstance(p.get("tool_choice"), dict) and p["tool_choice"]["name"] == "calculate_company_cases"]
 
 
-def test_valuation_wording_from_run_4_is_accepted_without_a_correction(monkeypatch):
+@pytest.mark.parametrize("text", [
+    "Exit multiple is a normalized multiple on final-year free cash flow.",
+    # Case explanations follow the Stock Analysis rules: adjustment verbs and reported figures describe the case.
+    "Reduce the margin path if capital intensity stays high. Increase reinvestment while datacenter build-out continues.",
+    "Exit the position in the downside case if cloud margins fall. Reported FY2026 free cash flow was about 30% of revenue.",
+])
+def test_case_explanation_wording_is_accepted_without_a_correction(monkeypatch, text):
     model = Model(msft_request())
-    model.arguments["calculate_company_cases"] = judgments_with("Exit multiple is a normalized multiple on final-year free cash flow.")
+    model.arguments["calculate_company_cases"] = judgments_with(text)
     response = run(monkeypatch, model)
     assert response.status_code == 200, response.text
     assert len(company_turns(model)) == 1
@@ -391,14 +421,14 @@ def rejected_call(arguments):
     return httpx.Response(200, json=body)
 
 
-def test_rejected_trading_instruction_is_corrected_with_the_exact_phrase_and_reason(monkeypatch):
-    model = Model(msft_request(), script={4: lambda: rejected_call(judgments_with("Exit the position if margins fall."))})
+def test_rejected_trade_size_is_corrected_with_the_exact_phrase_and_reason(monkeypatch):
+    model = Model(msft_request(), script={4: lambda: rejected_call(judgments_with("Sell half the position if margins fall."))})
     response = run(monkeypatch, model)
     assert response.status_code == 200, response.text
     turns = company_turns(model)
     assert len(turns) == 2
     error = outputs(turns[1])["calculate_company_cases"]["error"]
-    assert "Rejected phrase 'Exit': reads as a proposed position adjustment" in error
+    assert "Rejected phrase 'Sell half': reads as an unsupported number, probability, guarantee or trade size" in error
     assert response.json()["stock"]["cases"][0]["terminal_price"] is not None
 
 
@@ -514,3 +544,66 @@ def test_complete_text_at_the_length_limit_is_accepted(monkeypatch):
     response = run(monkeypatch, model)
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["reason"] == complete.strip() and len(model.sent) == 6
+
+
+def test_comparison_reuses_the_calculated_company_cases_instead_of_restating_them(monkeypatch):
+    """The slowest model turn restated the company cases Python had already calculated; it now marks them for reuse,
+    and every comparison value is unchanged."""
+    restated = run(monkeypatch, Model(msft_request()))
+    model = Model(msft_request())
+    full = json.loads(model.arguments["calculate_comparison"])["alternatives"]
+    compact = {row["alternative_id"]: {"cases": row["cases"]} for row in full if row["alternative_id"] in {"fund", "cash"}}
+    model.arguments["calculate_comparison"] = json.dumps({"alternatives": {**compact, "company": True, "keep": True}})
+    response = run(monkeypatch, model)
+    assert response.status_code == 200, response.text
+    # The schema sent to the model offers reuse for the company and the retained portfolio.
+    schema = next(tool["parameters"] for tool in model.sent[4]["tools"] if tool["name"] == "calculate_comparison")
+    assert schema["properties"]["alternatives"]["properties"]["company"] == {"type": "boolean", "enum": [True]}
+    assert schema["properties"]["alternatives"]["properties"]["keep"] == {"type": "boolean", "enum": [True]}
+    assert values(response.json()) == values(restated.json())
+    assert all(value is not None for value in values(response.json())["company"])
+
+
+def test_answer_contradicting_the_calculated_price_position_is_corrected_with_pythons_values(monkeypatch):
+    """The live MSFT answer said the price fell short of the upside case while Python placed it above: it compared
+    today's price with the five-year exit price. A stated position that differs from Python's gets one correction."""
+    model = Model(msft_request())
+    seen = run(monkeypatch, Model(msft_request())).json()["stock"]["valuation"]
+    wrong = next(row for row in ["below_downside", "base_to_upside", "above_upside"] if row != seen["position"])
+    model.script = {6: answer_with(price_position=wrong)}
+    response = run(monkeypatch, model)
+    assert response.status_code == 200, response.text
+    correction = json.dumps(model.sent[6]["input"][-1])
+    assert f"price_position must be {seen['position']}" in correction and seen["base"] in correction
+    assert "Exit prices are five-year future prices" in correction
+    result = response.json()
+    assert result["recommendation"]["price_position"] == result["stock"]["valuation"]["position"] == seen["position"]
+
+
+def test_answer_that_keeps_contradicting_the_price_position_is_withheld(monkeypatch):
+    model = Model(msft_request())
+    seen = run(monkeypatch, Model(msft_request())).json()["stock"]["valuation"]["position"]
+    wrong = "below_downside" if seen != "below_downside" else "above_upside"
+    model.script = {6: answer_with(price_position=wrong), 7: answer_with(price_position=wrong)}
+    response = run(monkeypatch, model)
+    assert response.status_code == 200, response.text
+    recommendation = response.json()["recommendation"]
+    assert recommendation["preferred_action"] == "wait_for_inputs"
+    assert f"price_position must be {seen}" in " ".join(recommendation["uncertainty"])
+
+
+def test_completed_analysis_is_saved_as_a_conversation_that_survives_a_restart(monkeypatch):
+    response = run(monkeypatch, Model(msft_request()))
+    assert response.status_code == 200, response.text
+    # A new app on the same SQLite database stands in for a restart; nothing comes from the earlier process.
+    restarted = TestClient(create_app(model=WorkflowModelAdapter(openrouter_transport(monkeypatch, Model(msft_request()))[0])))
+    [summary] = restarted.get("/api/threads").json()
+    assert summary["title"] == msft_request()["question"]
+    thread = restarted.get(f"/api/threads/{summary['id']}").json()
+    user, assistant = thread["messages"]
+    assert (user["role"], assistant["role"]) == ("user", "assistant")
+    envelope = restarted.get(f"/api/artifacts/{assistant['artifact_ids'][0]}").json()
+    assert envelope["reference"]["kind"] == "analysis_result" and envelope["reference"]["label"] == "Stock analysis"
+    saved = envelope["payload"]
+    assert saved["recommendation"] == response.json()["recommendation"]
+    assert saved["stock"]["cases"] == response.json()["stock"]["cases"]

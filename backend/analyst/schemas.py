@@ -75,7 +75,7 @@ class Position(Contract):
         return self
 
 
-US_LISTINGS = frozenset({"XNAS", "XNYS", "XASE"})
+US_LISTINGS = frozenset({"XNAS", "XNYS", "XASE", "ARCX"})
 CANADIAN_LISTINGS = frozenset({"XTSE", "XTSX", "NEOE", "XCNQ"})
 
 
@@ -825,8 +825,13 @@ class Recommendation(Contract):
     what_could_change: list[Text] = Field(min_length=1, max_length=8)
 
 
+PricePosition = Literal["below_downside", "downside_to_base", "base_to_upside", "above_upside", "unknown"]
+
+
 class StockRecommendation(Recommendation):
     evidence_ids: list[Identifier] = Field(min_length=0, max_length=20)
+    # Stock Analysis: the model states where today's price sits, and Python checks it against its own valuation.
+    price_position: PricePosition | None = None
 
 
 class PositionResult(Contract):
@@ -1313,9 +1318,7 @@ class StockValuation(Contract):
     base: str | None
     upside: str | None
     price_to_base: str | None
-    position: Literal[
-        "below_downside", "downside_to_base", "base_to_upside", "above_upside", "unknown"
-    ]
+    position: PricePosition
     # Reported figures for the same period, so the modeled path can be checked against what the company reported.
     reported_margin: str | None = None
     modeled_first_year_margin: str | None = None

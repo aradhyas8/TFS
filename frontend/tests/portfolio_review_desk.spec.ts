@@ -262,7 +262,7 @@ test("missing mark displays unknown total and qualifies the completed review", a
   await expect(memo.getByTestId("review-total")).toContainText("known");
 });
 
-test("invalid model output clears the previous result and cannot display as a completed recommendation", async ({ page }) => {
+test("invalid model output is withheld and cannot display as a completed recommendation", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
   await seedPortfolio(page, SAVED);
   await page.goto("/");
@@ -278,11 +278,15 @@ test("invalid model output clears the previous result and cannot display as a co
   await ask.fill("/review Return invalid output");
   const rejected = page.waitForResponse(response => response.url().endsWith("/api/analyze") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
-  expect((await rejected).status()).toBe(502);
+  // The model supplied an amount twice: the calculated review is kept, but its direction and the amount are withheld.
+  const response = await rejected;
+  expect(response.status()).toBe(200);
+  const { recommendation } = await response.json();
+  expect(["wait_for_inputs", "review_only"]).toContain(recommendation.preferred_action); // breached limits take precedence
+  expect(recommendation.amount).toBeNull();
 
-  // 3. Displays failure and no completed memo
-  await expect(page.getByText("The analysis didn't return an answer.")).toBeVisible();
-  await expect(memo).toHaveCount(0);
+  // 3. Displays a result without a direction; the model's amount never reached it (amount is null above)
+  await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
 });
 
 test("existing analysis journey works without saving", async ({ page }) => {

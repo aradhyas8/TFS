@@ -317,7 +317,7 @@ export const weightLabel = (value: string | null) => value === null ? "Unknown" 
   new Intl.NumberFormat("en-CA", { style: "percent", maximumFractionDigits: 2 }).format(Number(value));
 
 
-export const US_LISTINGS = ["XNAS", "XNYS", "XASE"];
+export const US_LISTINGS = ["XNAS", "XNYS", "XASE", "ARCX"];
 export const CANADIAN_LISTINGS = ["XTSE", "XTSX", "NEOE", "XCNQ"];
 
 export function isSupportedStock(row: Position): boolean {

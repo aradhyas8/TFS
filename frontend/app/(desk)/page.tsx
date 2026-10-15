@@ -879,6 +879,7 @@ export default function DeskPage() {
       if (runId.current !== id) return;
       if (analysis.status !== "completed") throw new Error("The analysis was not completed.");
       setAnswer({ ...sent, analysis, revision });
+      void conversation.refreshThreads(); // the backend saved this answer as a conversation
       setTab(sent.rebalance ? "proposed" : "evidence");
       setFocus(null);
       try {
@@ -1005,6 +1006,7 @@ export default function DeskPage() {
       };
 
       setAnswer({ ...sent, analysis: resultWithRef });
+      void conversation.refreshThreads();
       setTab("evidence");
       setFocus(null);
       try {

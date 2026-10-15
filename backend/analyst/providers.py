@@ -3,7 +3,7 @@ import copy
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol, cast
 
 from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, OpenAIError, omit
@@ -105,7 +105,26 @@ class ScriptedModel:
         self.finals.append(final)
         if not self.turns:
             raise ValueError("Scripted model has no remaining turn.")
-        return self.turns.pop(0)
+        turn = self.turns.pop(0)
+        position = latest_price_position(messages)
+        if isinstance(turn.answer, dict) and "price_position" not in turn.answer and position:
+            # A scripted answer reads where today's price sits from the tool output, as a correct model does.
+            turn = replace(turn, answer={**turn.answer, "price_position": position})
+        return turn
+
+
+def latest_price_position(messages: list[dict[str, Any]]) -> str | None:
+    """The valuation position from the most recent company-case tool output, if any."""
+    for message in reversed(messages):
+        if message.get("type") != "function_call_output":
+            continue
+        try:
+            valuation = json.loads(message["output"]).get("valuation")
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if isinstance(valuation, dict) and valuation.get("position"):
+            return str(valuation["position"])
+    return None
 
 
 PORTFOLIO_TOOL: FunctionToolParam = {
@@ -502,7 +521,9 @@ def build_workflow_tools(request: dict[str, Any]) -> tuple[list[FunctionToolPara
             },
         ]
     raw_tools = [PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL, *stock_tools, *(ALLOCATION_TOOLS if allocation else [])]
-    if review:
+    # Stock analysis reuses its calculated company cases like a review does, instead of the model restating them:
+    # in logged runs those restated cases were over half of the slowest turn's output.
+    if review or request.get("stock") and request.get("comparison") and not allocation and not theme:
         comparison_schema = sanitize_schema(ComparisonJudgments.model_json_schema())
         selection = request.get("comparison") or {}
         selected = selection.get("alternatives", [])

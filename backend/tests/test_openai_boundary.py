@@ -8,7 +8,7 @@ from openai import AsyncOpenAI
 
 from analyst.api import create_app
 from analyst.config import Settings
-from analyst.providers import FakeDataProvider
+from analyst.providers import FakeDataProvider, latest_price_position
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import AnalysisRequest, CompanyResearch
 from tests.test_analysis import recommendation, snapshot
@@ -92,7 +92,8 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
                     "type": "output_text",
                     "text": "broken"
                     if failure == "malformed_json"
-                    else json.dumps(stock_answer() if failure == "stock" else recommendation()),
+                    # The stock answer states where the price sits, from the valuation the tools returned.
+                    else json.dumps({**stock_answer(), "price_position": latest_price_position(payload["input"])} if failure == "stock" else recommendation()),
                     "annotations": [],
                 }
             ]
@@ -664,9 +665,10 @@ def test_openrouter_stock_analysis_forces_each_mandatory_step_when_the_model_pre
 
     def prefers_answering(request):
         # Obeys a named tool_choice and answers whenever the choice is left to it.
-        choice = json.loads(request.content).get("tool_choice")
+        payload = json.loads(request.content)
+        choice = payload.get("tool_choice")
         if not isinstance(choice, dict):
-            return openrouter_response(openrouter_message(json.dumps(answer)))
+            return openrouter_response(openrouter_message(json.dumps({**answer, "price_position": latest_price_position(payload["input"])})))
         name = choice["name"]
         return openrouter_response([{"type": "function_call", "id": f"fc_{name}", "call_id": f"call_{name}", "name": name,
                                      "arguments": arguments.get(name, "{}"), "status": "completed"}])

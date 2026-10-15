@@ -251,6 +251,8 @@ export function useConversation() {
   return {
     threads,
     threadsError,
+    /** Reload the conversation list, e.g. after a workflow answer was saved as a conversation. */
+    refreshThreads,
     thread,
     openId,
     pending: pendingHere,
