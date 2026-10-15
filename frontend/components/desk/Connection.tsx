@@ -11,6 +11,7 @@ type ConnectionStatus = {
   provider: string; model: string; account: string | null; message: string;
   models: { slug: string; display_name: string }[];
   api_key_available: boolean; api_provider: string;
+  openrouter_models?: { slug: string; display_name: string }[]; openrouter_available?: boolean;
 };
 
 const PROVIDER_LABELS: Record<string, string> = { chatgpt_plan: "ChatGPT plan", openrouter: "OpenRouter", openai: "OpenAI API" };
@@ -20,6 +21,7 @@ export default function Connection() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [model, setModel] = useState("");
+  const [openrouterModel, setOpenrouterModel] = useState("");
   const details = useRef<HTMLDetailsElement>(null);
   const request = useCallback(async (path = "connection", body?: object) => {
     const response = await fetch(`/api/ai/${path}`, path === "connection" ? { cache: "no-store" } : {
@@ -77,11 +79,27 @@ export default function Connection() {
             </select>
             <Button size="sm" variant="secondary" disabled={busy || connecting || !(model || status.model)} type="submit">Use ChatGPT plan</Button>
           </form>}
-          <div className={styles.api}>
+          {!!status?.openrouter_models?.length && <div className={styles.api}>
+            <strong>OpenRouter</strong>
+            {status.openrouter_available ? <form className={styles.models} onSubmit={event => {
+              event.preventDefault();
+              void act("provider", { provider: "openrouter", model: openrouterModel || (status.provider === "openrouter" ? status.model : "") });
+            }}>
+              <label htmlFor="openrouter-model">OpenRouter model</label>
+              <select id="openrouter-model" value={openrouterModel || (status.provider === "openrouter" ? status.model : "")}
+                onChange={event => setOpenrouterModel(event.target.value)} disabled={busy || connecting}>
+                <option value="">Choose a model</option>
+                {status.openrouter_models.map(item => <option key={item.slug} value={item.slug}>{item.display_name}</option>)}
+              </select>
+              <Button size="sm" variant="secondary" type="submit"
+                disabled={busy || connecting || !(openrouterModel || (status.provider === "openrouter" && status.model))}>Use OpenRouter</Button>
+            </form> : <p>Add OPENROUTER_API_KEY to backend/.env, then restart TFS.</p>}
+          </div>}
+          {status?.api_provider !== "openrouter" && <div className={styles.api}>
             <strong>API-key provider</strong>
             <p>{status?.api_key_available ? "Use the provider configured on this backend." : "Follow API-key setup in README.md, then restart TFS."}</p>
             {status?.api_key_available && <Button variant="secondary" size="sm" disabled={busy || connecting} onClick={() => void act("provider", { provider: status.api_provider })}>Use API-key provider</Button>}
-          </div>
+          </div>}
           <p className={styles.caption}>Supported ChatGPT-plan inference through TFS. Connection changes apply to future AI work after current work finishes.</p>
         </div>
       </details>
