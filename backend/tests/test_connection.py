@@ -55,6 +55,18 @@ def test_configured_api_key_provider_is_reported_as_the_ready_provider(monkeypat
     assert status["chatgpt_state"] in {"disconnected", "unavailable"}
     assert "sk-test" not in json.dumps(status)
 
+def test_configured_openrouter_provider_reports_its_provider_and_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATGPT_PLAN_DIR", str(tmp_path / "credentials"))
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-secret")
+    monkeypatch.setenv("OPENROUTER_MODEL", "vendor/model:free")
+    with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
+        status = client.get("/api/ai/connection").json()
+        assert client.post("/api/ai/provider", headers=LOCAL, json={"provider": "openrouter"}).status_code == 200
+    assert (status["provider"], status["api_provider"], status["model"], status["state"]) == (
+        "openrouter", "openrouter", "vendor/model:free", "connected")
+    assert "sk-or-secret" not in json.dumps(status)
+
 @pytest.fixture
 def oauth(monkeypatch, tmp_path):
     """Mock OpenAI HTTP and the browser only; real callback, PKCE, JWT checks, DPAPI and SDK."""

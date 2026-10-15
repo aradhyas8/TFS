@@ -1,9 +1,10 @@
+import asyncio
 import json
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
 
 from analyst.api import create_app
 from analyst.config import Settings
@@ -436,6 +437,7 @@ def test_openrouter_is_an_opt_in_base_url_for_the_same_client(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     routed = Settings.from_environment()
     assert (routed.api_key, routed.model, routed.base_url) == ("sk-or", "vendor/model:free", "https://openrouter.ai/api/v1")
+    assert routed.provider == "openrouter"
     monkeypatch.setenv("LLM_PROVIDER", "other")
     with pytest.raises(ValueError):
         Settings.from_environment()
@@ -464,3 +466,54 @@ def test_openrouter_omits_parallel_flag_but_multiple_tool_calls_are_still_reject
     assert response.status_code != 200
     assert "recommendation" not in response.json()
     assert len(sent) == 1
+
+
+def openrouter_transport(handler, model="vendor/model:free"):
+    from analyst.providers import OpenAIResponseTransport
+    sent = []
+
+    def record(request):
+        sent.append(json.loads(request.content))
+        return handler(request)
+
+    settings = Settings("sk-or-secret", model, base_url="https://openrouter.ai/api/v1", provider="openrouter")
+    client = AsyncOpenAI(api_key=settings.api_key, base_url=settings.base_url, max_retries=0,
+                         http_client=httpx.AsyncClient(transport=httpx.MockTransport(record)))
+    return OpenAIResponseTransport(settings, client=client), sent
+
+
+def test_openrouter_routes_any_vendor_model_with_free_price_cap_and_no_fallback():
+    output = [{"type": "reasoning", "id": "rs_1", "summary": [], "content": [{"type": "reasoning_text", "text": "Call it."}]},
+              {"type": "function_call", "id": "fc_1", "call_id": "call-1", "name": "review_portfolio", "arguments": "{}", "status": "completed"}]
+    transport, sent = openrouter_transport(lambda _request: httpx.Response(200, json={
+        "id": "gen-1", "object": "response", "created_at": 1, "model": "vendor/model:free", "status": "completed",
+        "output": output, "parallel_tool_calls": True, "error": None, "incomplete_details": None}))
+    turn = asyncio.run(transport.respond([{"role": "user", "content": "hi"}], tools=[{"type": "function", "name": "review_portfolio",
+        "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}, "strict": True}],
+        tool_choice={"type": "function", "name": "review_portfolio"}))
+    # No first-party-OpenAI pin for a non-OpenAI model, never another host, and a free model can never be billed.
+    assert sent[0]["provider"] == {"allow_fallbacks": False, "require_parameters": True, "max_price": {"prompt": 0, "completion": 0}}
+    assert "models" not in sent[0] and sent[0]["model"] == "vendor/model:free"
+    assert [call.name for call in turn.calls] == ["review_portfolio"]
+    assert [item["type"] for item in turn.continuation] == ["reasoning", "function_call"]
+
+
+@pytest.mark.parametrize("status, expected", [
+    (429, "rate limit"),
+    (404, "no available endpoint"),
+    (503, "unavailable"),
+])
+def test_openrouter_failures_are_explicit_single_attempts_without_secrets(status, expected):
+    transport, sent = openrouter_transport(lambda _request: httpx.Response(status, json={"error": {
+        "message": "upstream detail sk-or-secret", "code": status}}))
+    with pytest.raises(OpenAIError) as failure:
+        asyncio.run(transport.respond([{"role": "user", "content": "hi"}]))
+    assert expected in str(failure.value) and "vendor/model:free" in str(failure.value)
+    assert "sk-or-secret" not in str(failure.value)
+    assert len(sent) == 1
+
+
+def test_openrouter_transport_never_retries_automatically():
+    from analyst.providers import OpenAIResponseTransport
+    transport = OpenAIResponseTransport(Settings("sk-or", "vendor/model:free", base_url="https://openrouter.ai/api/v1", provider="openrouter"))
+    assert transport.client.max_retries == 0

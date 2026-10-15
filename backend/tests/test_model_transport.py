@@ -16,13 +16,6 @@ from analyst.providers import (
 )
 
 
-def test_transport_rejects_routed_third_party_configuration():
-    # Routed third party (e.g. OpenRouter) is rejected by the explicit transport path without fallback
-    settings = Settings("sk-or", "vendor/model", base_url="https://openrouter.ai/api/v1")
-    with pytest.raises(ValueError, match="[Rr]outed.*configuration.*not supported"):
-        OpenAIResponseTransport(settings)
-
-
 def test_transport_plain_prose_with_url_citations():
     sent = []
 

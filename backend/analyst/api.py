@@ -131,7 +131,7 @@ def create_app(
         else:
             try:
                 from .providers import OpenAIResponseTransport
-                transport = OpenAIResponseTransport(app_settings, allow_routed=True)
+                transport = OpenAIResponseTransport(app_settings)
             except ValueError:
                 # API key/model not configured at creation time; will error if orchestrator is called
                 transport = None
@@ -156,7 +156,7 @@ def create_app(
             ensure_idle()
             from .providers import OpenAIResponseTransport
             try:
-                transport = OpenAIResponseTransport(config, allow_routed=True)
+                transport = OpenAIResponseTransport(config)
             except ValueError:
                 raise HTTPException(503, "Select a configured AI provider in AI connection.") from None
             if orch is not None:

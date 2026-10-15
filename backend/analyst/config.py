@@ -38,7 +38,7 @@ class Settings:
                        request_timeout=timeout, provider="chatgpt_plan")
         if provider == "openrouter":
             return cls(api_key=os.environ.get("OPENROUTER_API_KEY", ""), model=os.environ.get("OPENROUTER_MODEL", ""),
-                       reasoning_effort=cast(ReasoningEffort, effort), request_timeout=timeout, base_url="https://openrouter.ai/api/v1")
+                       reasoning_effort=cast(ReasoningEffort, effort), request_timeout=timeout, base_url="https://openrouter.ai/api/v1", provider="openrouter")
         return cls(
             api_key=os.environ.get("OPENAI_API_KEY", ""), model=os.environ.get("OPENAI_MODEL", ""),
             reasoning_effort=cast(ReasoningEffort, effort),

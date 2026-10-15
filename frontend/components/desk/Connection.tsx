@@ -13,6 +13,8 @@ type ConnectionStatus = {
   api_key_available: boolean; api_provider: string;
 };
 
+const PROVIDERS: Record<string, string> = { chatgpt_plan: "ChatGPT plan", openrouter: "OpenRouter", openai: "OpenAI API" };
+
 export default function Connection() {
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [error, setError] = useState("");
@@ -50,7 +52,7 @@ export default function Connection() {
   const label = status?.state ?? "loading";
   return <section className={styles.connection} aria-label="AI connection">
     <div className={styles.bar}>
-      <span className={styles.caption}>AI · {status?.provider === "chatgpt_plan" ? "ChatGPT plan" : "API-key provider"}</span>
+      <span className={styles.caption}>AI · {PROVIDERS[status?.provider ?? ""] ?? "API-key provider"}</span>
       {status?.state !== "connected" && !connecting && chatgpt !== "unavailable" && <Button size="sm" loading={busy} onClick={() => void act("login")}>Continue with ChatGPT</Button>}
       <details ref={details} className={styles.details}>
         <summary>AI connection · <span data-state={label}>{label}</span></summary>
@@ -59,7 +61,7 @@ export default function Connection() {
           <p>Ask questions using your ChatGPT plan or a backend API key. Your local portfolio is always available.</p>
           <p role="status" data-state={label}>{status?.message ?? "Checking the connection…"}</p>
           {status?.account && <p className={styles.account}>{status.account}</p>}
-          {status?.provider === "chatgpt_plan" && status.model && <p>Selected model: <strong>{status.model}</strong></p>}
+          {status?.model && <p>Selected model: <strong>{status.model}</strong></p>}
           {error && <p role="alert" className={styles.error}>{error}</p>}
           {connecting ? <Button variant="secondary" size="sm" loading={busy} onClick={() => void act("login/cancel")}>Cancel sign-in</Button>
             : <div className={styles.actions}>
