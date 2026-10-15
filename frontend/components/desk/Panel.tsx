@@ -583,7 +583,9 @@ function HoldingsTab({ snapshot, setSnapshot, averageCosts, unresolved, onImport
           const valued = review?.positions.find(p => p.supplied.id === row.id);
           return <div key={row.id} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <div className="pv"><span>{row.kind === "cash" ? `Cash ${row.currency}` : row.ticker || row.company_name || row.id} <span className="m">{row.kind === "cash" ? "" : `· ${row.shares} sh${row.currency !== snapshot.reporting_currency ? ` · ${row.currency}` : ""}`}</span></span>
-              <span>{valued ? <>{money(valued.value, review!.reporting_currency)} <span className="m">{pct(valued.weight)}</span></> : row.kind === "cash" ? money(row.cash ?? null, row.currency) : row.mark ? `@ ${money(row.mark.value, row.currency)}` : <span className="m">no price</span>}</span></div>
+              <span>{valued ? <>{money(valued.value, review!.reporting_currency)} <span className="m">{pct(valued.weight)}</span></> : row.kind === "cash" ? money(row.cash ?? null, row.currency) : row.mark ? `@ ${money(row.mark.value, row.currency)}`
+                : prices?.quotes[row.id] ? <span title={`Delayed quote as of ${prices.quotes[row.id].as_of}; not valued until an analysis runs`}>@ {money(prices.quotes[row.id].value, prices.quotes[row.id].currency)}</span>
+                : <span className="m">no price</span>}</span></div>
             {row.kind === "etf" && <label className="pv cap" style={{ alignItems: "center" }}><span>Fund type</span>
               <select className="in" style={{ width: 180, minHeight: 32 }} disabled={!editable} aria-label={`Fund type for ${row.ticker || row.id}`} value={row.etf_role ?? ""}
                 onChange={event => setSnapshot(current => current && ({ ...current, positions: current.positions.map(p => p.id === row.id ? { ...p, etf_role: (event.target.value || null) as typeof p.etf_role } : p) }))}>

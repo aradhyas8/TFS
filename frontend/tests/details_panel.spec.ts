@@ -116,3 +116,16 @@ for (const width of [768, 1023])
     await expect(rail(page)).toBeVisible();
     expect(await sizes()).toEqual([]);
   });
+
+test("a holding without a value shows its cached delayed quote instead of no price", async ({ page }) => {
+  const unpriced = { ...ACME, mark: undefined };
+  await page.route("**/api/market/refresh", route => route.fulfill({ json: { fetched: [], fresh: ["ACME.US"], skipped: [], failed: [], remaining: null, message: "",
+    quotes: { "tfsa-acme": { value: "344.33", as_of: "2026-10-15", source: "Yahoo Finance via yfinance", captured_at: "2026-10-15T20:06:53Z",
+      ticker: "ACME", listing: "XNAS", currency: "USD", status: "delayed" } } } }));
+  await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.fallback() : route.abort());
+  await seedPortfolio(page, { ...SAVED, snapshot: { ...SAVED.snapshot, positions: [unpriced, SAVED.snapshot.positions[1]] } });
+  await page.goto("/");
+  await detailsButton(page).click();
+  await expect(details(page).getByText("@ US$344.33")).toBeVisible();
+  await expect(details(page).getByText("no price")).toHaveCount(0);
+});
