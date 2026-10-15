@@ -39,7 +39,28 @@ from .workflow_tools import WorkflowTools
 logger = logging.getLogger(__name__)
 
 MAX_TURNS = 8
+ANSWER_RETRY = ("Your last reply was empty or was a tool call written as text. Reply to the user in plain language "
+                "using the results above. To use a tool, call it through the tool interface instead.")
+TOOL_CALL_KEYS = {"name", "arguments", "type", "id", "call_id", "tool", "tool_calls", "function", "parameters",
+                  "args", "input", "retrieval"}
 MAX_DEADLINE_SECONDS = 600.0
+
+
+def valid_answer(text: str | None) -> bool:
+    """False for an empty reply or one that is only tool-call-shaped JSON; prose, code and other JSON pass."""
+    body = (text or "").strip()
+    if body.startswith("```") and body.endswith("```"):
+        body = body.strip("`").removeprefix("json").strip()
+    if not body:
+        return False
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return True
+    items = parsed if isinstance(parsed, list) else [parsed]
+    return not (items and all(
+        isinstance(item, dict) and item.keys() <= TOOL_CALL_KEYS
+        and bool(item.keys() & {"name", "tool", "tool_calls", "function", "retrieval"}) for item in items))
 
 
 class Orchestrator:
@@ -139,6 +160,7 @@ class Orchestrator:
             limited_calls: set[tuple[str, str]] = set()
             # Workflows that failed and were not later completed; the answer always says so.
             failed_workflows: dict[str, str] = {}
+            answer_retried = False
 
             turns_count = 0
             while turns_count < MAX_TURNS:
@@ -210,6 +232,18 @@ class Orchestrator:
                                     "context budget. Ask a narrower question.")
                         return
 
+                if not turn.calls and not valid_answer(turn.text):
+                    # An empty reply, or a tool call written as text, is never stored as the answer. One retry
+                    # resends the same context, so no completed tool or proposal step runs again.
+                    if answer_retried:
+                        self._record_terminal_failure(run_id, describe_failure(
+                            InvalidReview("Empty or tool-call-shaped final answer.")).message)
+                        return
+                    answer_retried = True
+                    logger.warning("Invalid final answer in run %s; retrying once.", run_id)
+                    messages = [*messages, {"role": "system", "content": ANSWER_RETRY}]
+                    continue
+
                 # Continuation state is server-only. A tool-call turn is stored after its handler,
                 # so a rejected search query never reaches storage.
                 if turn.continuation and not turn.calls:
@@ -245,6 +279,7 @@ class Orchestrator:
 
                 call = turn.calls[0]
                 tool_remaining = max(0, deadline - asyncio.get_event_loop().time())
+                known_artifacts = set(context.artifact_ids)
                 try:
                     pending_result = capability.handler(context, parsed)
                     if inspect.isawaitable(pending_result):
@@ -280,6 +315,8 @@ class Orchestrator:
                 for key in ("reference", "before_artifact", "after_artifact"):
                     if isinstance(result.get(key), dict):
                         artifact_ids.append(result[key]["id"])
+                # A step links only the artifacts it created; reading a known artifact adds no second result card.
+                artifact_ids = [ref for ref in dict.fromkeys(artifact_ids) if ref not in known_artifacts]
                 rejected_query = (isinstance(result.get("payload"), dict)
                                   and result["payload"].get("reason") == "rejected_query")
                 if turn.continuation and not rejected_query:

@@ -579,3 +579,53 @@ def test_chat_incomplete_twice_fails_with_a_clear_message(tmp_path: Path) -> Non
     assert "ran out of output space" in run["error"] and "lower the reasoning effort" in run["error"]
     assert "tokens=" not in run["error"] and "Model service error" not in run["error"]
     assert [r["reasoning_effort"] for r in model.requests] == ["medium", "low"]
+
+
+@pytest.mark.parametrize("text,valid", [
+    ("", False), ("   \n", False),
+    ('{"name": "get_holdings", "arguments": {}}', False),
+    ('```json\n{"retrieval": {"tool": "get_holdings", "arguments": {"offset": 0}}}\n```', False),
+    ('[{"type": "function_call", "name": "review_portfolio", "arguments": "{}"}]', False),
+    ('{"total_value": "3600", "cash": "1300"}', True),
+    ('```python\nprint({"name": "get_holdings"})\n```', True),
+    ('Call it like this: {"name": "get_holdings", "arguments": {}}', True),
+    ('{"name": "Acme", "weight": "0.64"}', True),
+])
+def test_final_answer_validation_rejects_only_empty_or_tool_call_shaped_text(text: str, valid: bool) -> None:
+    from analyst.orchestrator import valid_answer
+
+    assert valid_answer(text) is valid
+
+
+@pytest.mark.parametrize("invalid", ["", '{"name":"get_holdings","arguments":{}}'])
+def test_invalid_final_answer_retries_once_without_repeating_tools(tmp_path: Path, invalid: str) -> None:
+    from tests.test_context_retrieval import CapturingTransport, submit
+
+    model = CapturingTransport([ModelTurn(calls=[ToolCall("read", "get_holdings", '{"offset":0,"limit":20}')]),
+                                ModelTurn(text=invalid), ModelTurn(text="You hold 100 TD shares.")])
+    with chat_client(tmp_path, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "What do I hold?")
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+    assert run["status"] == "completed", run
+    assert len(model.requests) == 3
+    assert "tool interface" in model.requests[2]["messages"][-1]["content"]
+    # The completed read stays in the retried context and is not executed again.
+    assert sum(len(m["tool_outcomes"]) for m in messages) == 1
+    assert any(m.get("type") == "function_call_output" for m in model.requests[2]["messages"])
+    assert [m["text"] for m in messages if m["role"] == "assistant" and not m["tool_outcomes"]] == ["You hold 100 TD shares."]
+
+
+@pytest.mark.parametrize("invalid", ["", '{"name":"get_holdings","arguments":{}}'])
+def test_invalid_final_answer_twice_fails_clearly_and_is_never_stored(tmp_path: Path, invalid: str) -> None:
+    from tests.test_context_retrieval import CapturingTransport, submit
+
+    model = CapturingTransport([ModelTurn(text=invalid), ModelTurn(text=invalid)])
+    with chat_client(tmp_path, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "What do I hold?")
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+    assert run["status"] == "failed"
+    assert run["error"] == "The model did not produce a valid result. Nothing was completed; try again."
+    assert [m["role"] for m in messages] == ["user"]
+    assert len(model.requests) == 2

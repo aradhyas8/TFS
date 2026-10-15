@@ -19,6 +19,7 @@ from .schemas import (
     MessageRecord,
     RunRecord,
     SavedPortfolio,
+    ToolOutcome,
     WorkflowName,
     build_artifact_payload,
     model_safe,
@@ -87,6 +88,8 @@ class RunContext:
                           if p.base_revision == run.bound_revision and p.created_at <= run.created_at}
         self.known_proposals = dict(self.proposals)
         self.artifact_ids: set[str] = set()
+        # Outcomes of earlier tool steps whose run has no answer in the history window (e.g. a failed run).
+        self.earlier_tools: list[dict[str, Any]] = []
         self._hypothetical_runs: dict[str, bool] = {}
         if run.bound_revision:
             self.artifact_ids.add(f"art-rev-{run.bound_revision}")
@@ -107,8 +110,21 @@ class RunContext:
         )
         selected: list[dict[str, Any]] = []
         budget = CHARACTER_LIMIT
+        # Tool steps are persisted for the UI and debugging, but are not dialogue: their outcomes are folded into
+        # their run's answer, and their artifacts stay retrievable through the context's artifact references.
+        steps = [m for m in recent if is_tool_step(m)]
+        answered = {m.run_id for m in recent if m.role == "assistant" and not is_tool_step(m) and m.run_id}
+        self.earlier_tools = [{"message_id": m.id, **({"basis": "hypothetical"} if self.from_hypothetical_run(m) else {}),
+                               **t.model_dump(mode="json")}
+                              for m in steps if m.run_id is None or m.run_id not in answered
+                              for t in m.tool_outcomes][-MESSAGE_LIMIT:]
         for message in reversed(recent):
-            content = self.message_content(message)
+            if is_tool_step(message):
+                self.remember(message)
+                continue
+            tools = [t for step in steps if step.run_id is not None and step.run_id == message.run_id
+                     for t in step.tool_outcomes] if message.role == "assistant" else []
+            content = self.message_content(message, tools)
             if len(content) > CHARACTER_LIMIT:
                 content = json.dumps(model_safe({"message_id": message.id, "artifact_ids": message.artifact_ids,
                                       **({"basis": "hypothetical"} if self.from_hypothetical_run(message) else {}),
@@ -117,20 +133,24 @@ class RunContext:
             if len(content) > budget:
                 break
             selected.append({"id": message.id, "role": message.role, "content": content})
-            self.artifact_ids.update(message.artifact_ids)
-            for outcome in message.tool_outcomes:
-                self.artifact_ids.update(outcome.artifact_ids)
-            for proposal_id in message.proposal_ids:
-                proposal = self.db.get_proposal(proposal_id)
-                if (proposal is not None and proposal.created_at <= self.run.created_at
-                        and (proposal.base_revision is None or
-                             (self.run.bound_revision is not None and proposal.base_revision <= self.run.bound_revision))):
-                    self.known_proposals.setdefault(proposal.id, proposal)
-                    self.artifact_ids.add(proposal.after_artifact.id)
-                    if proposal.before_artifact:
-                        self.artifact_ids.add(proposal.before_artifact.id)
+            self.remember(message)
             budget -= len(content)
         return list(reversed(selected))
+
+    def remember(self, message: MessageRecord) -> None:
+        """Make an earlier message's artifacts and proposals retrievable by this run."""
+        self.artifact_ids.update(message.artifact_ids)
+        for outcome in message.tool_outcomes:
+            self.artifact_ids.update(outcome.artifact_ids)
+        for proposal_id in message.proposal_ids:
+            proposal = self.db.get_proposal(proposal_id)
+            if (proposal is not None and proposal.created_at <= self.run.created_at
+                    and (proposal.base_revision is None or
+                         (self.run.bound_revision is not None and proposal.base_revision <= self.run.bound_revision))):
+                self.known_proposals.setdefault(proposal.id, proposal)
+                self.artifact_ids.add(proposal.after_artifact.id)
+                if proposal.before_artifact:
+                    self.artifact_ids.add(proposal.before_artifact.id)
 
     def from_hypothetical_run(self, message: MessageRecord) -> bool:
         """Whether an earlier message came from a run that analyzed a draft, not the saved holdings."""
@@ -141,13 +161,13 @@ class RunContext:
             self._hypothetical_runs[message.run_id] = bool(run and run.hypothetical_artifact_id)
         return self._hypothetical_runs[message.run_id]
 
-    def message_content(self, message: MessageRecord) -> str:
+    def message_content(self, message: MessageRecord, tools: list[ToolOutcome] | None = None) -> str:
         return json.dumps(model_safe({
             "message_id": message.id, "text": message.text, "citations": message.citations,
             # History from a hypothetical run stays labeled, so it is never read as saved-portfolio fact.
             **({"basis": "hypothetical"} if self.from_hypothetical_run(message) else {}),
             "artifact_ids": message.artifact_ids, "proposal_ids": message.proposal_ids,
-            "completed_tools": [t.model_dump(mode="json") for t in message.tool_outcomes],
+            "completed_tools": [t.model_dump(mode="json") for t in [*message.tool_outcomes, *(tools or [])]],
         }), ensure_ascii=False)
 
     def with_exchanges(
@@ -238,6 +258,7 @@ class RunContext:
             "pending_proposals": [{"id": p.id, "base_revision": p.base_revision,
                                    "status": p.status, "label": "Pending portfolio proposal"}
                                   for p in self.proposals.values()],
+            **({"earlier_tool_outcomes": self.earlier_tools} if self.earlier_tools else {}),
             "artifact_references": [ref.model_dump(mode="json") for artifact_id in sorted(self.artifact_ids)
                                     if (ref := self.db.get_artifact_reference(artifact_id)) is not None],
         }
@@ -270,6 +291,11 @@ class RunContext:
             {"role": "system", "content": json.dumps(model_safe(context), cls=DecimalEncoder)},
             *[{"role": m["role"], "content": m["content"]} for m in history],
         ]
+
+
+def is_tool_step(message: MessageRecord) -> bool:
+    """A persisted tool call record, not a message the user or the assistant wrote."""
+    return message.role == "assistant" and bool(message.tool_outcomes)
 
 
 READ_CAPABILITIES = {

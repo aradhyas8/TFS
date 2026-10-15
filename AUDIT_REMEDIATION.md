@@ -11,12 +11,12 @@ A finding is marked **Fixed** only after its acceptance tests pass. **Open** mea
 | P0-1 | Chat model cannot see workflow results or larger portfolio reviews | **Fixed** | 1 |
 | P1-1 | `max_output_tokens` failures in chat: no effort cap, no retry, raw diagnostics | **Fixed** | 2 |
 | P1-2 | Failures inside chat workflows are mislabeled or hidden | **Fixed** | 2 |
-| P1-3 | Raw JSON and internal steps in the conversation | Open | 3–4 (D) |
+| P1-3 | Raw JSON and internal steps in the conversation | **Partially fixed** (backend items 3 and 4; frontend items 1, 2 and 5 remain) | 3 (backend), 4 (frontend) |
 | P1-4 | Portfolio-update statements trigger the wrong workflow | Open | 5 (E) |
 | P2-1 | Proposal contract blocks common updates | Open | 5 (E) |
 | P2-2 | Context waste and tool sprawl in chat | Open (result size reduced in Phase 1) | 6 (F) |
 | P2-3 | Two orchestration stacks | Deferred | 6 (F) |
-| P2-4 | Empty final answer completes the run | Open | 3 (D) |
+| P2-4 | Empty final answer completes the run | **Fixed** | 3 |
 | P3-a | (first P3 item) 409 "Finish or cancel current AI work" message does not explain the cause | Open | Unassigned (outside groups B and C) |
 | P3-b | (second P3 item) `/api/analyze` client and server deadlines are both 600 s | Open | 6 (F; ends when `/api/analyze` is retired) |
 
@@ -135,6 +135,72 @@ Static checks: Ruff on `backend/analyst` and `backend/tests` passed. mypy on `ap
 - The browser renders `run.error` verbatim (`Thread.tsx:635`). The text is now safe, but the UI presentation is unchanged. That is left for fix group D.
 - P3-a (the 409 connection-change message) and P3-b (equal 600-second deadlines) are not addressed and stay Open.
 
+## Phase 3: Conversation state and response validation (fix group D, backend)
+
+### P1-3: Raw JSON and internal steps in the conversation
+
+**Status:** Partially fixed. Backend items 3 (duplicate cards) and 4 (history teaches the JSON format) are fixed. Frontend items 1 (`JsonViewer` results), 2 (every read shown as a step) and 5 (literal Markdown) remain for Phase 4.
+
+**Root cause.**
+- Each tool call is persisted as an assistant message with text `{"retrieval": {...}}`. `RunContext.history` sent those records back to the model as assistant turns, which taught weaker models to write tool calls as text.
+- The orchestrator linked every artifact that a result mentioned (`reference`, `before_artifact`, `after_artifact`, `artifact_ids`) to the step and the run. So `get_artifact`, `get_holdings` and `get_proposal` re-linked artifacts they only read, and the UI rendered a second result card under each read.
+
+**Technical decision and rationale.**
+- Persistence is unchanged. Tool steps are still stored with their outcomes, so the UI activity and debugging keep them. Only the model-facing history changes, so no memory or summarization system is added.
+- `RunContext.history` skips tool-step messages, meaning assistant messages with `tool_outcomes`. Their artifact IDs and proposals are still registered, through the new `remember` helper, so earlier results stay retrievable. They also stay listed in the system context's `artifact_references`.
+- A run's answer carries that run's tool outcomes in its existing `completed_tools` field (name, status, error, created artifact IDs). Follow-up questions therefore still see which results exist and where they came from.
+- Tool steps from a run with no answer in the window (for example a failed run) appear as a short `earlier_tool_outcomes` list in the system context (at most 20, with the hypothetical label kept). They are not sent as fake assistant turns.
+- The tool-call and tool-output items of the active run are unchanged.
+- A step links only the artifacts it created. The orchestrator takes a snapshot of the run's known artifact IDs before the handler runs and drops any linked ID that was already known. Created artifacts are added to that set by `FinancialTools.store`, web search and proposal preparation, so their links are unchanged.
+- Artifact IDs, storage, retrieval and the Phase 1 summaries are unchanged.
+
+**Implementation and changed files.**
+- `backend/analyst/context.py`: `is_tool_step`, `RunContext.remember`, tool-step filtering in `history`, run outcomes in `message_content`, and `earlier_tool_outcomes` in `messages`.
+- `backend/analyst/orchestrator.py`: links only created artifacts.
+- `backend/tests/test_run_lifecycle.py`: the hypothetical-history test now expects user, answer, user (no tool step), with the answer still labeled hypothetical and carrying its `get_holdings` outcome.
+
+**Remaining risks.**
+- The 20-message history window still counts tool steps when reading from the database (P2-2). Dialogue is no longer crowded out of the content, but a run with many steps still uses window slots. Filtering in SQL would need a schema-aware query, so it is left for fix group F.
+- `get_holdings` steps no longer link `art-rev-N`, because it was already known. Saved and hypothetical portfolio cards are still shown by their own UI paths.
+
+### P2-4: Empty final answer completes the run
+
+**Status:** Fixed.
+
+**Root cause.** The final-text path stored any text, including an empty string or a tool call written as JSON, as the assistant answer and marked the run `completed`.
+
+**Technical decision and rationale.**
+- `valid_answer(text)` in `orchestrator.py` rejects only two cases:
+  - empty or whitespace-only text;
+  - text that is entirely a JSON object, or a list of objects, whose keys are all tool-call keys (`name`, `arguments`, `tool`, `function`, `retrieval`, `call_id`, …) and that includes a call-naming key. A single surrounding ```` ``` ```` fence is accepted around it.
+- Prose, code blocks, JSON quoted inside prose, and data JSON such as `{"total_value": …}` or `{"name": "Acme", "weight": …}` are all accepted.
+- An invalid answer is never stored. The first time, the same context is resent with one system instruction to reply in plain language or use the tool interface. Completed tool and proposal steps are not re-executed, because their outputs are already in that context.
+- A second invalid answer fails the run with the Phase 2 mapping, `describe_failure(InvalidReview)`: "The model did not produce a valid result. Nothing was completed; try again." No answer message is stored, and the run is not marked completed.
+
+**Implementation and changed files.** `backend/analyst/orchestrator.py` (`valid_answer`, `ANSWER_RETRY`, the retry in the run loop).
+
+### Phase 3 tests and results
+
+| Acceptance criterion | Test | Result |
+|---|---|---|
+| 1. History holds real dialogue without retrieval records | `test_financial_tools.py::test_followup_reads_prior_result_without_tool_records_or_duplicate_links`: the follow-up history is user, assistant, user, with no `"retrieval"` text. `test_run_lifecycle.py::test_later_ordinary_run_sees_earlier_hypothetical_messages_labeled` (updated). | Pass |
+| 2. Follow-ups can still reach prior results | The same follow-up test: the earlier answer carries `completed_tools` with the created artifact ID, the artifact is in `artifact_references`, and `get_artifact` returns its cash figure. `test_context_retrieval.py::test_oversized_historical_message_reference_still_excludes_private_fields`: an orphan tool step's outcome still reaches the model through `earlier_tool_outcomes`, with private fields removed. | Pass |
+| 3. Current-run tool execution is unchanged | All existing `test_context_retrieval.py`, `test_workflow_tools.py` and `test_chat_proposals.py` cases. | Pass |
+| 4. `get_artifact` creates no duplicate link | The same follow-up test: the read step and its outcome have empty `artifact_ids`, and the second run's `artifact_ids` is `[]`. | Pass |
+| 5. An empty answer gets one recovery, then a clear failure | `test_conversation.py::test_invalid_final_answer_retries_once_without_repeating_tools[""]` and `::test_invalid_final_answer_twice_fails_clearly_and_is_never_stored[""]`. | Pass |
+| 6. A tool-call-shaped answer gets the same treatment | The same two tests with `{"name":"get_holdings","arguments":{}}`, plus fenced `retrieval` JSON and list cases in `test_final_answer_validation_rejects_only_empty_or_tool_call_shaped_text`. | Pass |
+| 7. Valid JSON or code is not rejected | `test_final_answer_validation_rejects_only_empty_or_tool_call_shaped_text`: data JSON, a Python block, JSON inside prose, and `{"name": "Acme", "weight": …}` all pass. | Pass |
+| 8. Recovery repeats no tools | The retry test: exactly one tool outcome, and the earlier `function_call_output` is still present in the retried request. | Pass |
+| 9. Phase 1 and Phase 2 behavior is unchanged | Regression run over `test_context_retrieval.py`, `test_conversation.py`, `test_workflow_tools.py`, `test_financial_tools.py`, `test_web_search.py`, `test_chat_proposals.py`, `test_run_lifecycle.py`, `test_research_tools.py`, `test_saved_run_replay.py`, `test_openai_boundary.py`, `test_analysis.py` and `test_stock_openrouter_e2e.py`. | 406 passed |
+
+Static checks: Ruff on `backend/analyst` and `backend/tests` passed. mypy on `context.py` and `orchestrator.py` passed.
+
+**Remaining risks.**
+- The retry uses one of the 8 orchestration turns. An invalid answer on the last turn still ends at the turn limit, not at the validation message.
+- When a run fails after its tools created artifacts, the message "Nothing was completed" understates what happened. The artifacts stay stored but no answer is shown. The UI wording is left for Phase 4.
+- A reply that is only an object such as `{"name": "Acme"}` is treated as a tool call. A legitimate answer of that exact shape would get one retry.
+- The browser still renders every tool step and uses `JsonViewer` for some kinds (P1-3 frontend items). The Playwright check in `thread_artifacts.spec.ts` for duplicate cards was not run in this backend-only phase.
+
 ## Recommended next phase
 
-Phase 3: fix group D, backend part. Leave tool-step messages out of `RunContext.history`. Record in a step's `artifact_ids` only the artifacts that the step created. Treat an empty final answer, or one shaped like a tool call, as invalid: retry once, then fail clearly. This addresses P2-4 and the backend part of P1-3.
+Phase 4: fix group D, frontend part. Collapse a run's steps into one line and hide pure reads. Replace the `JsonViewer` fallback for `calculation_result` with a readable summary. Add minimal Markdown rendering for answers. Verify with `thread_artifacts.spec.ts`. This completes P1-3.

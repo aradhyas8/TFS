@@ -358,7 +358,9 @@ def test_later_ordinary_run_sees_earlier_hypothetical_messages_labeled(tmp_path)
         run = ask(client, thread, "What do I hold?", "req-2")
         assert (run["status"], run["hypothetical_artifact_id"]) == ("completed", None)
         history = [json.loads(m["content"]) for m in model.requests[2]["messages"][2:]]
-        assert [m.get("basis") for m in history] == ["hypothetical", "hypothetical", "hypothetical", None]
+        # Tool steps are not dialogue; the answer carries its run's outcomes, still labeled hypothetical.
+        assert [m.get("basis") for m in history] == ["hypothetical", "hypothetical", None]
+        assert history[1]["completed_tools"][0]["name"] == "get_holdings"
         held = tool_output(model, 3)
         assert (held["revision"], shares(held["positions"])) == (1, 10)
 
