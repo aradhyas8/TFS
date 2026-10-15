@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -231,6 +232,8 @@ def test_sign_in_timeout_is_recoverable(oauth, monkeypatch):
 def test_callback_port_conflict_does_not_touch_its_owner(oauth):
     import socket
     with socket.socket() as owner:
+        if sys.platform != "win32":  # earlier callbacks leave TIME_WAIT on 1455; Windows REUSEADDR would let TFS steal the port
+            owner.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         owner.bind(('127.0.0.1', 1455))
         owner.listen()
         with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:

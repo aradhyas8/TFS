@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import secrets
+import socketserver
 import sys
 import threading
 import time
@@ -357,8 +358,14 @@ def _login(cancel: threading.Event) -> None:
         def log_message(self, *args: Any) -> None:  # the callback query carries the code: never log it
             pass
 
+    class CallbackServer(HTTPServer):
+        def server_bind(self) -> None:
+            # HTTPServer.server_bind does a reverse DNS lookup (getfqdn) that takes seconds on some Macs.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = "127.0.0.1", 1455
+
     try:
-        server = HTTPServer(("127.0.0.1", 1455), Callback)
+        server = CallbackServer(("127.0.0.1", 1455), Callback)
     except OSError:
         raise PlanError("callback_port_busy") from None
     server.timeout = 0.25
