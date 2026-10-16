@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import threading
 import time
 from decimal import Decimal
@@ -38,6 +39,7 @@ from analyst.persistence import (
     IncompatibleStateError,
 )
 from analyst.portfolio import PortfolioStore
+from analyst.proposal_tools import ProposalTools
 from analyst.providers import ModelTurn, ToolCall
 from analyst.schemas import (
     SavedPortfolio,
@@ -148,6 +150,49 @@ def test_cancellation_before_tool_call_halts_and_rejects_late_output(tmp_path: P
         assert detail["runs"][0]["status"] == "cancelled"
 
 
+def test_cancellation_during_active_tool_call_halts_and_rejects_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AC 1: Cancellation during an active in-flight tool call cancels cleanly, maintains terminal cancelled status, and stores no late output."""
+    client, transport, store = setup_desk(
+        tmp_path,
+        [
+            make_call(CHANGE_5, "call-1"),
+            ModelTurn(text="Late final answer that should never be stored."),
+        ],
+        released=True,
+    )
+    with client:
+        thread = client.post("/api/threads").json()["id"]
+
+        orig_prepare = ProposalTools.prepare
+
+        async def slow_prepare_and_cancel(self: Any, context: Any, parsed: Any) -> dict[str, Any]:
+            # Run was launched; now trigger cancellation while this tool call is in-flight!
+            th = store.db.get_thread(thread)
+            assert th is not None
+            orch = client.app.state.orchestrator
+            for r in th.runs:
+                await orch.cancel_run(thread, r.id)
+            # Await briefly so the cancellation signal aborts the active asyncio task
+            await asyncio.sleep(0.1)
+            return orig_prepare(self, context, parsed)
+
+        monkeypatch.setattr(ProposalTools, "prepare", slow_prepare_and_cancel)
+
+        run = submit(client, thread, "I bought 5 more Acme shares.")
+        assert run["status"] == "cancelled"
+
+        # Verify no late output was stored
+        detail = client.get(f"/api/threads/{thread}").json()
+        assert detail["runs"][0]["status"] == "cancelled"
+        # Only the initial user message exists (no tool outcome or assistant message)
+        assert len(detail["messages"]) == 1
+        assert detail["messages"][0]["role"] == "user"
+
+        # No proposal committed or saved
+        proposals = client.get("/api/portfolio/proposals").json()
+        assert len(proposals) == 0
+
+
 def test_cancellation_after_tool_call_drops_late_model_answer(tmp_path: Path) -> None:
     """AC 1: Cancellation after a completed tool call drops the late final model answer and preserves cancelled."""
     client, transport, store = setup_desk(
@@ -255,7 +300,7 @@ def test_incompatible_framework_state_fails_safely(tmp_path: Path) -> None:
     db.create_thread("th-compat")
     run, _ = db.submit_message("th-compat", SubmitMessageRequest(client_request_id="req-compat-1", text="test"), 1)
 
-    # Store state with an incompatible engine
+    # Store state with an incompatible engine and version
     db.store_execution_state(
         run_id=run.id,
         engine="future_unsupported_engine_v99",
@@ -263,8 +308,91 @@ def test_incompatible_framework_state_fails_safely(tmp_path: Path) -> None:
         usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
     )
 
+    # Direct validation raises IncompatibleStateError
     with pytest.raises(IncompatibleStateError, match="Incompatible"):
         db.validate_execution_state(run.id, expected_engine="pydantic_ai")
+
+    # Restart recovery: recover_interrupted_runs detects incompatible state and marks run as 'failed' safely
+    recovered = db.recover_interrupted_runs()
+    assert recovered == 1
+    failed_run = db.get_run("th-compat", run.id)
+    assert failed_run is not None
+    assert failed_run.status == "failed"
+    assert "Incompatible" in (failed_run.error or "")
+
+    # Idempotent retry: submit_message with same client_request_id raises IncompatibleStateError safely
+    with pytest.raises(IncompatibleStateError, match="Incompatible"):
+        db.submit_message("th-compat", SubmitMessageRequest(client_request_id="req-compat-1", text="test"), 1)
+
+    # Run execution: Orchestrator._execute_run rejects incompatible state before executing model or tools
+    run2, _ = db.submit_message("th-compat", SubmitMessageRequest(client_request_id="req-compat-2", text="test2"), 1)
+    db.store_execution_state(
+        run_id=run2.id,
+        engine="future_unsupported_engine_v99",
+        engine_version="99.0",
+    )
+    orch = Orchestrator(
+        db=db,
+        transport=CapturingTransport([]),
+        settings=Settings(api_key="sk-test", model="gpt-4o"),
+        engine="pydantic_ai",
+    )
+    asyncio.run(orch._execute_run("th-compat", run2, "test2", None, None))
+    failed_run2 = db.get_run("th-compat", run2.id)
+    assert failed_run2 is not None
+    assert failed_run2.status == "failed"
+    assert "Incompatible" in (failed_run2.error or "")
+
+
+def test_migration_v4_to_v5_creates_backup_and_preserves_data(tmp_path: Path) -> None:
+    """AC 4: Versioned migration from v4 to v5 creates an automated backup and preserves existing data."""
+    db_path = tmp_path / "portfolio.db"
+    db = Database(db_path)
+    db.initialize()
+
+    port = portfolio()
+    store = PortfolioStore(database_path=db_path)
+    store.save(port)
+    db.create_thread("th-mig")
+    run, _ = db.submit_message("th-mig", SubmitMessageRequest(client_request_id="req-mig", text="v4 run"), 1)
+    db.add_message("th-mig", "user", "v4 message", run_id=run.id)
+
+    # Simulate database as left at schema v4 (before v5 migration)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE IF EXISTS private_execution_state;")
+        conn.execute("DELETE FROM schema_migrations WHERE version = 5;")
+        conn.execute("PRAGMA user_version = 4;")
+
+    v4_db = Database(db_path)
+    assert v4_db.get_schema_version() == 4
+
+    # Forward migration to v5: triggers pre-migration backup and creates private_execution_state table
+    v4_db.initialize()
+    v4_db.initialize()  # repeated initialization is idempotent
+    assert v4_db.get_schema_version() == 5
+
+    # Verify backup database was created with user_version = 4
+    backup_path = tmp_path / "portfolio.backup.db"
+    assert backup_path.exists()
+    with sqlite3.connect(backup_path) as backup_conn:
+        assert backup_conn.execute("PRAGMA user_version;").fetchone()[0] == 4
+
+    # Verify private_execution_state table exists and migration v5 is recorded
+    with sqlite3.connect(db_path) as conn:
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
+        assert "private_execution_state" in tables
+        versions = [r[0] for r in conn.execute("SELECT version FROM schema_migrations;").fetchall()]
+        assert 5 in versions
+
+    # Verify existing thread, run and portfolio survived intact
+    thread = v4_db.get_thread("th-mig")
+    assert thread is not None
+    assert len(thread.runs) == 1
+    assert thread.runs[0].id == run.id
+    current_rev = store.get_revisioned()
+    assert current_rev is not None
+    assert current_rev.revision == 1
+    assert len(current_rev.portfolio.snapshot.positions) == len(port.snapshot.positions)
 
 
 def test_data_survival_across_reopen_and_initialization(tmp_path: Path) -> None:
@@ -545,4 +673,58 @@ def test_output_retry_with_repeated_edit_does_not_stack_shares(tmp_path: Path) -
         after_stock = next(p for p in detail["after_portfolio"]["snapshot"]["positions"] if p["id"] == "stock")
         # Base was 10. Change was +5. Stacking would produce 20. Must be 15!
         assert Decimal(str(after_stock["shares"])) == Decimal("15")
+
+
+def test_ambiguous_or_unknown_account_clarifies_without_creating_proposal(tmp_path: Path) -> None:
+    """AC 5: When model proposals reference unknown or ambiguous positions, it asks for clarification without creating proposals."""
+    client, transport, store = setup_desk(
+        tmp_path,
+        [
+            ModelTurn(
+                calls=[
+                    ToolCall(
+                        "call-1",
+                        "prepare_portfolio_proposal",
+                        json.dumps({
+                            "edits": [
+                                {
+                                    "action": "change_quantity",
+                                    "position_id": "unknown-acc-pos",
+                                    "quantity": "5",
+                                }
+                            ]
+                        }),
+                    )
+                ]
+            ),
+            ModelTurn(text="Which account and holding did you mean? I could not find unknown-acc-pos in your saved portfolio."),
+        ],
+        released=True,
+    )
+    with client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "I bought 5 shares in my mystery account.")
+        assert run["status"] == "completed"
+
+        # Proposals list must be empty: no proposal was prepared or committed
+        proposals = client.get("/api/portfolio/proposals").json()
+        assert proposals == []
+
+        # Portfolio revision remains at 1
+        port = client.get("/api/portfolio").json()
+        assert port["revision"] == 1
+
+        # Thread messages detail: assistant message explains clarification
+        detail = client.get(f"/api/threads/{thread}").json()
+        asst_msgs = [m for m in detail["messages"] if m["role"] == "assistant"]
+        assert len(asst_msgs) == 2
+        tool_msg = asst_msgs[0]
+        final_msg = asst_msgs[1]
+        assert "Which account and holding" in final_msg["text"]
+
+        # Tool message records clarification_required
+        clarification = tool_msg.get("clarification_required")
+        assert clarification is not None
+        assert clarification["code"] == "unknown_position"
+
 

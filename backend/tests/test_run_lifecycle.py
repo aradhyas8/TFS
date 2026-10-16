@@ -342,7 +342,7 @@ def test_existing_runs_survive_the_upgrades_that_record_hypothetical_selection_a
     upgraded = Database(path)
     upgraded.initialize()
     upgraded.initialize()  # repeated startup
-    assert upgraded.get_schema_version() == SCHEMA_VERSION == 4
+    assert upgraded.get_schema_version() == SCHEMA_VERSION == 5
     kept = upgraded.get_run("th-1", run.id)
     assert kept is not None and (kept.bound_revision, kept.hypothetical_artifact_id, kept.ai_model) == (1, None, None)
     with sqlite3.connect(tmp_path / "portfolio.backup.db") as backup:

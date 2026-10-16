@@ -304,25 +304,22 @@ class TFSTransportModel(Model):
                     await asyncio.wait_for(self.transport.respond(tfs_messages, **kwargs), timeout=remaining),
                 )
                 deps.ledger.record_attempt_result(retry_attempt, success=True)
-                deps.save_execution_state()
 
             deps.ledger.record_attempt_result(attempt, success=True)
-            deps.save_execution_state()
         except asyncio.CancelledError:
             deps.ledger.record_attempt_result(attempt, success=False, error="Cancelled")
-            deps.save_execution_state()
             raise
         except TimeoutError:
             deps.ledger.record_attempt_result(attempt, success=False, error="Timeout")
-            deps.save_execution_state()
             deps.record_terminal_failure(f"Model request timed out after {request_timeout:.1f}s.")
             raise
         except Exception as exc:
             deps.ledger.record_attempt_result(attempt, success=False, error=str(exc))
-            deps.save_execution_state()
             failure = describe_failure(exc)
             deps.record_terminal_failure(failure.message)
             raise
+        finally:
+            deps.save_execution_state()
 
         if deps.is_stopped():
             raise asyncio.CancelledError()
@@ -769,25 +766,22 @@ async def execute_pydantic_ai_run(
         logger.info("Supervised PydanticAI run %s was cancelled.", run_id)
         deps.save_execution_state()
         # cancel_run already updated status to 'cancelled' in db
-    except UnexpectedModelBehavior as exc:
+    except (UnexpectedModelBehavior, BudgetExhaustedError, Exception) as exc:
         if deps.is_stopped():
             return
-        msg = str(exc)
-        if "output retries" in msg or "validation error" in msg:
-            deps.record_terminal_failure(
-                describe_failure(InvalidReview("Empty or tool-call-shaped final answer.")).message
-            )
+        if isinstance(exc, UnexpectedModelBehavior):
+            msg = str(exc)
+            if "output retries" in msg or "validation error" in msg:
+                deps.record_terminal_failure(
+                    describe_failure(InvalidReview("Empty or tool-call-shaped final answer.")).message
+                )
+            else:
+                deps.record_terminal_failure(describe_failure(exc).message)
+        elif isinstance(exc, BudgetExhaustedError):
+            deps.record_terminal_failure(str(exc))
         else:
-            deps.record_terminal_failure(describe_failure(exc).message)
-    except BudgetExhaustedError as exc:
-        if deps.is_stopped():
-            return
-        deps.record_terminal_failure(str(exc))
-    except Exception as exc:
-        if deps.is_stopped():
-            return
-        current_run = deps.db.get_run(thread_id, run_id)
-        if current_run is None or current_run.status != "failed":
-            logger.error("Error in PydanticAI run %s: %s", run_id, exc, exc_info=True)
-            failure = describe_failure(exc)
-            deps.record_terminal_failure("Internal orchestration error." if failure.kind == "internal" else failure.message)
+            current_run = deps.db.get_run(thread_id, run_id)
+            if current_run is None or current_run.status != "failed":
+                logger.error("Error in PydanticAI run %s: %s", run_id, exc, exc_info=True)
+                failure = describe_failure(exc)
+                deps.record_terminal_failure("Internal orchestration error." if failure.kind == "internal" else failure.message)

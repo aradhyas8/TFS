@@ -28,7 +28,7 @@ from .failures import describe_failure
 from .financial_data import FinancialProvider
 from .financial_tools import FinancialTools
 from .model_view import fit
-from .persistence import Database, DecimalEncoder
+from .persistence import Database, DecimalEncoder, IncompatibleStateError
 from .pipeline import InvalidReview, bounded_effort
 from .proposal_tools import ProposalTools
 from .providers import DataProvider, ModelIncomplete, ModelTurn, SuppliedDataProvider, ToolCall
@@ -147,6 +147,12 @@ class Orchestrator:
     ) -> None:
         """Execute run through selected engine. Selected before start; never switched mid-run."""
         engine = self._resolve_engine()
+        try:
+            self.db.validate_execution_state(run_record.id, expected_engine=engine)
+        except IncompatibleStateError as exc:
+            self._record_terminal_failure(run_record.id, str(exc))
+            return
+
         if engine == "legacy":
             await self._execute_legacy_run(
                 thread_id=thread_id,

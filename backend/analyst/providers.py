@@ -6,17 +6,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol, cast
 
-from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, OpenAIError
-
-try:
-    from openai import omit
-except ImportError:
-    try:
-        from openai import Omit
-        omit = cast(Any, Omit())
-    except ImportError:
-        from openai import NOT_GIVEN
-        omit = cast(Any, NOT_GIVEN)
+from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, OpenAIError, omit
 from openai.types.responses import FunctionToolParam, ResponseInputParam, ToolChoiceFunctionParam
 from openai.types.responses.response_create_params import ToolChoice
 
