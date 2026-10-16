@@ -4,19 +4,19 @@
 
 **Blocked by:** 01 — Establish the evaluation baseline and invariants.
 
-**Status:** ready-for-agent
+**Status:** complete
 
 **Authority:** [V2 specification](../../../specs/tfs-agent-harness-v2.md).
 
 ## Acceptance criteria
 
-- [ ] Pin the evaluated framework/provider versions and use the smallest necessary dependency extras.
-- [ ] Verify the chosen OpenRouter integration against TFS's existing Responses route before changing protocols; document any deliberate protocol difference.
-- [ ] Preserve selected model, routing/price restrictions, explicit supported reasoning, unset-parameter omission, schema validation and tool-call/result identity.
-- [ ] Verify tool-to-answer continuation, citations, usage and refusal/incomplete/rate-limit error mapping through recorded requests and fake responses.
-- [ ] Exercise forced-tool/reasoning conflicts and parallel calls; unsupported explicit combinations fail clearly instead of silently disabling reasoning or changing models.
-- [ ] Keep routing guards and secrets server-side; no external model request is made.
-- [ ] Record pass/fail and the adapter code needed for compatibility. Label the result "mocked contract verified; real-provider compatibility unverified" and carry that limitation into 04 and 10. Production execution remains on the current path.
+- [x] Pin the evaluated framework/provider versions and use the smallest necessary dependency extras.
+- [x] Verify the chosen OpenRouter integration against TFS's existing Responses route before changing protocols; document any deliberate protocol difference.
+- [x] Preserve selected model, routing/price restrictions, explicit supported reasoning, unset-parameter omission, schema validation and tool-call/result identity.
+- [x] Verify tool-to-answer continuation, citations, usage and refusal/incomplete/rate-limit error mapping through recorded requests and fake responses.
+- [x] Exercise forced-tool/reasoning conflicts and parallel calls; unsupported explicit combinations fail clearly instead of silently disabling reasoning or changing models.
+- [x] Keep routing guards and secrets server-side; no external model request is made.
+- [x] Record pass/fail and the adapter code needed for compatibility. Label the result "mocked contract verified; real-provider compatibility unverified" and carry that limitation into 04 and 10. Production execution remains on the current path.
 
 ## Verification
 
