@@ -16,6 +16,7 @@ from analyst.schemas import (
     FinancialEvidence,
     ResearchDocument,
 )
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation, snapshot
 from tests.test_stock import company_judgments, stock_comparison_judgments
 
@@ -127,9 +128,7 @@ def run_canadian_stock(*, research=None, paths=None, request=None, answer=None, 
     turns.append(ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]))
     turns.append(ModelTurn(answer=answer or canadian_stock_answer()))
     model = ScriptedModel(turns)
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post(
-        "/api/analyze", json=req
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=source)), req)
     return response, model
 
 
@@ -157,9 +156,7 @@ def test_canadian_stock_rejects_sec_tool_call():
         ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
         ModelTurn(calls=[ToolCall("sec", "get_sec_filings", "{}")]),
     ])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post(
-        "/api/analyze", json=canadian_stock_request()
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=source)), canadian_stock_request())
     assert response.status_code == 502, response.text
     assert "The model did not produce a valid portfolio review." in response.json()["detail"]
 
@@ -171,9 +168,7 @@ def test_us_stock_rejects_sedar_tool_call():
         ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
         ModelTurn(calls=[ToolCall("sedar", "get_sedar_filings", "{}")]),
     ])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post(
-        "/api/analyze", json=stock_request()
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=source)), stock_request())
     assert response.status_code == 502, response.text
     assert "The model did not produce a valid portfolio review." in response.json()["detail"]
 
@@ -306,12 +301,12 @@ def test_canadian_stock_in_new_cash_allocation():
         ModelTurn(answer=allocation_answer()),
     ]
     model = ScriptedModel(turns)
-    response = TestClient(create_app(
+    response = analyze_with(TestClient(create_app(
         model=model,
         data=FakeDataProvider(),
         financial=FakeFinancialProvider(allocation_evidence()),
         discovery=discovery,
-    )).post("/api/analyze", json=req)
+    )), req)
     assert response.status_code == 200, response.text
     scan = response.json()["allocation"]["scan"]
     assert any(c["position"]["ticker"] == "SHOP" and c["position"]["listing"] == "XTSE" and c["position"]["currency"] == "CAD" for c in scan["candidates"])
@@ -385,9 +380,7 @@ def test_canadian_stock_calculate_comparison_before_company_cases_returns_error_
         ModelTurn(answer=canadian_stock_answer()),
     ]
     model = ScriptedModel(turns)
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post(
-        "/api/analyze", json=req
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=source)), req)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["stock"]["position_id"] == "p2"
@@ -411,9 +404,7 @@ def test_canadian_stock_premature_answer_reprompts_for_stock_tools():
         ModelTurn(answer=canadian_stock_answer()),
     ]
     model = ScriptedModel(turns)
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post(
-        "/api/analyze", json=req
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=source)), req)
     assert response.status_code == 200, response.text
     assert "Stock analysis requires primary research and company cases" in str(model.requests[2])
     assert "get_sedar_filings" in str(model.requests[2])

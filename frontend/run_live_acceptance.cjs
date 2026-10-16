@@ -149,9 +149,12 @@ async function run() {
     page.on('console', msg => events.push({ workflow: current, type: msg.type(), text: msg.text() }));
     page.on('pageerror', error => events.push({ workflow: current, type: 'pageerror', text: String(error) }));
     page.on('requestfailed', req => events.push({ workflow: current, type: 'requestfailed', url: req.url(), failure: req.failure() }));
+    // A desk form or shortcut is a thread message carrying its explicit workflow input.
     page.on('request', req => {
-      if (new URL(req.url()).pathname === '/api/analyze') {
-        lastRequest = { at: new Date().toISOString(), method: req.method(), url: req.url(), payload: req.postDataJSON() };
+      const body = req.method() === 'POST' && /\/api\/threads\/[^/]+\/messages$/.test(new URL(req.url()).pathname) ? req.postDataJSON() : null;
+      if (body?.workflow_input?.workflow) {
+        lastRequest = { at: new Date().toISOString(), method: req.method(), url: req.url(),
+          payload: { question: body.text, ...body.workflow_input, hypothetical_artifact_id: body.hypothetical_artifact_id } };
         persist();
       }
     });
@@ -162,6 +165,33 @@ async function run() {
     });
 
     const askInput = () => page.locator('#ask');
+
+    /** Resolves with the stored analysis of the next workflow run the page starts: the message is accepted at once,
+     *  then the run is polled until it ends. Start it before the action that submits the form. */
+    function workflowResult(timeout = 170000) {
+      return page.waitForResponse(res => res.request().method() === 'POST'
+          && /\/api\/threads\/[^/]+\/messages$/.test(new URL(res.url()).pathname)
+          && !!res.request().postDataJSON()?.workflow_input?.workflow, { timeout })
+        .then(async accepted => {
+          assert.equal(accepted.status(), 202, `HTTP ${accepted.status()}: ${await accepted.text()}`);
+          const { id, thread_id } = await accepted.json();
+          for (const started = Date.now(); Date.now() - started < timeout;) {
+            const run = await (await page.request.get(`/api/threads/${thread_id}/runs/${id}`)).json();
+            if (run.status !== 'running') {
+              lastHTTP = { status: run.status, body: JSON.stringify(run) };
+              persist();
+              assert.equal(run.status, 'completed', `Run ${run.status}: ${run.error}`);
+              for (const artifact of [...run.artifact_ids].reverse()) {
+                const envelope = await (await page.request.get(`/api/artifacts/${artifact}`)).json();
+                if (envelope.reference.kind === 'analysis_result') return envelope.payload;
+              }
+              throw new Error('The run stored no analysis result.');
+            }
+            await page.waitForTimeout(1000);
+          }
+          throw new Error(`Run did not finish within ${timeout}ms`);
+        });
+    }
     const submitBtn = () => page.getByRole('form', { name: 'Ask the analyst' }).locator('button[type="submit"]');
 
     async function sendQuestion(question) {
@@ -170,11 +200,8 @@ async function run() {
       if (/^\/\S+$/.test(question)) {
         await askInput().press('Enter');
       }
-      const [res] = await Promise.all([
-        page.waitForResponse(
-          res => new URL(res.url()).pathname === '/api/analyze' && res.request().method() === 'POST',
-          { timeout: 170000 }
-        ),
+      const [result] = await Promise.all([
+        workflowResult(),
         (async () => {
           const submit = submitBtn();
           try {
@@ -185,11 +212,6 @@ async function run() {
           }
         })(),
       ]);
-      const body = await res.text();
-      lastHTTP = { status: res.status(), body };
-      persist();
-      assert.equal(res.status(), 200, `HTTP ${res.status()}: ${body}`);
-      const result = JSON.parse(body);
       assert.equal(result.status, 'completed', `Expected completed result but got: ${result.status}`);
       lastResult = result;
       // Wait for memo rendering
@@ -241,10 +263,7 @@ async function run() {
     // 4. Unowned candidate (US: NVDA)
     await workflow('4 Unowned candidate (US: NVDA)', async () => {
       lastAction = 'submit question: /stock NVDA';
-      const resPromise = page.waitForResponse(
-        res => new URL(res.url()).pathname === '/api/analyze' && res.request().method() === 'POST',
-        { timeout: 170000 }
-      );
+      const resPromise = workflowResult();
       await askInput().fill('/stock NVDA');
       await askInput().press('Enter');
 
@@ -261,12 +280,7 @@ async function run() {
         await clarifyUsBtn.click();
       }
 
-      const res = await resPromise;
-      const body = await res.text();
-      lastHTTP = { status: res.status(), body };
-      persist();
-      assert.equal(res.status(), 200, `HTTP ${res.status()}: ${body}`);
-      const result = JSON.parse(body);
+      const result = await resPromise;
       assert.equal(result.status, 'completed', `Expected completed result but got: ${result.status}`);
       lastResult = result;
       assert.ok(result.stock, 'Expected stock in NVDA analysis result');
@@ -295,18 +309,7 @@ async function run() {
       const analyzeBtn = page.getByRole('button', { name: 'Analyze', exact: true });
       await expect(analyzeBtn).toBeEnabled();
 
-      const [res] = await Promise.all([
-        page.waitForResponse(
-          res => new URL(res.url()).pathname === '/api/analyze' && res.request().method() === 'POST',
-          { timeout: 170000 }
-        ),
-        analyzeBtn.click(),
-      ]);
-      const body = await res.text();
-      lastHTTP = { status: res.status(), body };
-      persist();
-      assert.equal(res.status(), 200, `HTTP ${res.status()}: ${body}`);
-      const result = JSON.parse(body);
+      const [result] = await Promise.all([workflowResult(), analyzeBtn.click()]);
       assert.equal(result.status, 'completed');
       lastResult = result;
       await expect(page.locator('main')).toContainText(/Analyst memo|New cash|Add/i);
@@ -346,26 +349,15 @@ async function run() {
       const analyzeBtn = page.getByRole('button', { name: 'Analyze', exact: true });
       await analyzeBtn.click();
 
-      // Agreement card
-      const memo = page.getByRole('region', { name: 'Analyst memo' });
-      await expect(memo).toContainText('Needs your agreement');
-      const agreeBtn = memo.getByRole('button', { name: 'Agree and research' });
-      await expect(agreeBtn).toBeVisible();
+      // The conversation asks for agreement to the theme and shortlist
+      const agreement = page.getByRole('log', { name: 'Conversation' }).getByTestId('clarification').last();
+      const agreeBtn = agreement.getByRole('button', { name: 'Agree and research' });
+      await expect(agreeBtn).toBeVisible({ timeout: 60000 });
 
       lastAction = 'submit agreed theme research';
-      const [res] = await Promise.all([
-        page.waitForResponse(
-          res => new URL(res.url()).pathname === '/api/analyze' && res.request().method() === 'POST',
-          { timeout: 170000 }
-        ),
-        agreeBtn.click(),
-      ]);
-      const body = await res.text();
-      lastHTTP = { status: res.status(), body };
-      persist();
-      assert.equal(res.status(), 200, `HTTP ${res.status()}: ${body}`);
-      const result = JSON.parse(body);
+      const [result] = await Promise.all([workflowResult(), agreeBtn.click()]);
       assert.equal(result.status, 'completed');
+      const memo = page.getByRole('region', { name: 'Analyst memo' });
       lastResult = result;
       await expect(memo).toContainText(/Completed theme research|Economic mechanism/i);
       await page.screenshot({ path: path.join(output, `${report.length}-theme-result.png`), fullPage: true, timeout: 5000 });
@@ -424,19 +416,17 @@ async function run() {
       await expect(rerunBtn).toBeVisible();
 
       // Trigger re-run and await response if it sends analyze or pre-fills form
-      const rerunPromise = page.waitForResponse(
-        res => new URL(res.url()).pathname === '/api/analyze' && res.request().method() === 'POST',
-        { timeout: 170000 }
-      );
+      const rerunPromise = workflowResult();
 
       await rerunBtn.click();
-      const rerunRes = await rerunPromise;
-      assert.equal(rerunRes.status(), 200);
-      const rerunResult = await rerunRes.json();
+      const rerunResult = await rerunPromise;
       assert.equal(rerunResult.status, 'completed');
+      // A review of the saved portfolio: no other workflow input and no draft travel with it.
+      assert.equal(lastRequest.payload.workflow, 'run_exposure_review');
       assert.ok(!lastRequest.payload.stock && !lastRequest.payload.new_cash && !lastRequest.payload.theme && !lastRequest.payload.portfolio_review);
-      assert.deepEqual(lastRequest.payload.portfolio.positions.filter(p => p.id !== 'benchmark-fund').map(p => [p.id, p.shares]),
-        portfolio.snapshot.positions.map(p => [p.id, p.shares]));
+      assert.ok(!lastRequest.payload.hypothetical_artifact_id);
+      assert.deepEqual(rerunResult.portfolio.positions.map(p => p.supplied.id).filter(id => id !== 'benchmark-fund').sort(),
+        portfolio.snapshot.positions.map(p => p.id).sort());
       await expect(page.locator('main .memo').first()).toBeVisible();
       await page.screenshot({ path: path.join(output, `${report.length}-rerun-result.png`), fullPage: true, timeout: 5000 });
     });

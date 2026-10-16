@@ -1823,10 +1823,20 @@ WorkflowName = Literal["run_exposure_review", "run_stock_analysis", "run_new_cas
                        "run_portfolio_reunderwriting", "run_theme_exploration"]
 
 
+class CandidateChoice(Contract):
+    """An unowned security a form selected. Only its name travels: the backend resolves the identity again."""
+
+    id: Annotated[Identifier, StringConstraints(pattern=r"^candidate-")]
+    ticker: Identifier
+    listing: Identifier | None = None
+
+
 class WorkflowInput(Contract):
     """Explicit form inputs; bound portfolio, rules and benchmark are never replaceable."""
 
     workflow: WorkflowName | None = None
+    # Securities a stock or theme form named that are not held; stock.position_id and theme.shortlist use their IDs.
+    candidates: list[CandidateChoice] = Field(default_factory=list, max_length=4)
     analysis_date: date | None = None
     stock: StockInput | None = None
     new_cash: NewCashInput | None = None

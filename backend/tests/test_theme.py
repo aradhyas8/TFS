@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from analyst.api import create_app
 from analyst.providers import FakeDataProvider, ScriptedModel
+from tests.analysis_harness import analyze_request, analyze_with
 from tests.test_stock import stock_comparison_request
 
 
@@ -24,9 +25,7 @@ def theme_request(confirmed=False):
 
 def test_unagreed_theme_completes_clarification_without_model_or_candidate_research():
     model = ScriptedModel([])
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
-        "/api/analyze", json=theme_request()
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), theme_request())
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["recommendation"]["preferred_action"] == "wait_for_inputs"
@@ -152,9 +151,7 @@ def run_theme(request=None, turns=None, records=None):
         else {"acme": CompanyResearch.model_validate(research_fixture())}
     )
     model = ScriptedModel(turns or theme_turns(request))
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post(
-        "/api/analyze", json=request or theme_request(True)
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=source)), request or theme_request(True))
     return response, model
 
 
@@ -336,9 +333,7 @@ def test_invalid_theme_agreement_is_rejected_before_model(fault):
     else:
         request["theme"]["mechanism"] = None
     model = ScriptedModel([])
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
-        "/api/analyze", json=request
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), request)
     assert response.status_code == 422, response.text
     assert model.requests == []
 
@@ -525,7 +520,7 @@ def test_theme_production_sdk_uses_bounded_tools_and_shared_structured_response(
             **kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openai))
         ),
     )
-    response = TestClient(
+    response = analyze_with(TestClient(
         create_app(
             settings=Settings("sk-test-backend-only-never-browser", "test-model"),
             data=FakeDataProvider(),
@@ -533,7 +528,7 @@ def test_theme_production_sdk_uses_bounded_tools_and_shared_structured_response(
                 {"acme": CompanyResearch.model_validate(research_fixture())}
             ),
         )
-    ).post("/api/analyze", json=theme_request(True))
+    ), theme_request(True))
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["preferred_action"] == "no_action"
     assert len(sent) == 6
@@ -575,9 +570,7 @@ def test_unconfirmed_theme_does_not_need_openai_configuration_or_candidate_evide
     from analyst.config import Settings
 
     monkeypatch.setenv("RESEARCH_REFERENCE_FILE", "missing-candidate-file.json")
-    response = TestClient(create_app(settings=Settings("", ""), data=FakeDataProvider())).post(
-        "/api/analyze", json=theme_request()
-    )
+    response = analyze_request(theme_request(), settings=Settings("", ""), data=FakeDataProvider())
     assert response.status_code == 200, response.text
     assert response.json()["theme"]["status"] == "awaiting_agreement"
 
@@ -684,14 +677,14 @@ def run_sized_theme(request=None):
         document["excerpt"] += (
             " Automation product orders expanded; competitive pressure and reinvestment needs leave future margins uncertain."
         )
-    return TestClient(
+    return analyze_with(TestClient(
         create_app(
             model=ScriptedModel(turns),
             data=FakeDataProvider(),
             financial=FakeFinancialProvider(FinancialEvidence.model_validate(source)),
             research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(record)}),
         )
-    ).post("/api/analyze", json=request)
+    ), request)
 
 
 def test_supported_theme_purchase_reuses_checked_python_exposure_sizing():
@@ -821,13 +814,13 @@ def test_theme_fund_sizing_aggregates_same_listing_across_accounts():
     quote = {**source["quotes"]["p1"], "ticker": "BROAD", "value": "100"}
     source["identities"] = {key: identity for key in ["fund", "fund-other"]}
     source["quotes"] = {key: quote for key in ["fund", "fund-other"]}
-    response = TestClient(
+    response = analyze_with(TestClient(
         create_app(
             model=ScriptedModel(turns),
             data=FakeDataProvider(),
             financial=FakeFinancialProvider(FinancialEvidence.model_validate(source)),
         )
-    ).post("/api/analyze", json=request)
+    ), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["recommendation"]["preferred_action"] == "add"
@@ -874,9 +867,7 @@ def test_unagreed_theme_on_portfolio_with_no_cash_completes_without_model():
     ]
     req.pop("comparison", None)
     model = ScriptedModel([])
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
-        "/api/analyze", json=req
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), req)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["recommendation"]["preferred_action"] == "wait_for_inputs"

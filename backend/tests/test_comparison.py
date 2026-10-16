@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from analyst.api import create_app
 from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCall
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation, snapshot
 
 
@@ -67,8 +68,7 @@ def run_comparison(request=None, paths=None, *, skip=False):
         turns.append(ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(paths or judgments()))]))
     turns.append(ModelTurn(answer=recommendation()))
     model = ScriptedModel(turns)
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
-        "/api/analyze", json=request or comparison_request())
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), request or comparison_request())
     return response, model
 
 

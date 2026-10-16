@@ -1,7 +1,7 @@
 import { AlertTriangle, Check, Info } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { actionLabel, BENCHMARK_FUND, NEW_CASH_DESTINATION, type Analysis, type ArtifactReference, type CandidateListing, type DecisionAction, type NewCashInput, type Position, type SavedDecision, type Snapshot, type ThemeInput } from "../../lib/contracts";
-import { accountName, answerSentence, caseCurrency, clock, compact, decisionLabel, POSITION_LABEL, doneLabel, durationLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
+import { accountName, answerSentence, caseCurrency, compact, decisionLabel, POSITION_LABEL, doneLabel, fullDate, money, newCashLabel, pct, positionName, range, shortDate } from "./format";
 
 export type Tab = "evidence" | "scenarios" | "proposed" | "holdings" | "guardrails";
 type Cite = { numbers: Map<string, number>; onCite: (id: string) => void };
@@ -106,38 +106,6 @@ export function Echo({
   return <div className="echo"><span className="q">{question}</span>
     <span className="cap n">{newCashLabel(newCash, snapshot) || "New cash"}
       {newCash.confirmed ? " · confirmed new money" : " · not confirmed"}{newCash.risk_context ? " · loss tolerance given" : " · no loss tolerance given"}</span></div>;
-}
-
-export function Waiting({ title, startedAt, now, past, scope, onStop }: { title: string; startedAt: number; now: number; past: number[]; scope: string[]; onStop: () => void }) {
-  const elapsed = now - startedAt;
-  const history = past.length ? `Your last ${past.length === 1 ? "run" : `${past.length} runs`} took ${durationLabel(Math.min(...past))}${past.length > 1 ? ` to ${durationLabel(Math.max(...past))}` : ""}.` : "Most runs finish in 1–3 minutes.";
-  return <div className="memo">
-    <Row label="Working" kind="working">
-      <div role="status" aria-live="polite" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <span className="serif" style={{ fontSize: 26, lineHeight: "34px" }}>{title}</span>
-        <span className="n" style={{ color: "var(--text-2)" }}>Started {clock(new Date(startedAt).toISOString())} · <span style={{ color: "var(--text)" }}>{durationLabel(elapsed)}</span> so far. {history}</span>
-        {elapsed > 180_000 && <span className="amber">Taking longer than usual. It will keep going for up to 10 minutes.</span>}
-      </div>
-    </Row>
-    <Row label="This run checks"><Bullets items={scope} /></Row>
-    <Row label="Meanwhile">
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, color: "var(--text-2)" }}>
-        <span>The answer arrives all at once. You can browse holdings or past decisions; this tab&apos;s title changes when it&apos;s ready.</span>
-        <span><button type="button" className="link" style={{ color: "var(--text)", textDecoration: "underline", textUnderlineOffset: 4 }} onClick={onStop}>Stop waiting</button>
-          <span className="cap"> · the server may still finish the run; nothing is saved.</span></span>
-      </div>
-    </Row>
-  </div>;
-}
-
-export function Failure({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return <div className="memo"><Row label="Not finished" kind="err">
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <span>The analysis didn&apos;t return an answer. Your question and inputs are kept.</span>
-      <details><summary className="cap" style={{ cursor: "pointer" }}>Details</summary><p className="cap" style={{ paddingTop: 6 }}>{message}</p></details>
-      <span><button type="button" className="link" onClick={onRetry}>Try again</button></span>
-    </div>
-  </Row></div>;
 }
 
 function Impact({ result, snapshot }: { result: Analysis; snapshot: Snapshot | null }) {
@@ -804,9 +772,9 @@ const THEME_CHOICES: [DecisionAction, string][] = [
   ["hold", "Kept current holdings"],
 ];
 
-export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onAgree, onConfirm }: {
+export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onConfirm }: {
   result: Analysis; snapshot: Snapshot | null; cite: Cite; saved: SavedDecision | null; onTab: (tab: Tab) => void;
-  onAgree?: () => void; onConfirm: (action: DecisionAction, notes: string | undefined) => Promise<void>;
+  onConfirm: (action: DecisionAction, notes: string | undefined) => Promise<void>;
 }) {
   const { recommendation: rec, portfolio: review, theme } = result;
   if (!theme) return null;
@@ -854,10 +822,6 @@ export function ThemeAnswer({ result, snapshot, cite, saved, onTab, onAgree, onC
               <span className="lbl">Agreed shortlist</span>
               <p className="body">{shortlistTickers || "None"}</p>
               <span className="cap n">Maximum candidates: {theme.context.max_candidates} · Research calls bound: {theme.context.max_tool_calls}</span>
-            </div>
-            <div className="actions">
-              <button type="button" className="btn primary" onClick={onAgree}>Agree and research</button>
-              <span className="cap">Runs live research against primary SEC EDGAR filings</span>
             </div>
           </div>
         </Row>

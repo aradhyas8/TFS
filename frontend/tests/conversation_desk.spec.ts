@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openDetails, seedPortfolio } from "./test_helpers";
+import { openDetails, recordWorkflows, seedPortfolio } from "./test_helpers";
 
 const SAVED = {
   snapshot: {
@@ -36,8 +36,7 @@ async function send(page: Page, question: string) {
 
 test("a conceptual question without a portfolio is answered in a durable thread, not a review", async ({ page }) => {
   await open(page);
-  const analyses: string[] = [];
-  page.on("request", request => { if (request.url().includes("/api/analyze")) analyses.push(request.url()); });
+  const analyses = recordWorkflows(page);
 
   await expect(rail(page)).toContainText("No conversations yet");
   await send(page, "What is an ETF?");
@@ -204,15 +203,15 @@ test("slash shortcuts, natural workflow routes and the decision register still w
   await expect(page.getByRole("heading", { name: "Decisions", level: 1 })).toBeVisible();
   expect(await (await page.request.get("/api/threads")).json()).toHaveLength(2); // the review and the stock analysis
 
-  // Back from Decisions to the answer on screen, a question starts its own conversation; a shortcut there still
-  // opens its workflow and the conversation stays in the list.
+  // Back from Decisions to the answer on screen, which is its own conversation: a question continues it, and a
+  // shortcut there still opens its workflow.
   await page.getByRole("button", { name: "Back to chat" }).click();
   await send(page, "What is a stock split?");
   await expect(thread(page)).toContainText("Plain answer to: What is a stock split?");
   await ask(page).fill("/new-cash");
   await ask(page).press("Enter");
   await expect(page.getByLabel("Amount", { exact: true })).toBeVisible();
-  await expect(rail(page).getByTestId("thread-item")).toHaveCount(3); // two saved answers and the plain question
+  await expect(rail(page).getByTestId("thread-item")).toHaveCount(2); // the review, and the stock analysis with its follow-up
 });
 
 test("conversation state shows result references but never credentials, private continuation or average costs", async ({ page }) => {

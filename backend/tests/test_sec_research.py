@@ -14,6 +14,7 @@ from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCa
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import AnalysisRequest, CompanyResearch, Position
 from analyst.sec_research import SecCache, SecResearchProvider
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import snapshot
 from tests.test_stock import (
     company_judgments,
@@ -262,7 +263,7 @@ def analyze(source: SecResearchProvider):
                            ModelTurn(calls=[ToolCall("company", "calculate_company_cases", json.dumps(judgments))]),
                            ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
                            ModelTurn(answer=answer)])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post("/api/analyze", json=stock_request())
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=source)), stock_request())
     assert response.status_code == 200, response.text
     return response.json()
 

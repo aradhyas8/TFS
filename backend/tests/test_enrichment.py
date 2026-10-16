@@ -11,6 +11,7 @@ from analyst.financial_data import MARKET_TIME, PersonalFinancialProvider, Quote
 from analyst.portfolio import PortfolioStore
 from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCall
 from analyst.schemas import SavedPortfolio
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation
 
 HOLDINGS = """account,ticker,shares,average_cost,currency
@@ -105,7 +106,7 @@ def imported(api: TestClient, csv: str = HOLDINGS) -> dict:
 
 
 def reviewed(api: TestClient, snapshot: dict) -> dict:
-    response = api.post("/api/analyze", json={"question": "Review my portfolio", "portfolio": snapshot})
+    response = analyze_with(api, {"question": "Review my portfolio", "portfolio": snapshot})
     assert response.status_code == 200, response.text
     return response.json()["portfolio"]
 

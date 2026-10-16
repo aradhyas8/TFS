@@ -7,6 +7,7 @@ import openai
 import pytest
 
 from analyst.chatgpt_plan import PlanError, rs256_valid, stream_response
+from tests.analysis_harness import analyze_with
 
 
 class FakeStream:
@@ -159,7 +160,7 @@ def test_portfolio_review_through_chatgpt_plan_streams_the_same_strict_request(m
 
     monkeypatch.setattr("analyst.providers.AsyncOpenAI", lambda **kwargs: AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(plan_route))))
     settings = Settings("oauth-access", "gpt-6-luna", provider="chatgpt_plan", reasoning_effort=effort)
-    response = TestClient(create_app(settings=settings, data=FakeDataProvider())).post("/api/analyze", json={"question": "How concentrated am I?", "portfolio": snapshot()})
+    response = analyze_with(TestClient(create_app(settings=settings, data=FakeDataProvider())), {"question": "How concentrated am I?", "portfolio": snapshot()})
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["preferred_action"] == recommendation()["preferred_action"]
     assert len(sent) == 2

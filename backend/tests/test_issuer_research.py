@@ -26,6 +26,7 @@ from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCa
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import AnalysisRequest, CompanyResearch, Position
 from analyst.sec_research import SecCache
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation, snapshot
 from tests.test_stock import company_judgments, stock_comparison_judgments
 
@@ -275,7 +276,7 @@ def analyze_cm(source, evidence_ids):
                            ModelTurn(calls=[ToolCall("company", "calculate_company_cases", json.dumps(bank_judgments()))]),
                            ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
                            ModelTurn(answer=answer)])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=source)), request)
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -332,6 +333,6 @@ def test_bank_case_without_roe_stays_unknown(tmp_path):
                            ModelTurn(calls=[ToolCall("company", "calculate_company_cases", json.dumps(paths))]),
                            ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
                            ModelTurn(answer=answer)])
-    stock = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post("/api/analyze", json=request).json()["stock"]
+    stock = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=source)), request).json()["stock"]
     assert all(case["terminal_price"] is None for case in stock["cases"])
     assert "book-value growth and distributable earnings cannot be derived" in str(stock["cases"][1]["qualifications"])

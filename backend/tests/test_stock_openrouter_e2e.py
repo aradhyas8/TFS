@@ -19,6 +19,7 @@ from openai import AsyncOpenAI
 
 from analyst.api import create_app
 from analyst.config import Settings
+from analyst.portfolio import PortfolioStore
 from analyst.providers import (
     FakeDataProvider,
     OpenAIResponseTransport,
@@ -32,9 +33,12 @@ from analyst.schemas import (
     CompanyResearch,
     Identity,
     Quote,
+    SavedPortfolio,
     SourceQualification,
 )
+from tests.analysis_harness import analyze_request
 from tests.test_analysis import recommendation
+from tests.test_context_retrieval import submit
 from tests.test_openai_boundary import openrouter_message, openrouter_response, openrouter_transport
 from tests.test_stock import stock_comparison_judgments
 
@@ -168,8 +172,8 @@ def run(monkeypatch, model, *, research: dict | None = None, effort: str | None 
     transport, _ = openrouter_transport(monkeypatch, model, model="deepseek/deepseek-v4.1-flash")
     transport.settings = dataclasses.replace(transport.settings, reasoning_effort=effort)
     source = ReviewedResearchProvider({CIK: CompanyResearch.model_validate(research or msft_research())})
-    app = create_app(model=WorkflowModelAdapter(transport), data=FakeDataProvider(), research=source, financial=financial)
-    return TestClient(app).post("/api/analyze", json=request or msft_request())
+    return analyze_request(request or msft_request(), model=WorkflowModelAdapter(transport), data=FakeDataProvider(),
+                           research=source, financial=financial, settings=transport.settings)
 
 
 def outputs(payload: dict) -> dict[str, dict]:
@@ -291,8 +295,18 @@ def test_unsupported_provider_parameter_names_the_cause(monkeypatch):
     assert len(model.sent) == 1
 
 
-def test_analysis_stops_at_its_execution_deadline(monkeypatch):
-    monkeypatch.setattr("analyst.api.ANALYZE_DEADLINE_SECONDS", 0.5)
+def form_run(app, request=None, request_id="form"):
+    """The stock form as the desk sends it: the saved portfolio, then a thread run with explicit workflow input."""
+    request = request or msft_request()
+    with TestClient(app) as client:
+        client.app.state.portfolio_store.save(SavedPortfolio.model_validate({"snapshot": request["portfolio"]}))
+        thread = client.post("/api/threads").json()["id"]
+        inputs = {key: value for key, value in request.items() if key not in {"question", "portfolio", "settings"}}
+        return submit(client, thread, request["question"], request_id, workflow_input={**inputs, "workflow": "run_stock_analysis"})
+
+
+def test_analysis_stops_at_its_execution_deadline(monkeypatch, tmp_path):
+    monkeypatch.setattr("analyst.orchestrator.MAX_DEADLINE_SECONDS", 0.5)
     model = Model(msft_request())
     started: list[float] = []
 
@@ -301,18 +315,18 @@ def test_analysis_stops_at_its_execution_deadline(monkeypatch):
         await asyncio.sleep(5)
         return model(request)
 
-    response, elapsed = None, time.monotonic()
+    elapsed = time.monotonic()
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr("analyst.providers.AsyncOpenAI", lambda **kwargs: AsyncOpenAI(
             **kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(slow))))
         transport = OpenAIResponseTransport(Settings("sk-or-secret", "deepseek/deepseek-v4.1-flash",
                                                      base_url="https://openrouter.ai/api/v1", provider="openrouter"))
         source = ReviewedResearchProvider({CIK: CompanyResearch.model_validate(msft_research())})
-        app = create_app(model=WorkflowModelAdapter(transport), data=FakeDataProvider(), research=source)
-        response = TestClient(app).post("/api/analyze", json=msft_request())
+        run = form_run(create_app(model=transport, data=FakeDataProvider(), research=source, settings=transport.settings,
+                                  portfolio_store=PortfolioStore(database_path=tmp_path / "portfolio.db")))
     elapsed = time.monotonic() - elapsed
-    assert response.status_code == 504
-    assert "deadline" in response.json()["detail"]
+    assert run["status"] == "failed"
+    assert "deadline" in run["error"]
     assert elapsed < 3 and len(started) == 1  # the in-flight request was cancelled; nothing further was sent
 
 
@@ -592,18 +606,22 @@ def test_answer_that_keeps_contradicting_the_price_position_is_withheld(monkeypa
     assert f"price_position must be {seen}" in " ".join(recommendation["uncertainty"])
 
 
-def test_completed_analysis_is_saved_as_a_conversation_that_survives_a_restart(monkeypatch):
-    response = run(monkeypatch, Model(msft_request()))
-    assert response.status_code == 200, response.text
+def test_completed_analysis_is_saved_as_a_conversation_that_survives_a_restart(monkeypatch, tmp_path):
+    transport, _ = openrouter_transport(monkeypatch, Model(msft_request()), model="deepseek/deepseek-v4.1-flash")
+    source = ReviewedResearchProvider({CIK: CompanyResearch.model_validate(msft_research())})
+    store = lambda: PortfolioStore(database_path=tmp_path / "portfolio.db")  # noqa: E731
+    run = form_run(create_app(model=transport, data=FakeDataProvider(), research=source, settings=transport.settings,
+                              portfolio_store=store()))
+    assert run["status"] == "completed", run
     # A new app on the same SQLite database stands in for a restart; nothing comes from the earlier process.
-    restarted = TestClient(create_app(model=WorkflowModelAdapter(openrouter_transport(monkeypatch, Model(msft_request()))[0])))
+    restarted = TestClient(create_app(model=openrouter_transport(monkeypatch, Model(msft_request()))[0], portfolio_store=store()))
     [summary] = restarted.get("/api/threads").json()
     assert summary["title"] == msft_request()["question"]
     thread = restarted.get(f"/api/threads/{summary['id']}").json()
-    user, assistant = thread["messages"]
-    assert (user["role"], assistant["role"]) == ("user", "assistant")
-    envelope = restarted.get(f"/api/artifacts/{assistant['artifact_ids'][0]}").json()
-    assert envelope["reference"]["kind"] == "analysis_result" and envelope["reference"]["label"] == "Stock analysis"
+    user, step, assistant = thread["messages"]
+    assert (user["role"], step["tool_outcomes"][0]["name"], assistant["role"]) == ("user", "run_stock_analysis", "assistant")
+    envelope = restarted.get(f"/api/artifacts/{step['artifact_ids'][0]}").json()
+    assert envelope["reference"]["kind"] == "analysis_result" and envelope["reference"]["label"] == "Stock Analysis"
     saved = envelope["payload"]
-    assert saved["recommendation"] == response.json()["recommendation"]
-    assert saved["stock"]["cases"] == response.json()["stock"]["cases"]
+    assert assistant["text"] == saved["recommendation"]["reason"]
+    assert saved["stock"]["cases"] and saved["stock"]["valuation"]["position"]

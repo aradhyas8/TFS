@@ -1,4 +1,4 @@
-"""One mapping from exceptions to safe user-facing failures, shared by chat runs and /api/analyze.
+"""One mapping from exceptions to safe user-facing failures, shared by chat runs and the workflows inside them.
 
 Messages never carry token counts, upstream bodies or request details; callers log the exception itself.
 """
@@ -19,22 +19,11 @@ from .sec_research import SecUnavailable
 FailureKind = Literal["incomplete", "invalid_output", "rate_limit", "plan_limit", "timeout",
                       "unavailable", "model_service", "internal"]
 
-STATUS: dict[FailureKind, int] = {
-    # Rate and plan limits keep the 502 that /api/analyze has always returned for model-service failures.
-    "incomplete": 502, "invalid_output": 502, "rate_limit": 502, "plan_limit": 502, "timeout": 504,
-    "unavailable": 503, "model_service": 502, "internal": 500,
-}
-
-
 @dataclass(frozen=True)
 class Failure:
     kind: FailureKind
     message: str
     retryable: bool
-
-    @property
-    def status(self) -> int:
-        return STATUS[self.kind]
 
 
 def describe_failure(exc: BaseException) -> Failure:

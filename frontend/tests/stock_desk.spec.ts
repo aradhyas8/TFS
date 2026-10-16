@@ -20,14 +20,13 @@ const SAVED = {
   unresolved: [],
 };
 
-import { checkPortfolio, openDetails, seedPortfolio } from "./test_helpers";
+import { checkPortfolio, openDetails, seedPortfolio, recordWorkflows } from "./test_helpers";
 
 /** Opens the desk on a saved portfolio and records every analysis request the page sends. */
 async function open(page: Page, saved: object = SAVED) {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
   await seedPortfolio(page, saved);
-  const sent: { question: string; stock?: { position_id: string } }[] = [];
-  page.on("request", request => { if (request.url().endsWith("/api/analyze")) sent.push(request.postDataJSON()); });
+  const sent = recordWorkflows(page);
   await page.goto("/");
   await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   return sent;
@@ -217,7 +216,7 @@ test("an unowned fund ticker returns a clear clarify prompt indicating it is a f
   const clarification = page.getByRole("region", { name: "Clarification" });
   await expect(clarification).toContainText("SPY is a fund, not a single company. Stock Analysis covers individual US and Canadian stocks; a portfolio review covers your funds.");
   await expect(clarification.getByRole("button", { name: "Review my whole portfolio instead" })).toBeVisible();
-  expect(sent).toEqual([]); // never sent to /api/analyze
+  expect(sent).toEqual([]); // no workflow run started
 });
 
 test("a dual-listed ticker prompts to disambiguate listing and runs Stock Analysis upon selection", async ({ page }) => {

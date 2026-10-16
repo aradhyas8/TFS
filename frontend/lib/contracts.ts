@@ -268,7 +268,6 @@ export type SavedDecision = {
 };
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
-export const ANALYZE_TIMEOUT_MS = 600_000;
 
 export async function get<T>(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const response = await fetch(path, {
@@ -284,11 +283,10 @@ export async function get<T>(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Prom
   return data as T;
 }
 
-export async function post<T>(path: string, body: unknown, timeoutMs?: number): Promise<T> {
-  const timeout = timeoutMs ?? (path.includes("/api/analyze") ? ANALYZE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+export async function post<T>(path: string, body: unknown, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const response = await fetch(path, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeout),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const data = await readBody(response);
   if (!response.ok) {

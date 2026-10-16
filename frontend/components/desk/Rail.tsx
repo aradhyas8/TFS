@@ -11,7 +11,7 @@ type Props = {
   revision: number | null; waiting: number;
   /** Saved decisions with no recorded action. */
   unconfirmed: number;
-  view: DeskView; running: string | null;
+  view: DeskView;
   threads: ThreadSummary[] | null; threadsError: boolean; threadId: string | null; onThread: (id: string) => void;
   /** Questions that were not sent from a new conversation since left: each one reopens that conversation. */
   unsent: { key: string; text: string }[]; onUnsent: (key: string) => void;
@@ -22,7 +22,7 @@ type Props = {
 
 /** Left rail: start a conversation, open the portfolio or the decisions, or go back to a conversation.
  *  Holdings and saved decisions have their own views, so they are not listed here again. */
-export default function Rail({ snapshot, revision, waiting, unconfirmed, view, running, threads, threadsError, threadId, onThread, unsent, onUnsent, onNew, onPortfolio, onDecisions, onClose, inert }: Props) {
+export default function Rail({ snapshot, revision, waiting, unconfirmed, view, threads, threadsError, threadId, onThread, unsent, onUnsent, onNew, onPortfolio, onDecisions, onClose, inert }: Props) {
   return <nav className="rail" aria-label="Portfolio, conversations and decisions" id="rail" inert={inert}>
     <div className="rail-head">
       <span className="wordmark"><span className="mark" aria-hidden="true"><Leaf size={14} /></span>Analyst</span>
@@ -45,10 +45,9 @@ export default function Rail({ snapshot, revision, waiting, unconfirmed, view, r
     {/* Only threads the backend stores are listed; none is made up from a cached answer or a saved decision. */}
     <div className="rail-group">
       <span className="rail-label">Conversations</span>
-      {running && <div className="thread-item" aria-current="true"><span className="title">{running}</span><span className="cap">Analyzing</span></div>}
       {threadsError ? <span className="cap amber rail-note" role="status">Conversations could not be loaded. Reload the page to try again.</span>
         : !threads ? <span className="cap rail-note" role="status">Loading conversations</span>
-        : threads.length === 0 && unsent.length === 0 && !running && <span className="cap rail-note">No conversations yet. Ask a question to start one.</span>}
+        : threads.length === 0 && unsent.length === 0 && <span className="cap rail-note">No conversations yet. Ask a question to start one.</span>}
       {unsent.map(item => <button type="button" className="thread-item" key={item.key} onClick={() => onUnsent(item.key)} title={item.text}>
         <span className="title"><span className="sr-only">Unsent question: </span>{item.text}</span>
         <span className="cap amber">Not sent</span>

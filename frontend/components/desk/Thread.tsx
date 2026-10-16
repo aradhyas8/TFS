@@ -472,7 +472,9 @@ function Clarification({ clarification, actionable, shared }: { clarification: R
   const stocks = (snapshot?.positions ?? []).filter(isSupportedStock);
   const themeReady = !!theme.name?.trim() && !!theme.mechanism?.trim() && theme.shortlist.length > 0;
   const onlyAgreement = form === "/theme" && fields.length === 1 && fields[0] === "theme.confirmed" && themeReady;
-  const ticker = (id: string) => snapshot?.positions.find(row => row.id === id)?.ticker || id;
+  // An unowned candidate is named by its form ID, "candidate-TICKER-LISTING".
+  const ticker = (id: string) =>
+    snapshot?.positions.find(row => row.id === id)?.ticker || (id.startsWith("candidate-") ? id.slice(10).split("-")[0] : id);
   return (
     <div className={styles.notice} data-testid="clarification">
       <Alert tone="info" title="The analyst needs more from you">

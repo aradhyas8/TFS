@@ -2,20 +2,16 @@ import asyncio
 import csv
 import io
 import json
-import logging
-import sqlite3
 import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, AsyncIterator, Literal, cast
-from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from openai import OpenAIError
 from pydantic import ValidationError
 
 from .allocation import DiscoveryProvider
@@ -23,15 +19,13 @@ from .config import Settings
 from .connection import Connection, ProviderChoice, local_request, openrouter_problem
 from .csv_input import COLUMNS, load_csv
 from .decisions import DecisionStore, extract_decision
-from .failures import describe_failure
 from .financial_data import (
     SOURCE_ERRORS,
     FinancialProvider,
     PersonalFinancialProvider,
     eodhd_symbol,
 )
-from .issuer_research import IssuerResearchProvider
-from .orchestrator import MAX_DEADLINE_SECONDS, Orchestrator
+from .orchestrator import Orchestrator
 from .persistence import (
     DatabaseLockError,
     InvalidProposalStateError,
@@ -40,7 +34,6 @@ from .persistence import (
     StaleBaseRevisionError,
     ThreadNotFoundError,
 )
-from .pipeline import InvalidReview, analyze
 from .portfolio import (
     HOLDINGS_COLUMNS,
     PortfolioStore,
@@ -58,14 +51,11 @@ from .portfolio_actions import (
 from .providers import (
     DataProvider,
     ModelProvider,
-    OpenAIModel,
     SuppliedDataProvider,
 )
 from .research import ResearchProvider
 from .schemas import (
     BENCHMARK_FUND,
-    AnalysisRequest,
-    AnalysisResult,
     ArtifactEnvelope,
     ArtifactReference,
     CancelProposalResult,
@@ -98,10 +88,6 @@ from .schemas import (
     ThreadSummary,
     UpdatePortfolioRequest,
 )
-from .sec_research import SecResearchProvider, SecUnavailable
-
-# The same whole-run budget as a conversation run; on expiry the in-flight model request is cancelled.
-ANALYZE_DEADLINE_SECONDS = MAX_DEADLINE_SECONDS
 
 
 def create_app(
@@ -179,10 +165,8 @@ def create_app(
             return orch
 
     def ensure_idle() -> None:
-        if orch is not None and orch.has_active_runs or legacy_active:
+        if orch is not None and orch.has_active_runs:
             raise HTTPException(409, "Finish or cancel current AI work before changing the connection.")
-
-    legacy_active = 0
 
     @app.get("/api/ai/connection")
     async def connection_status(request: Request) -> dict[str, Any]:
@@ -646,102 +630,6 @@ def create_app(
 
     def reference_identities() -> FinancialEvidence | None:
         return getattr(market_data(), "reference", None)
-
-    def save_analysis(request: AnalysisRequest, result: AnalysisResult) -> None:
-        """A completed workflow answer is kept as a conversation: the question, then its stored result."""
-        label = ("Stock analysis" if request.stock else "New cash allocation" if request.new_cash
-                 else "Portfolio rebalance" if request.portfolio_review else "Theme exploration" if request.theme else "Exposure review")
-        draft = request.artifact_reference
-        current = portfolios.get_revisioned()
-        # The committed revision only when the answer was computed on exactly that snapshot.
-        revision = current.revision if draft is None and current and current.portfolio.snapshot == request.portfolio else None
-        reference = ArtifactReference(
-            id=f"art-ana-{uuid4().hex}", kind="analysis_result", label=label, created_at=datetime.now(UTC), revision=revision,
-            basis="hypothetical" if draft else "committed" if revision else "none",
-            source_artifact_id=ArtifactReference.model_validate(draft).id if draft else None)
-        try:
-            portfolios.db.store_artifact(reference, result)
-            thread = portfolios.db.create_thread()
-            portfolios.db.add_message(thread.id, "user", request.question)
-            portfolios.db.add_message(thread.id, "assistant", result.recommendation.reason, artifact_ids=[reference.id])
-        except (sqlite3.Error, OSError):
-            # The answer is still returned; only its saved copy is missing.
-            logging.exception("The completed analysis could not be saved.")
-
-    @app.post("/api/analyze", response_model=AnalysisResult)
-    async def analysis(request: AnalysisRequest) -> AnalysisResult:
-        if request.artifact_id and request.artifact_reference is None:
-            ref = portfolios.get_artifact_reference(request.artifact_id)
-            if ref:
-                request = request.model_copy(update={"artifact_reference": ref})
-        nonlocal legacy_active
-        needs_ai = not (request.theme and not request.theme.confirmed)
-        if needs_ai and connection.task and not connection.task.done() and model is None:
-            raise HTTPException(409, "Finish or cancel ChatGPT sign-in before starting AI work.")
-        async with provider_lock:
-            config = app_settings if not needs_ai or model is not None else await asyncio.to_thread(connection.resolve)
-            legacy_active += int(needs_ai)
-        provider = model
-        if provider is None and needs_ai:
-            if not config.api_key or not config.model:
-                legacy_active -= 1
-                raise HTTPException(
-                    503, "Configure the backend OpenAI API key and model to analyze."
-                )
-            provider = OpenAIModel(config)
-        budget = asyncio.timeout(ANALYZE_DEADLINE_SECONDS)
-        try:
-            try:
-                financial_source = financial or PersonalFinancialProvider.from_environment()
-            except (ValueError, OSError):
-                # Only source construction reads the configuration; later failures have their own causes.
-                raise HTTPException(503, "Backend financial source configuration is invalid.") from None
-            # Stock Analysis, portfolio review, new cash, and confirmed theme read SEC EDGAR live
-            # (cached) and issuer material; the reviewed file stays optional extra evidence.
-            needs_research = (
-                request.stock
-                or request.portfolio_review
-                or request.new_cash
-                or (request.theme and request.theme.confirmed)
-            )
-            research_source = research or (
-                IssuerResearchProvider.from_environment(SecResearchProvider.from_environment())
-                if needs_research
-                else None
-            )
-            async with budget:
-                result = await analyze(
-                    request,
-                    provider,
-                    source,
-                    secret=config.api_key,
-                    financial=financial_source,
-                    research=research_source,
-                    discovery=discovery,
-                )
-            if needs_ai:
-                result = result.model_copy(update={"ai_provider": config.provider, "ai_model": config.model or None})
-                save_analysis(request, result)
-            return result
-        except TimeoutError as exc:
-            if not budget.expired():
-                failure = describe_failure(exc)
-                raise HTTPException(failure.status, failure.message) from None
-            raise HTTPException(504, f"The analysis did not finish within its {ANALYZE_DEADLINE_SECONDS:g}-second deadline and was "
-                                     "stopped. No recommendation was completed.") from None
-        except InvalidReview as exc:
-            logging.error("InvalidReview in /api/analyze: %s", exc, exc_info=True)
-            raise HTTPException(502, "The model did not produce a valid portfolio review. No recommendation was completed.") from None
-        except (OpenAIError, ValueError, OSError, httpx.HTTPError, SecUnavailable) as exc:
-            # Token counts, upstream status and request IDs stay in the log, never in the response.
-            logging.error("/api/analyze failed: type=%s status=%s request_id=%s detail=%s", type(exc).__name__,
-                          getattr(exc, "status_code", None), getattr(exc, "request_id", None), exc)
-            failure = describe_failure(exc)
-            raise HTTPException(failure.status, failure.message) from None
-        finally:
-            legacy_active -= int(needs_ai)
-            if isinstance(provider, OpenAIModel):
-                await provider.client.close()
 
     @app.get("/api/decisions", response_model=list[SavedDecision])
     def list_decisions() -> list[SavedDecision]:

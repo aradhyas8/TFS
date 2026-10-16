@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 from analyst import chatgpt_plan as plan
 from analyst.api import create_app
 from analyst.config import Settings
+from tests.analysis_harness import analyze_request
 from tests.test_chatgpt_plan import completed_event, sse
 
 LOCAL = {"Origin": "http://localhost:3000", "X-TFS-Local": "1"}
@@ -288,10 +289,10 @@ def test_new_install_defaults_to_plan_but_honors_explicit_api_provider(monkeypat
 def test_disconnected_theme_clarification_still_needs_no_ai(oauth):
     from analyst.providers import FakeDataProvider
     from tests.test_theme import theme_request
-    with TestClient(create_app(data=FakeDataProvider()), client=("127.0.0.1", 50000)) as client:
-        result = client.post('/api/analyze', json=theme_request())
-        assert result.status_code == 200, result.text
-        assert result.json()['theme']['status'] == 'awaiting_agreement'
+    # The agreement step is answered by the pipeline without a model, whatever the plan connection's state.
+    result = analyze_request(theme_request(), data=FakeDataProvider())
+    assert result.status_code == 200, result.text
+    assert result.json()['theme']['status'] == 'awaiting_agreement'
 
 
 def test_plan_service_errors_never_expose_provider_secrets(oauth, caplog):

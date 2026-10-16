@@ -126,7 +126,7 @@ test("new cash: required inputs gate the run, then a cited recommendation with s
   await expect(page.locator("body")).not.toContainText("sk-test-backend-only-never-browser");
 });
 
-test("new cash: missing loss tolerance returns a needs-input answer that re-runs in place", async ({ page }) => {
+test("new cash: missing loss tolerance returns a needs-input answer that re-runs in the same conversation", async ({ page }) => {
   await setUp(page, null);
   await page.getByRole("checkbox", { name: /is new money/ }).check();
   await page.getByRole("button", { name: "Analyze", exact: true }).click();
@@ -137,7 +137,13 @@ test("new cash: missing loss tolerance returns a needs-input answer that re-runs
   await expect(memo).toContainText("weight after this cash is Unknown");
   await memo.getByLabel(/How large a drop could you hold through/).fill("Could hold through a 30% drop; no withdrawals planned.");
   await memo.getByRole("button", { name: "Re-run with these" }).click();
-  await expect(page.getByRole("region", { name: "Analyst memo" }).getByRole("heading", { level: 2 })).toHaveText("Add US$800–2,400 to BROAD. Keep the rest as cash.");
+  // The form opens with the loss tolerance filled in; the new-money confirmation is given again, never carried over.
+  await expect(page.getByLabel("Loss tolerance or withdrawal plans")).toHaveValue("Could hold through a 30% drop; no withdrawals planned.");
+  await page.getByRole("checkbox", { name: /is new money/ }).check();
+  await page.getByRole("button", { name: "Analyze", exact: true }).click();
+  const results = page.getByRole("region", { name: "Analyst memo" });
+  await expect(results).toHaveCount(2);
+  await expect(results.last().getByRole("heading", { level: 2 })).toHaveText("Add US$800–2,400 to BROAD. Keep the rest as cash.");
 });
 
 test("portfolio: simple import asks only what's unknown, then holdings and rules are restored on reload and untouched by a new-cash run", async ({ page }) => {

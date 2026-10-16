@@ -7,6 +7,7 @@ from analyst.api import create_app
 from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCall
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import CompanyResearch
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation, snapshot
 from tests.test_stock import company_judgments, research_fixture, stock_comparison_judgments
 
@@ -59,8 +60,8 @@ def run_review(request=None, judgment=None, answer=None, research=None, answers=
         ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(judgment or assessment()))]),
         ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(comparison_judgment or stock_comparison_judgments(bound)))]),
         *[ModelTurn(answer=row) for row in (answers or [final])]], settings=settings)
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
-        {"acme": CompanyResearch.model_validate(research or review_research_fixture())}))).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(research or review_research_fixture())}))), request)
     return response, model
 
 
@@ -124,8 +125,8 @@ def test_unknown_current_facts_do_not_support_direction():
         ModelTurn(calls=[ToolCall("t", "reunderwrite_holding", json.dumps(assessment()))]),
         ModelTurn(calls=[ToolCall("c", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
         ModelTurn(answer={**recommendation(), "evidence_ids": []})])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
-        {"acme": CompanyResearch.model_validate(source)}))).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(source)}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["reunderwriting"]["assessments"][0]["status"] == "unknown"
@@ -168,9 +169,9 @@ def run_sized_review(request=None, sizing=None):
         ("size_review", sizing or {"position_id": "p1", "cash_position_id": "c2", "min_weight": "0.4", "max_weight": "0.5",
                                    "reason": "Weaker demand justifies lower issuer exposure while retaining a reserve."})]]
     model = ScriptedModel([*turns, ModelTurn(answer=final)])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(),
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(),
         financial=FakeFinancialProvider(FinancialEvidence.model_validate(evidence_fixture())),
-        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=request)
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))), request)
     return response, model
 
 
@@ -290,8 +291,8 @@ def test_two_distinct_companies_get_independent_thesis_cases_and_namespaced_evid
         ("p", "review_portfolio", {}), ("first", "reunderwrite_holding", assessment()),
         ("second", "reunderwrite_holding", second), ("c", "calculate_comparison", stock_comparison_judgments(bound))]]
     turns.append(ModelTurn(answer={**recommendation(), "preferred_action": "reduce", "evidence_ids": ["review-p1-filing", "review-p1-issuer", "review-p2-filing", "review-p2-issuer"]}))
-    response = TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider(), research=ReviewedResearchProvider(
-        {"acme": CompanyResearch.model_validate(review_research_fixture()), "other": CompanyResearch.model_validate(other)}))).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture()), "other": CompanyResearch.model_validate(other)}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert len(result["reunderwriting"]["assessments"]) == 2
@@ -310,7 +311,7 @@ def test_cash_only_review_completes_without_company_tools_or_prerequisites():
         ModelTurn(calls=[ToolCall("p", "review_portfolio", "{}")]),
         ModelTurn(calls=[ToolCall("c", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
         ModelTurn(answer={**recommendation(), "preferred_action": "no_action", "evidence_ids": []})])
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["reunderwriting"]["stocks"] == []
@@ -330,7 +331,7 @@ def test_review_loads_configured_backend_primary_research(monkeypatch, tmp_path)
         ("review_portfolio", {}), ("reunderwrite_holding", assessment()),
         ("calculate_comparison", stock_comparison_judgments(bound))]]
     turns.append(ModelTurn(answer={**recommendation(), "preferred_action": "reduce", "evidence_ids": ["review-p1-filing", "review-p1-issuer"]}))
-    response = TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider())).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider())), request)
     assert response.status_code == 200, response.text
     assert response.json()["reunderwriting"]["stocks"][0]["research"]["documents"][0]["id"] == "review-p1-filing"
 
@@ -405,8 +406,8 @@ def test_reunderwriting_maps_position_id_to_comparison_alternative_id():
         ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(paths))]),
         ModelTurn(answer=review_answer()),
     ])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
-        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["comparison"] is not None
@@ -441,8 +442,8 @@ def test_reunderwriting_maps_company_id_and_kind_to_comparison_alternative_id():
         ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(paths))]),
         ModelTurn(answer=review_answer()),
     ])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
-        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["comparison"] is not None
@@ -469,8 +470,8 @@ def test_reunderwriting_reprompts_if_model_answers_before_calculate_comparison()
         ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(paths))]),
         ModelTurn(answer=review_answer()),
     ])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
-        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["comparison"] is not None
@@ -497,8 +498,8 @@ def test_reunderwriting_review_portfolio_is_idempotent():
         ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(paths))]),
         ModelTurn(answer=review_answer()),
     ])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
-        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["comparison"] is not None
@@ -547,8 +548,8 @@ def test_reunderwriting_forced_tool_forces_reunderwrite_holding_after_premature_
         ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(paths))]),
         ModelTurn(answer=review_answer()),
     ])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
-        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["comparison"] is not None
@@ -579,8 +580,8 @@ def run_review_turns(thesis_calls):
         *[ModelTurn(calls=[ToolCall(f"thesis-{index}", "reunderwrite_holding", json.dumps(args))]) for index, args in enumerate(thesis_calls)],
         ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(stock_comparison_judgments({**request, "comparison": comparison})))]),
         ModelTurn(answer=review_answer())])
-    return TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
-        {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json={**request, "comparison": comparison})
+    return analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture())}))), {**request, "comparison": comparison})
 
 
 def test_a_rejected_holding_judgment_is_returned_once_to_correct():
@@ -606,8 +607,8 @@ def test_a_rejected_review_answer_is_returned_once_to_correct():
             ModelTurn(calls=[ToolCall("thesis", "reunderwrite_holding", json.dumps(assessment()))]),
             ModelTurn(calls=[ToolCall("compare", "calculate_comparison", json.dumps(stock_comparison_judgments({**request, "comparison": comparison})))]),
             *[ModelTurn(answer=answer) for answer in answers]])
-        return TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
-            {"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json={**request, "comparison": comparison})
+        return analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+            {"acme": CompanyResearch.model_validate(review_research_fixture())}))), {**request, "comparison": comparison})
     corrected = run(invented, review_answer())
     assert corrected.status_code == 200, corrected.text
     assert corrected.json()["recommendation"]["evidence_ids"] == ["review-p1-filing", "review-p1-issuer"]
@@ -634,8 +635,8 @@ def test_an_unresolved_holding_does_not_block_a_decision_on_the_others():
         ModelTurn(calls=[ToolCall("t9", "reunderwrite_holding", json.dumps(unresolved))]),
         ModelTurn(calls=[ToolCall("c", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
         ModelTurn(answer={**review_answer(), "evidence_ids": ["review-p1-filing"]})])  # one supporting document is enough
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
-        {"acme": CompanyResearch.model_validate(review_research_fixture()), "bank": CompanyResearch.model_validate(bank)}))).post("/api/analyze", json=bound)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture()), "bank": CompanyResearch.model_validate(bank)}))), bound)
     assert response.status_code == 200, response.text
     result = response.json()
     assert {row["position_id"]: row["action"] for row in result["reunderwriting"]["assessments"]} == {"p1": "reduce", "p9": "wait_for_inputs"}
@@ -682,8 +683,8 @@ def two_company_review(thesis_calls):
                            *[ModelTurn(calls=[ToolCall(f"t{index}", "reunderwrite_holding", json.dumps(args))]) for index, args in enumerate(thesis_calls)],
                            ModelTurn(calls=[ToolCall("c", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]),
                            ModelTurn(answer={**recommendation(), "preferred_action": "reduce", "evidence_ids": ["review-p1-filing", "review-p2-filing"]})])
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
-        {"acme": CompanyResearch.model_validate(review_research_fixture()), "other": CompanyResearch.model_validate(other)}))).post("/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=ReviewedResearchProvider(
+        {"acme": CompanyResearch.model_validate(review_research_fixture()), "other": CompanyResearch.model_validate(other)}))), request)
     return response, model
 
 
@@ -812,8 +813,7 @@ def test_live_review_execution_wording_still_fails_closed_at_api():
         ModelTurn(calls=[ToolCall("p", "review_portfolio", "{}")]),
         ModelTurn(answer={**recommendation(), "reason": "Interim evidence does not settle long-run returns on invested capital."}),
     ])
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
-        "/api/analyze", json={"question": "Review concentration.", "portfolio": snapshot()})
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), {"question": "Review concentration.", "portfolio": snapshot()})
     assert response.status_code == 502
 
 

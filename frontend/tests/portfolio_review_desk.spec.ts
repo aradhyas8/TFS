@@ -113,8 +113,8 @@ test("portfolio review: without rules the analyst's own answer is shown and noth
   await expect(memo.getByRole("heading", { level: 2 })).toHaveText("Here is where your portfolio stands.");
   await expect(memo).toContainText("No rules set");
   await expect(memo.getByTestId("review-total")).toContainText("C$3,700");
-  // A follow-up is a new review of the same saved portfolio.
-  await expect(ask).toHaveAttribute("placeholder", "Ask anything, or type / for a workflow");
+  // The review is its own conversation, so a follow-up continues it.
+  await expect(ask).toHaveAttribute("placeholder", "Ask a follow-up, or type / for a workflow");
 });
 
 test("benchmark fund: configure in holdings rules, verify comparison alternative, absent from rail and weights, persist and clear", async ({ page }) => {
@@ -276,12 +276,16 @@ test("invalid model output is withheld and cannot display as a completed recomme
 
   // 2. Submit question returning invalid output
   await ask.fill("/review Return invalid output");
-  const rejected = page.waitForResponse(response => response.url().endsWith("/api/analyze") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
+  await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Return invalid output");
+  await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
   // The model supplied an amount twice: the calculated review is kept, but its direction and the amount are withheld.
-  const response = await rejected;
-  expect(response.status()).toBe(200);
-  const { recommendation } = await response.json();
+  const threads: { id: string; title: string }[] = await (await page.request.get("/api/threads")).json();
+  const asked = threads.find(item => item.title.includes("Return invalid output"))!;
+  const { runs } = await (await page.request.get(`/api/threads/${asked.id}`)).json();
+  expect(runs.at(-1).status).toBe("completed");
+  const { payload } = await (await page.request.get(`/api/artifacts/${runs.at(-1).artifact_ids[0]}`)).json();
+  const { recommendation } = payload;
   expect(["wait_for_inputs", "review_only"]).toContain(recommendation.preferred_action); // breached limits take precedence
   expect(recommendation.amount).toBeNull();
 

@@ -15,10 +15,10 @@ A finding is marked **Fixed** only after its acceptance tests pass. **Open** mea
 | P1-4 | Portfolio-update statements trigger the wrong workflow | **Fixed** | 5 (E) |
 | P2-1 | Proposal contract blocks common updates | **Fixed** | 5 (E) |
 | P2-2 | Context waste and tool sprawl in chat | **Fixed** | 1 (result size), 6 |
-| P2-3 | Two orchestration stacks | Deferred | 6 (F) |
+| P2-3 | Two orchestration stacks | **Fixed** | 7 (F) |
 | P2-4 | Empty final answer completes the run | **Fixed** | 3 |
 | P3-a | (first P3 item) 409 "Finish or cancel current AI work" message does not explain the cause | Open | Unassigned (outside groups B and C) |
-| P3-b | (second P3 item) `/api/analyze` client and server deadlines are both 600 s | Open | 6 (F; ends when `/api/analyze` is retired) |
+| P3-b | (second P3 item) `/api/analyze` client and server deadlines are both 600 s | **Fixed** | 7 (F; `/api/analyze` retired) |
 
 ## Phase 1: Model-facing result contract (fix group A)
 
@@ -430,9 +430,73 @@ Totals:
 - Workflow and research schemas (`run_*`, filing tools, `get_company_research`) are still sent on every turn, about 13k characters in total. Shrinking or merging them belongs with retiring `/api/analyze` and moving the desk forms to thread runs (P2-3).
 - Messages written by older code are classified by `tool_outcomes_json = '[]'`. Every writer in the codebase uses `json.dumps`, but a hand-edited database with other spacing would count tool steps as dialogue. That is harmless: it is the previous behavior.
 
-## Recommended next phase
+## Phase 7: Architecture consolidation (fix group F remainder: P2-3, P3-b)
 
-Phase 7: fix group F remainder (P2-3, P3-b).
-- Send the desk forms (`/review`, `/stock`, `/new-cash`, `/theme`, `/rebalance`) through thread runs with `workflow_input`.
-- Retire `/api/analyze` once parity is reached.
-- Then consider merging the three granular filing tools into `get_company_research` and shortening the `run_*` descriptions, with a fresh measurement.
+### P2-3: Two orchestration stacks
+
+**Status:** Fixed.
+
+**Root cause.** The codebase previously maintained two separate execution paths: the legacy synchronous `POST /api/analyze` endpoint (invoking `pipeline.analyze` across up to 16+ turns) and the conversation thread runner (`Orchestrator`). This duplication caused diverging behavior, dual maintenance of financial workflows and tools, separate error handling paths, and separate presentation logic in the UI (waiting states, 600-second client timeouts, and legacy answer cards).
+
+**Technical decision and rationale.**
+- **Unified thread runs**: Desk forms (`/review`, `/stock`, `/new-cash`, `/rebalance`, `/theme`, and hypothetical draft analysis) now execute as thread runs (`POST /api/threads` and `POST /api/threads/{id}/messages`) carrying structured `workflow_input`.
+- **Direct workflow dispatch**: When a run carries `workflow_input`, the orchestrator dispatches directly to the requested workflow (`run_exposure_review`, `run_stock_analysis`, `run_new_cash_allocation`, `run_portfolio_reunderwriting`, `run_theme_exploration`) without conversational outer model turns.
+- **Direct recommendation answer**: The workflow's validated recommendation summary (`workflow_tools.answer` or the clarification message) is used directly as the final assistant answer. The run completes in 2 orchestration turns (tool execution + answer) with zero additional outer model calls.
+- **Removal of legacy path**: Retired `POST /api/analyze` and its saving logic from `backend/analyst/api.py`. Removed the old waiting, failure, and legacy answer views from `frontend/app/(desk)/page.tsx`, and eliminated the 600-second browser client timeout.
+- **Behavioral parity preserved**:
+  - Server-side candidate resolution: Unowned stocks and theme candidates are resolved on the server via `resolve_candidate`, sending only ticker and listing from the client.
+  - Empty rule set: An empty rule set checks no rules.
+  - Benchmark fund rules: Handled identically to previous pipeline behavior.
+  - Missing loss tolerance: Accepted without failing validation, returning a needs-input clarification.
+  - Hypothetical drafts: Draft analyses carry `hypothetical_artifact_id`, binding the immutable snapshot.
+  - Details and portfolio values: Header and Details panel track the latest conversation result.
+
+**Files changed.**
+- `backend/analyst/api.py`: Removed `/api/analyze` endpoint and legacy execution code.
+- `backend/analyst/orchestrator.py`: Direct dispatch of `workflow_input` without conversational outer model turns.
+- `backend/analyst/workflow_tools.py`: Server-side candidate resolution, rule binding, benchmark handling, and parameter normalization.
+- `backend/analyst/schemas.py`: Schema definitions for `workflow_input`.
+- `backend/tests/analysis_harness.py`: Direct workflow call harness for backend tests.
+- `frontend/app/(desk)/page.tsx`: Unified desk submission through thread creation/continuation with `workflow_input`.
+- `frontend/components/desk/Composer.tsx`, `Memo.tsx`, `Rail.tsx`, `Thread.tsx`, `format.ts`: Removed legacy answer/waiting views and updated decision saving and thread tracking.
+- `docs/technical-reference.md`: Updated API reference to document thread runs and reflect `/api/analyze` removal.
+
+### P3-b: `/api/analyze` client and server deadlines are both 600 s
+
+**Status:** Fixed. (Retired along with `/api/analyze`.)
+
+**Root cause.** Both the browser client fetch deadline in `page.tsx` and the server-side analysis pipeline had synchronous 600-second timeouts. A slow run or server timeout frequently resulted in ambiguous client aborts or socket resets.
+
+**Technical decision and rationale.**
+- `/api/analyze` is retired. Desk workflows now execute asynchronously as thread runs.
+- Thread runs are initiated via `POST /api/threads/{id}/messages` and polled or streamed with short request timeouts. Individual turns have bounded timeouts, supervised by the run deadline.
+- The client UI tracks active progress and supports cancellation (`POST /api/threads/{id}/runs/{run_id}/cancel`), eliminating long-lived synchronous HTTP requests and client-server timeout collisions.
+
+### Phase 7 verification and financial parity
+
+- **Financial parity evidence**:
+  - 14 automated parity comparisons across `run_exposure_review` (dated/undated/benchmark), `run_stock_analysis` (dated/undated), `run_new_cash_allocation` (dated/undated/benchmark/missing loss tolerance), `run_portfolio_reunderwriting` (dated/undated), `run_theme_exploration` (dated/undated), and hypothetical draft analysis against identical fixtures and scripted model turn sequences showed **0 differences** in financial outputs, valuation calculations, guardrail evaluations, recommendations, and tool call counts.
+- **Backend regression tests**:
+  - 882 backend tests pass, plus workflow integration tests.
+  - Ruff check on `backend/`: passed (clean).
+  - mypy on changed backend files: passed (0 errors across 6 source files).
+- **Playwright browser verification**:
+  - `desk_rules.spec.ts`: 7 passed.
+  - `portfolio_review_desk.spec.ts`: 9 passed.
+  - `decisions_desk.spec.ts`: 2 passed.
+  - `theme_desk.spec.ts`: 3 passed.
+  - `hypothetical_analysis.spec.ts`: 1 passed.
+  - Total: 22 passed, 0 failed across targeted browser suites.
+  - TypeScript check (`tsc --noEmit`): clean.
+
+### Accepted behavior changes
+
+- **Theme agreement in conversation:** Unconfirmed theme exploration presents an agreement prompt directly in the thread (`data-testid="clarification"`), with an "Agree and research" button that posts `confirmed: true` into the conversation.
+- **New cash "Re-run with these":** Reopens the composer form pre-filled with the entered loss tolerance, requiring confirmation of new money and explicit submission to start a new audited run in the conversation, rather than mutating results in place.
+- **Theme agreement 503 without AI connection:** Run dispatch requires an active orchestrator; submitting without an available AI connection returns 503 instead of evaluating partial agreement locally.
+- **Follow-up conversation continuity:** Desk workflow results are thread runs in durable conversations, allowing natural follow-up questions ("Explain this recommendation", "What if I sold X instead?") to continue in context.
+
+### Remaining risks and known issues
+
+- **Existing new_cash_desk layout issue (HEAD):** The composer textarea (`id="ask"`) is squeezed to 0px width when the Details panel is open in desktop viewport, causing Playwright interaction timeouts on 3 tests in `new_cash_desk.spec.ts`. Verified present on HEAD (`head_newcash.txt`); recorded as an existing layout issue, not a Phase 7 regression.
+- **P3-a remains Open:** 409 "Finish or cancel current AI work" message explanation remains open (outside Group F scope).

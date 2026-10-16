@@ -43,7 +43,7 @@ const SAVED = {
   unresolved: [],
 };
 
-import { openDecisions, seedPortfolio } from "./test_helpers";
+import { openDecisions, seedPortfolio, recordWorkflows } from "./test_helpers";
 
 /** A saved decision is listed under Decisions; the conversation is restored afterwards. */
 async function expectDecision(page: Page, label: string | RegExp) {
@@ -57,10 +57,7 @@ async function open(page: Page) {
   );
   await page.request.delete("/api/decisions");
   await seedPortfolio(page, SAVED);
-  const sent: any[] = [];
-  page.on("request", request => {
-    if (request.url().endsWith("/api/analyze")) sent.push(request.postDataJSON());
-  });
+  const sent = recordWorkflows(page);
   await page.goto("/");
   await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   return sent;
@@ -80,7 +77,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await page.getByRole("button", { name: "Ask", exact: true }).click();
     await expect(page.getByRole("region", { name: "Analyst memo" })).toBeVisible();
     await page.getByRole("button", { name: "Save decision" }).click();
-    await expect(page.getByText(/Saved \d\d?:\d\d/)).toBeVisible();
+    await expect(page.getByText(/Saved to Decisions \d\d?:\d\d/)).toBeVisible();
     await expectDecision(page, "Portfolio review");
 
     // 2. Run and save a Stock decision
@@ -88,7 +85,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await page.getByRole("button", { name: "Ask", exact: true }).click();
     await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
     await page.getByRole("button", { name: "Save decision" }).click();
-    await expect(page.getByText(/Saved \d\d?:\d\d/)).toBeVisible();
+    await expect(page.getByText(/Saved to Decisions \d\d?:\d\d/)).toBeVisible();
     await expectDecision(page, "Stock analysis · ACME");
 
     // 3. Run and save a Rebalance decision
@@ -96,7 +93,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await page.getByRole("button", { name: "Ask", exact: true }).click();
     await expect(page.getByRole("region", { name: "Rebalance" })).toBeVisible();
     await page.getByRole("button", { name: "Save decision" }).click();
-    await expect(page.getByText(/Saved \d\d?:\d\d/)).toBeVisible();
+    await expect(page.getByText(/Saved to Decisions \d\d?:\d\d/)).toBeVisible();
     await expectDecision(page, "Rebalance");
 
     // 4. Seed a legacy decision without workflow or subject directly via backend
@@ -245,7 +242,7 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await page.getByRole("button", { name: "Analyze", exact: true }).click();
     await expect(page.getByRole("region", { name: "Analyst memo" })).toBeVisible();
     await page.getByRole("button", { name: "Save decision" }).click();
-    await expect(page.getByText(/Saved \d\d?:\d\d/)).toBeVisible();
+    await expect(page.getByText(/Saved to Decisions \d\d?:\d\d/)).toBeVisible();
     await expectDecision(page, /New cash · US\$2,500 → RRSP/);
 
     // 2. Create and save a Theme decision
@@ -256,13 +253,14 @@ test.describe("Decisions workflow, re-run, and register", () => {
     await page.getByLabel("Economic mechanism").fill("Automation secular tailwinds");
     await page.getByLabel("Add held position to shortlist").selectOption("p1");
     await page.getByRole("button", { name: "Analyze", exact: true }).click();
+    // The conversation asks for agreement, then researches once it is given
+    const agreement = page.getByRole("log", { name: "Conversation" }).getByTestId("clarification");
+    await expect(agreement).toContainText("Your agreement to the theme and shortlist");
+    await agreement.getByRole("button", { name: "Agree and research" }).click();
     const memo = page.getByRole("region", { name: "Analyst memo" });
-    await expect(memo).toContainText("Needs your agreement");
-    // In theme agreement state, agree and analyze
-    await memo.getByRole("button", { name: "Agree and research" }).click();
     await expect(memo).toContainText("Completed theme research");
     await page.getByRole("button", { name: "Save decision" }).click();
-    await expect(page.getByText(/Saved \d\d?:\d\d/)).toBeVisible();
+    await expect(page.getByText(/Saved to Decisions \d\d?:\d\d/)).toBeVisible();
     await expectDecision(page, "Theme · Robotics");
 
     // 3. Test New Cash Re-run

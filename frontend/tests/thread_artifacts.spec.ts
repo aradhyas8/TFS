@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
-import { openDetails, seedPortfolio } from "./test_helpers";
+import { openDetails, recordWorkflows, seedPortfolio } from "./test_helpers";
 
 // ACME has reviewed research fixtures on the test server; with the 15% cap it breaks a rule.
 const SAVED = {
@@ -44,16 +44,15 @@ async function send(page: Page, question: string) {
 
 test("a workflow run in the conversation shows the stored financial result, unchanged after a reload", async ({ page }) => {
   await open(page);
-  const analyses: string[] = [];
-  page.on("request", request => { if (request.url().includes("/api/analyze")) analyses.push(request.url()); });
+  const workflows = recordWorkflows(page);
 
   await send(page, "Review my exposure in chat");
   const result = thread(page).getByRole("article", { name: "Exposure review result" });
   const memo = result.getByRole("region", { name: "Analyst memo" });
-  // The backend's computed values, in the existing review memo. The run is dated today, so the test server's
-  // September marks are out of date and only the cash balance is a known value: nothing is filled in by prose.
+  // The backend's computed values, in the existing review memo. Chat and form runs value on the same market date
+  // as every analysis (the test server's fixture date), so the September marks are current.
   await expect(memo).toContainText("ACME · TFSA");
-  await expect(memo).toContainText("Total unknown · known C$1,000 · holdings Unknown · cash C$1,000");
+  await expect(memo).toContainText("C$3,700 · holdings C$2,700 · cash C$1,000");
   await expect(result).toContainText("Portfolio revision 1");
   await expect(thread(page)).toContainText("Plain answer to: Review my exposure in chat");
   // The stored tool record is never shown as prose.
@@ -70,13 +69,13 @@ test("a workflow run in the conversation shows the stored financial result, unch
   expect((await holdings(page)).revision).toBe(2);
 
   await page.reload();
-  await expect(memo).toContainText("known C$1,000");
+  await expect(memo).toContainText("cash C$1,000");
   await expect(memo).toContainText("ACME · TFSA");
   expect(await result.innerText()).toBe(first);
   await expect(result).toContainText("Portfolio revision 1");
   expect((await detail(page)).runs[0].artifact_ids).toEqual(stored);
-  // The thread never re-runs an analysis to draw a result.
-  expect(analyses).toHaveLength(0);
+  // The thread never re-runs an analysis to draw a result, and the chat request started no form workflow.
+  expect(workflows).toHaveLength(0);
 });
 
 test("a sourced web answer keeps clickable citations with its text after a reload", async ({ page }) => {
@@ -370,11 +369,10 @@ test("a proposal prepared before the portfolio changed is shown as out of date a
 test("a stored result is saved as a decision with its workflow and subject, journaled, reopened and re-run", async ({ page }) => {
   await open(page);
   const commits: string[] = [];
-  const analyses: { stock?: { position_id: string } }[] = [];
   page.on("request", request => {
     if (/\/api\/portfolio\/proposals\/[^/]+\/confirm$/.test(request.url())) commits.push(request.url());
-    if (request.url().endsWith("/api/analyze")) analyses.push(request.postDataJSON());
   });
+  const analyses = recordWorkflows(page);
   const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
 
   await send(page, "Analyze a stock in chat");
@@ -417,11 +415,12 @@ test("a stored result is saved as a decision with its workflow and subject, jour
   await register.getByTestId("decision-row").click();
   await expect(page.locator(".ctx")).toContainText("Read-only");
 
-  // Re-running is a fresh analysis of today's saved portfolio for the same subject.
-  expect(analyses).toHaveLength(0);
+  // Re-running is a fresh analysis of today's saved portfolio for the same subject. The only run so far was the
+  // form chosen in the conversation.
+  expect(analyses.map(body => body.stock?.position_id)).toEqual(["tfsa-acme"]);
   await page.getByRole("button", { name: "Re-run with today's portfolio" }).click();
   await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
-  expect(analyses.map(body => body.stock?.position_id)).toEqual(["tfsa-acme"]);
+  expect(analyses.map(body => body.stock?.position_id)).toEqual(["tfsa-acme", "tfsa-acme"]);
 
   // The conversation and its stored result are still there, untouched by the re-run (saved as its own conversation).
   await rail.getByTestId("thread-item").filter({ hasText: "Analyze a stock in chat" }).click();
@@ -601,10 +600,18 @@ test("a proposal that this page knows is out of date offers no review, whatever 
 
 test("a stored stock result is saved under its own listing, and a re-run never switches to another listing", async ({ page }) => {
   await open(page);
+  // Candidate lookups and workflow runs, in the order the page starts them.
   const analyses: unknown[] = [];
-  page.on("request", request => { if (/\/api\/(analyze|candidates)$/.test(request.url())) analyses.push(request.postDataJSON()); });
+  page.on("request", request => {
+    if (request.url().endsWith("/api/candidates")) analyses.push(request.postDataJSON());
+    if (request.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(request.url())) {
+      const body = request.postDataJSON();
+      if (body.workflow_input?.workflow) analyses.push({ question: body.text, ...body.workflow_input });
+    }
+  });
   const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   const result = await stockResult(page);
+  analyses.length = 0;
 
   // The same position ID is later saved with a different listing.
   const moved = { ...SAVED.snapshot, positions: SAVED.snapshot.positions.map(row => (row.id === "tfsa-acme" ? { ...row, listing: "XNYS" } : row)) };

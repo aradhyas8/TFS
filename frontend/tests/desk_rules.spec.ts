@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openDetails } from "./test_helpers";
+import { openDetails, recordWorkflows } from "./test_helpers";
 
 const SAVED = {
   snapshot: {
@@ -241,22 +241,19 @@ test("ordinary analysis uses committed state while draft differs", async ({ page
   // Draft is unsaved, do NOT review or confirm
   await expect(details.getByText("Unsaved draft edits")).toBeVisible();
 
-  // Track analyze request
-  const analyzeRequests: any[] = [];
-  page.on("request", req => {
-    if (req.url().endsWith("/api/analyze")) {
-      analyzeRequests.push(req.postDataJSON());
-    }
-  });
+  // Track the workflow run the page starts
+  const analyzeRequests = recordWorkflows(page);
 
   // Run ordinary analysis from composer
   const ask = page.getByRole("textbox", { name: /type \/ for workflows/ });
   await ask.fill("/review Review my portfolio");
   await page.keyboard.press("Enter");
 
-  // Wait for analyze request and verify it used the COMMITTED single company cap (0.5), not the draft (0.15)
+  // The run carries no draft and no rules: the backend binds the COMMITTED single company cap (0.5), not the draft (0.15)
   await expect.poll(() => analyzeRequests.length).toBeGreaterThan(0);
-  expect(analyzeRequests[0]?.settings?.single_company_cap).toBe("0.5");
+  expect(analyzeRequests[0].workflow).toBe("run_exposure_review");
+  expect(analyzeRequests[0].hypothetical_artifact_id).toBeUndefined();
+  expect(analyzeRequests[0].settings).toBeUndefined();
 
   // Switch back to Holdings tab if tab switched on analysis completion
   await details.getByRole("tab", { name: "Holdings" }).click();

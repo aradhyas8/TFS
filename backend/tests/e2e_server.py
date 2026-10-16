@@ -116,10 +116,7 @@ class ConversationTestTransport:
         if "Slow" in question:
             await asyncio.sleep(3)
         if not any(m.get("type") == "function_call_output" for m in messages):
-            # An explicit form submission names its workflow; the stock choice arrives as explicit input.
-            explicit = json.loads(messages[1]["content"]).get("explicit_workflow")
-            if explicit:
-                return ModelTurn(calls=[ToolCall("thread_workflow", explicit, "{}")])
+            # Form submissions never reach this model: the orchestrator runs their workflow directly.
             if "Recall the exposure result" in question:
                 # A follow-up that reads an earlier stored calculation back instead of computing a new one.
                 earlier = next(ref["id"] for ref in json.loads(messages[1]["content"])["artifact_references"]

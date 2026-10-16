@@ -29,7 +29,7 @@ from .model_view import fit
 from .persistence import Database, DecimalEncoder
 from .pipeline import InvalidReview, bounded_effort
 from .proposal_tools import ProposalTools
-from .providers import DataProvider, ModelIncomplete, ModelTurn, SuppliedDataProvider
+from .providers import DataProvider, ModelIncomplete, ModelTurn, SuppliedDataProvider, ToolCall
 from .research import ResearchProvider
 from .research_tools import ResearchTools
 from .schemas import RunRecord, ToolOutcome
@@ -152,7 +152,7 @@ class Orchestrator:
             capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
                             **research_tools.capabilities, **workflow_tools.capabilities,
                             **web.capabilities, **ProposalTools(financial_tools).capabilities}
-            messages = context.messages(comparison=research_tools.comparison, workflow=workflow_tools.inputs.workflow)
+            messages = context.messages(comparison=research_tools.comparison)
             initial_messages = messages
             exchanges: list[list[dict[str, Any]]] = []
             seen_calls: set[str] = set()
@@ -161,6 +161,8 @@ class Orchestrator:
             # Workflows that failed and were not later completed; the answer always says so.
             failed_workflows: dict[str, str] = {}
             answer_retried = False
+            form = workflow_tools.inputs.workflow
+            form_answer: str | None = None
 
             turns_count = 0
             while turns_count < MAX_TURNS:
@@ -175,13 +177,19 @@ class Orchestrator:
 
                 # Call model transport
                 try:
-                    turn = await self._call_transport(
-                        messages=messages,
-                        timeout=request_timeout,
-                        # Every capability stays callable; only schemas this run cannot use yet are left out.
-                        tools=read_tools({name: capability for name, capability in capabilities.items()
-                                          if name not in research_tools.unadvertised(user_text)}),
-                    )
+                    if form is not None:
+                        # A form submission: its validated inputs run the selected workflow, and that workflow's
+                        # recommendation is the answer. No model turn reinterprets the form or restates the result.
+                        turn = ModelTurn(text=form_answer) if form_answer is not None else ModelTurn(
+                            calls=[ToolCall("form", form, "{}")])
+                    else:
+                        turn = await self._call_transport(
+                            messages=messages,
+                            timeout=request_timeout,
+                            # Every capability stays callable; only schemas this run cannot use yet are left out.
+                            tools=read_tools({name: capability for name, capability in capabilities.items()
+                                              if name not in research_tools.unadvertised(user_text)}),
+                        )
                 except asyncio.CancelledError:
                     # Cancelled while waiting on transport
                     logger.info("Run %s was cancelled during model transport.", run_id)
@@ -361,6 +369,13 @@ class Orchestrator:
                 )
                 self.db.update_run(run_id, "running", additional_message_ids=[outcome_message.id],
                                    additional_artifact_ids=artifact_ids)
+                if form is not None:
+                    if "error" in result:
+                        # The workflow's safe failure message ends the run; the form can be submitted again.
+                        self._record_terminal_failure(run_id, str(result["error"]))
+                        return
+                    clarification = result.get("clarification_required")
+                    form_answer = str(clarification["message"]) if clarification else workflow_tools.answer or ""
 
             # Exceeded MAX_TURNS
             self._record_terminal_failure(

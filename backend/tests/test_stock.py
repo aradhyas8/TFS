@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from analyst.api import create_app
 from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCall
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation, snapshot
 
 
@@ -21,8 +22,7 @@ def test_named_stock_requires_primary_research_and_company_cases_before_answerin
         ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
         ModelTurn(answer=recommendation()),
     ])
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
-        "/api/analyze", json=stock_request())
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), stock_request())
     assert response.status_code == 502, response.text
     assert "stock" not in response.json()
 
@@ -83,8 +83,7 @@ def run_stock(*, research=None, paths=None, request=None, answer=None, skip=None
     turns.append(ModelTurn(calls=[ToolCall("comparison", "calculate_comparison", json.dumps(stock_comparison_judgments(bound)))]))
     turns.append(ModelTurn(answer=answer or stock_answer()))
     model = ScriptedModel(turns)
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), research=source)).post(
-        "/api/analyze", json=request or stock_request())
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), research=source)), request or stock_request())
     return response, model
 
 
@@ -228,9 +227,8 @@ def test_stock_etf_cash_and_actual_no_action_share_common_capital_cases():
         ("issuer", "get_issuer_material", {}), ("company", "calculate_company_cases", company_judgments()),
         ("comparison", "calculate_comparison", stock_comparison_judgments(request))]]
     turns.append(ModelTurn(answer=stock_answer()))
-    response = TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider(),
-        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))).post(
-        "/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))), request)
     assert response.status_code == 200, response.text
     result = response.json()["comparison"]
     assert result["starting_value"] == "1950"
@@ -375,9 +373,8 @@ def test_stock_analysis_turns_expose_comparison_inputs_and_align_drivers():
         ModelTurn(answer=stock_answer()),
     ]
     model = ScriptedModel(turns)
-    response = TestClient(create_app(model=model, data=FakeDataProvider(),
-        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))).post(
-        "/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert "comparison" in result
@@ -411,9 +408,8 @@ def test_retained_stock_fx_is_synchronized_with_company_cases():
         ModelTurn(answer=stock_answer()),
     ]
     model = ScriptedModel(turns)
-    response = TestClient(create_app(model=model, data=FakeDataProvider(),
-        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))).post(
-        "/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert "comparison" in result
@@ -440,9 +436,8 @@ def test_stock_analysis_reprompts_if_model_answers_before_calculate_comparison()
         ModelTurn(answer=stock_answer()),
     ]
     model = ScriptedModel(turns)
-    response = TestClient(create_app(model=model, data=FakeDataProvider(),
-        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))).post(
-        "/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["comparison"] is not None
@@ -475,9 +470,8 @@ def test_stock_analysis_idempotent_tool_calls_and_research_reprompt():
         ModelTurn(answer=stock_answer()),
     ]
     model = ScriptedModel(turns)
-    response = TestClient(create_app(model=model, data=FakeDataProvider(),
-        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))).post(
-        "/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["comparison"] is not None
@@ -510,9 +504,8 @@ def test_stock_forced_tool_forces_calculate_company_cases_after_multiple_prematu
         ModelTurn(answer=stock_answer()),
     ]
     model = ScriptedModel(turns)
-    response = TestClient(create_app(model=model, data=FakeDataProvider(),
-        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))).post(
-        "/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}))), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["comparison"] is not None

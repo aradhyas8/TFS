@@ -20,7 +20,6 @@ from .schemas import (
     RunRecord,
     SavedPortfolio,
     ToolOutcome,
-    WorkflowName,
     build_artifact_payload,
     model_safe,
 )
@@ -260,8 +259,7 @@ class RunContext:
                 else {"ticker": row.ticker or row.company_name, "shares": str(row.shares)})}
             for row in saved.snapshot.positions]}
 
-    def messages(self, comparison: ComparisonInput | None = None,
-                 workflow: WorkflowName | None = None) -> list[dict[str, Any]]:
+    def messages(self, comparison: ComparisonInput | None = None) -> list[dict[str, Any]]:
         saved = self.portfolio
         history = self.history()
         context = {
@@ -287,8 +285,6 @@ class RunContext:
         if comparison is not None:
             context["comparison_inputs"] = comparison.model_dump(
                 mode="json", include={"scope_position_ids", "alternatives"})
-        if workflow is not None:
-            context["explicit_workflow"] = workflow
         return [
             {"role": "system", "content": (
                 "You are a personal investment analyst. Answer conceptual questions directly. "

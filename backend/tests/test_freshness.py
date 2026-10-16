@@ -6,6 +6,7 @@ from analyst.api import create_app
 from analyst.financial_data import FakeFinancialProvider, PersonalFinancialProvider
 from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCall
 from analyst.schemas import FinancialEvidence
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation, snapshot
 
 
@@ -14,9 +15,7 @@ def test_broker_fallback_has_dates_age_and_blocks_confident_sizing():
         ModelTurn(calls=[ToolCall("review", "review_portfolio", "{}")]),
         ModelTurn(answer=recommendation()),
     ])
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
-        "/api/analyze", json={"question": "Review dated broker marks", "portfolio": snapshot()}
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), {"question": "Review dated broker marks", "portfolio": snapshot()})
     assert response.status_code == 200, response.text
     review = response.json()["portfolio"]
     row = review["positions"][0]
@@ -61,9 +60,7 @@ def review_with_evidence(evidence, portfolio=None, financial=None):
         ModelTurn(answer=recommendation()),
     ])
     provider = financial or FakeFinancialProvider(FinancialEvidence.model_validate(evidence))
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), financial=provider)).post(
-        "/api/analyze", json={"question": "Refresh this portfolio", "portfolio": portfolio or snapshot()}
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), financial=provider)), {"question": "Refresh this portfolio", "portfolio": portfolio or snapshot()})
     assert response.status_code == 200, response.text
     return response.json(), model
 
@@ -319,8 +316,8 @@ def analyze_on(monkeypatch, today: str, evidence, *, analysis_date=None, mark=Tr
         portfolio["positions"][0]["mark"] = None
     model = ScriptedModel([ModelTurn(calls=[ToolCall("review", "review_portfolio", "{}")]), ModelTurn(answer=recommendation())])
     body = {"question": "Review my portfolio", "portfolio": portfolio, **({"analysis_date": analysis_date} if analysis_date else {})}
-    response = TestClient(create_app(model=model, data=FakeDataProvider(), portfolio_store=store,
-                                     financial=FakeFinancialProvider(FinancialEvidence.model_validate(evidence)))).post("/api/analyze", json=body)
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), portfolio_store=store,
+                                     financial=FakeFinancialProvider(FinancialEvidence.model_validate(evidence)))), body)
     assert response.status_code == 200, response.text
     return response.json()["portfolio"], portfolio
 
@@ -359,8 +356,7 @@ def test_historical_review_uses_a_price_on_or_before_its_date(monkeypatch, sourc
 def test_an_analysis_cannot_predate_the_holdings(monkeypatch):
     from datetime import date
     monkeypatch.setattr("analyst.pipeline.market_today", lambda: date(2026, 10, 3))
-    response = TestClient(create_app(model=ScriptedModel([]), data=FakeDataProvider())).post(
-        "/api/analyze", json={"question": "Review", "portfolio": snapshot(), "analysis_date": "2026-09-29"})
+    response = analyze_with(TestClient(create_app(model=ScriptedModel([]), data=FakeDataProvider())), {"question": "Review", "portfolio": snapshot(), "analysis_date": "2026-09-29"})
     assert response.status_code == 422
 
 

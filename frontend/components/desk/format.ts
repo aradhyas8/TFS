@@ -89,11 +89,6 @@ export const POSITION_LABEL: Record<string, string> = { below_downside: "below e
 /** Past-tense label for an action the user confirmed they took. */
 export const doneLabel = (action: string) => ({ add: "added", no_action: "no action", hold: "held", reduce: "reduced", exit: "exited" }[action] || actionLabel(action).toLowerCase());
 
-export const durationLabel = (ms: number) => {
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
-};
-
 /** Format a saved decision's workflow and subject for display in the rail and register. */
 export function decisionLabel(decision: SavedDecision): string {
   if (!decision.workflow) return "Unknown workflow";

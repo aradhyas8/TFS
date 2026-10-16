@@ -11,6 +11,7 @@ from analyst.config import Settings
 from analyst.providers import FakeDataProvider, latest_price_position
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import AnalysisRequest, CompanyResearch
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation, snapshot
 from tests.test_comparison import comparison_request, judgments
 from tests.test_stock import (
@@ -136,9 +137,7 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
         data=FakeDataProvider(),
         research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}),
     )
-    response = TestClient(app).post(
-        "/api/analyze", json=stock_request() if failure == "stock" else comparison_request() if failure == "comparison" else {"question": "Review my exposure", "portfolio": snapshot()}
-    )
+    response = analyze_with(TestClient(app), stock_request() if failure == "stock" else comparison_request() if failure == "comparison" else {"question": "Review my exposure", "portfolio": snapshot()})
     assert response.status_code == (200 if failure in {None, "financial_tools", "comparison", "stock"} else 502), response.text
     assert "sk-test-backend-only-never-browser" not in response.text
     if failure in {None, "financial_tools", "comparison", "stock"}:
@@ -191,8 +190,8 @@ def test_new_cash_uses_production_sdk_tools_and_backend_only_amounts(monkeypatch
     def local_sdk(**kwargs):
         return AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openai)))
     monkeypatch.setattr("analyst.providers.AsyncOpenAI", local_sdk)
-    response = TestClient(create_app(settings=Settings("sk-test-backend-only-never-browser", "test-model"),
-                                    financial=FakeFinancialProvider(allocation_evidence()))).post("/api/analyze", json=allocation_request())
+    response = analyze_with(TestClient(create_app(settings=Settings("sk-test-backend-only-never-browser", "test-model"),
+                                    financial=FakeFinancialProvider(allocation_evidence()))), allocation_request())
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["amount"]["maximum"] == "2400"
     assert "sk-test-backend-only-never-browser" not in response.text
@@ -253,8 +252,8 @@ def test_portfolio_review_uses_production_sdk_tools_and_preserves_bound_evidence
         return AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openai)))
 
     monkeypatch.setattr("analyst.providers.AsyncOpenAI", local_sdk)
-    response = TestClient(create_app(settings=Settings("sk-test-backend-only-never-browser", "test-model"),
-        data=FakeDataProvider(), research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=review_request())
+    response = analyze_with(TestClient(create_app(settings=Settings("sk-test-backend-only-never-browser", "test-model"),
+        data=FakeDataProvider(), research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))), review_request())
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["preferred_action"] == "reduce"
     assert response.json()["reunderwriting"]["assessments"][0]["status"] == "changed"
@@ -490,8 +489,8 @@ def test_openrouter_omits_parallel_flag_and_runs_only_the_first_of_parallel_call
 
     monkeypatch.setattr("analyst.providers.AsyncOpenAI", lambda **kwargs: AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openrouter))))
     settings = Settings("sk-or-test", "openai/test", base_url="https://openrouter.ai/api/v1")
-    response = TestClient(create_app(settings=settings, data=FakeDataProvider(),
-        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=review_request())
+    response = analyze_with(TestClient(create_app(settings=settings, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))), review_request())
     assert len(sent) >= 2, response.text
     assert sent[0]["tool_choice"] == {"type": "function", "name": "review_portfolio"}
     # Only call_1 ran: the next request carries call_1 and its output, never call_2.
@@ -603,8 +602,7 @@ def openrouter_app(monkeypatch, handler):
 
 
 def test_analyze_keeps_the_specific_openrouter_failure(monkeypatch):
-    response = openrouter_app(monkeypatch, failing(429)).post(
-        "/api/analyze", json={"question": "Review my exposure", "portfolio": snapshot()})
+    response = analyze_with(openrouter_app(monkeypatch, failing(429)), {"question": "Review my exposure", "portfolio": snapshot()})
     assert response.status_code == 502
     assert "rate limit reached" in response.json()["detail"] and "sk-or-secret" not in response.text
 
@@ -619,8 +617,7 @@ def test_analyze_rejects_invalid_openrouter_structured_output(monkeypatch):
                                          "name": "review_portfolio", "arguments": "{}", "status": "completed"}])
         return openrouter_response(openrouter_message("{not json"))
 
-    response = openrouter_app(monkeypatch, handler).post(
-        "/api/analyze", json={"question": "Review my exposure", "portfolio": snapshot()})
+    response = analyze_with(openrouter_app(monkeypatch, handler), {"question": "Review my exposure", "portfolio": snapshot()})
     assert response.status_code == 502, response.text
     assert "recommendation" not in response.json()
 
@@ -679,8 +676,7 @@ def test_openrouter_stock_analysis_forces_each_mandatory_step_when_the_model_pre
 
     transport, sent = openrouter_transport(monkeypatch, prefers_answering)
     research = ReviewedResearchProvider({key: CompanyResearch.model_validate(value) for key, value in records.items()})
-    response = TestClient(create_app(model=WorkflowModelAdapter(transport), data=FakeDataProvider(), research=research)).post(
-        "/api/analyze", json=request)
+    response = analyze_with(TestClient(create_app(model=WorkflowModelAdapter(transport), data=FakeDataProvider(), research=research)), request)
     assert response.status_code == 200, response.text
     assert response.json()["stock"] is not None and response.json()["comparison"] is not None
     steps = ["review_portfolio", filing, "get_issuer_material", "calculate_company_cases", "calculate_comparison"]

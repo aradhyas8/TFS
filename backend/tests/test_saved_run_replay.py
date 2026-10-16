@@ -1,5 +1,5 @@
 """Replays real model output saved from live OpenRouter stock-analysis runs (DeepSeek V4.1 Flash, Nemotron) through the
-complete /api/analyze workflow over mocked HTTP. Each saved run once ended in HTTP 502 or an unusable answer; the
+complete analysis pipeline over mocked HTTP. Each saved run once ended in HTTP 502 or an unusable answer; the
 replay checks that valid tool arguments are calculated rather than rejected for their wording."""
 import json
 from pathlib import Path

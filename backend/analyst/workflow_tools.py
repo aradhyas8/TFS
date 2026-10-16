@@ -6,11 +6,12 @@ from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any, cast
 
+from . import pipeline
 from .allocation import DiscoveryProvider
 from .config import Settings
 from .context import ReadArguments, ReadCapability, RunContext
-from .financial_data import MARKET_TIME, FinancialProvider
-from .financial_tools import FinancialTools
+from .financial_data import FinancialProvider
+from .financial_tools import CandidateArguments, FinancialTools
 from .pipeline import analyze
 from .providers import DataProvider, ModelTurn, WorkflowModelAdapter
 from .research import ResearchProvider
@@ -21,6 +22,7 @@ from .schemas import (
     Identifier,
     NewCashInput,
     PortfolioReviewInput,
+    PortfolioSettings,
     Position,
     StockInput,
     ThemeInput,
@@ -28,6 +30,17 @@ from .schemas import (
     WorkflowInput,
     WorkflowName,
 )
+
+
+def rules(settings: PortfolioSettings | None) -> PortfolioSettings | None:
+    """Only rules that were set: a rule set with nothing in it is no rules, so nothing is checked."""
+    if settings is None:
+        return None
+    values = settings.model_dump(exclude_none=True)
+    if values.pop("baseline", None):
+        return settings
+    # A baseline with no value set is no baseline.
+    return settings.model_copy(update={"baseline": None}) if values else None
 
 
 class StockArguments(ReadArguments):
@@ -85,6 +98,8 @@ class WorkflowTools:
         self.model = WorkflowModelAdapter(DeadlineTransport(transport, settings, deadline), settings=settings)
         self.user_text = user_text
         self.inputs = WorkflowInput.model_validate(workflow_input or {})
+        # The recommendation of the last completed workflow: a form submission's answer, with no model turn.
+        self.answer: str | None = None
         self.capabilities: dict[str, ReadCapability] = {name: ReadCapability(
             StockArguments if name == "run_stock_analysis" else ReadArguments,
             f"Execute {name} through the full validated workflow using bound holdings, rules and benchmark. "
@@ -107,21 +122,40 @@ class WorkflowTools:
         })
         return {"clarification_required": clarification.model_dump(mode="json")}
 
+    async def bind_candidates(self, context: RunContext, name: WorkflowName) -> dict[str, Any] | None:
+        """Resolve each unowned security the form named through the same lookup resolve_candidate uses, under the
+        form's ID. Only the ticker and listing come from the browser; identity, listing and currency are re-verified."""
+        assert context.portfolio is not None
+        held = {row.id for row in context.portfolio.snapshot.positions}
+        account = context.portfolio.snapshot.accounts[0].id if context.portfolio.snapshot.accounts else None
+        for choice in self.inputs.candidates:
+            if choice.id in self.financial.candidates:
+                continue
+            before = set(self.financial.candidates)
+            if choice.id not in held:
+                await self.financial.candidate(context, CandidateArguments(
+                    ticker=choice.ticker, listing=choice.listing, account_id=account))
+            added = set(self.financial.candidates) - before
+            if len(added) != 1:
+                return self.clarify(name, ["candidates"], code="invalid_inputs",
+                                    message=f"{choice.ticker} could not be resolved to one supported listing; select it again.")
+            row = self.financial.candidates.pop(added.pop())
+            self.financial.resolved.pop(row.id, None)
+            row = row.model_copy(update={"id": choice.id})
+            self.financial.candidates[choice.id] = row
+            self.financial.resolved[choice.id] = row.model_copy(deep=True)
+        return None
+
     async def execute(self, context: RunContext, parsed: ReadArguments,
                       name: WorkflowName) -> dict[str, Any]:
-        if self.inputs.workflow is not None and self.inputs.workflow != name:
-            return {"error": "Requested workflow conflicts with the explicit workflow selection."}
         if context.portfolio is None:
             return self.clarify(name, ["portfolio"], code="portfolio_required")
         if context.portfolio.unresolved:
             return self.clarify(name, ["holdings.identity"], code="unresolved_identity")
+        unresolved = await self.bind_candidates(context, name)
+        if unresolved is not None:
+            return unresolved
         snapshot = context.portfolio.snapshot.model_copy(deep=True)
-        snapshot.positions.extend(row.model_copy(deep=True) for row in self.financial.candidates.values())
-        benchmark = context.portfolio.benchmark
-        if benchmark and snapshot.accounts:
-            snapshot.positions.append(Position(id=BENCHMARK_FUND, account_id=snapshot.accounts[0].id,
-                kind="etf", etf_role="diversified", currency=benchmark.currency,
-                ticker=benchmark.ticker, listing=benchmark.listing, company_name=benchmark.name, shares=Decimal(0)))
         selected: StockInput | NewCashInput | ThemeInput | PortfolioReviewInput | None = None
         if name == "run_stock_analysis":
             selected = self.inputs.stock
@@ -138,7 +172,9 @@ class WorkflowTools:
                 missing.append("new_cash.amount")
             if not selected.cash_position_id and not selected.account_id:
                 missing.append("new_cash.account_id")
-            if not selected.risk_context:
+            # A submitted form may leave loss tolerance out: the analysis then stays conditional on it, as the desk's
+            # new-cash answer always was, and offers a re-run with it.
+            if not selected.risk_context and self.inputs.workflow != name:
                 missing.append("new_cash.risk_context")
             if not selected.confirmed or self.inputs.workflow != name:
                 missing.append("new_cash.confirmed")
@@ -153,12 +189,28 @@ class WorkflowTools:
                 return self.clarify(name, missing)
         elif name == "run_portfolio_reunderwriting":
             selected = self.inputs.portfolio_review or PortfolioReviewInput()
+        benchmark = context.portfolio.benchmark
+        if benchmark and snapshot.accounts:
+            account = snapshot.accounts[0].id
+            if isinstance(selected, NewCashInput):
+                # The benchmark is a destination for new money only in that money's currency and account.
+                account = selected.account_id or account
+                if benchmark.currency != (selected.currency or snapshot.reporting_currency):
+                    benchmark = None
+            if benchmark:
+                snapshot.positions.append(Position(id=BENCHMARK_FUND, account_id=account,
+                    kind="etf", etf_role="diversified", currency=benchmark.currency,
+                    ticker=benchmark.ticker, listing=benchmark.listing, company_name=benchmark.name, shares=Decimal(0)))
+        snapshot.positions.extend(row.model_copy(deep=True) for row in self.financial.candidates.values())
         values: dict[str, Any] = {
             # The selected adapter, rather than the legacy question regex, chooses the workflow.
-            "question": name, "portfolio": snapshot, "settings": context.portfolio.settings,
-            "analysis_date": self.inputs.analysis_date or max(snapshot.as_of, context.run.created_at.astimezone(MARKET_TIME).date()),
+            "question": name, "portfolio": snapshot, "settings": rules(context.portfolio.settings),
+            "analysis_date": self.inputs.analysis_date or max(snapshot.as_of, pipeline.market_today()),
             "comparison": self.inputs.comparison,
             "proposed_changes": self.inputs.proposed_changes,
+            # A run on a stored draft names it in the result, so the answer is labelled hypothetical wherever it is shown.
+            "artifact_reference": (context.db.get_artifact_reference(context.run.hypothetical_artifact_id)
+                                   if context.run.hypothetical_artifact_id else None),
         }
         field = WORKFLOWS[name][1]
         if field:
@@ -179,4 +231,5 @@ class WorkflowTools:
             raise asyncio.CancelledError
         if asyncio.get_running_loop().time() >= self.deadline:
             raise TimeoutError
+        self.answer = result.recommendation.reason
         return self.financial.store(context, result, "analysis_result", name.removeprefix("run_").replace("_", " ").title())
