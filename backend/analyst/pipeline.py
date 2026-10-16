@@ -676,9 +676,22 @@ async def analyze(
     compacted: list[dict[str, Any]] = []  # normalized pairs for accepted review calls older than the raw tail
     last_pair: list[dict[str, Any]] = []
     try:
-        # One required portfolio tool turn, then a final response. Bound any repeated
-        # tool requests to prevent unbounded loops and reject unknown dispatch names.
-        for iteration in range(theme.context.max_tool_calls + 1 if theme else len(supplied.positions) + 16 if reunderwriting else 18 if allocation else 16 if request.stock else 8):
+        # Under legacy, range(8/16/18) served as an independent normal-completion turn budget.
+        # Under V2 accounting, normal-completion turns are governed by the shared TaskBudgetLedger,
+        # while an emergency iteration ceiling (50) protects against run loops.
+        normal_limit = (
+            theme.context.max_tool_calls + 1
+            if theme
+            else len(supplied.positions) + 16
+            if reunderwriting
+            else 18
+            if allocation
+            else 16
+            if request.stock
+            else 8
+        )
+        max_iterations = 50 if getattr(model, "v2_accounting", False) else normal_limit
+        for iteration in range(max_iterations):
             _forced = forced_tool_next
             forced_tool_next = None
             is_tool_turn = (

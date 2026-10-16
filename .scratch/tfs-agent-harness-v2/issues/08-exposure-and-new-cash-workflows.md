@@ -46,7 +46,7 @@ Run focused exposure/allocation/workflow tests and parity fixtures. Exercise exi
 
 ### Test Suite Execution
 - Focused test suite:
-  - `tests/test_exposure_and_new_cash_workflows.py`: 15/15 passed.
+  - `tests/test_exposure_and_new_cash_workflows.py`: 18/18 passed.
   - `tests/test_workflow_tools.py`: 47/47 passed under default V2; 47/47 passed under `TFS_ORCHESTRATOR_ENGINE=legacy`.
 - Cross-cutting conversation suites:
   - `tests/test_conversation_execution.py`: 9/9 passed.

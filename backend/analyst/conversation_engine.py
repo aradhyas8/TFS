@@ -109,6 +109,19 @@ def valid_answer(text: str | None) -> bool:
     )
 
 
+def serialize_ledger_usage(ledger: TaskBudgetLedger) -> dict[str, Any]:
+    """Extract standard usage dictionary for database execution state storage."""
+    usage = ledger.total_usage()
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+        "cost": usage.cost,
+        "attempts": ledger.attempts,
+        "compaction_count": getattr(ledger, "compaction_count", 0),
+    }
+
+
 @dataclass
 class ConversationDeps:
     """Runtime dependencies injected into the PydanticAI conversational agent."""
@@ -148,20 +161,11 @@ class ConversationDeps:
 
     def save_execution_state(self) -> None:
         """Persist private framework execution state and usage to SQLite."""
-        usage = self.ledger.total_usage()
-        usage_dict = {
-            "prompt_tokens": usage.prompt_tokens,
-            "completion_tokens": usage.completion_tokens,
-            "total_tokens": usage.total_tokens,
-            "cost": usage.cost,
-            "attempts": self.ledger.attempts,
-            "compaction_count": getattr(self.ledger, "compaction_count", 0),
-        }
         self.db.store_execution_state(
             run_id=self.run_record.id,
             engine="pydantic_ai",
             engine_version="1.0",
-            usage=usage_dict,
+            usage=serialize_ledger_usage(self.ledger),
             framework_state={
                 "seen_calls": list(self.seen_calls),
                 "citations_count": len(self.citations),
@@ -271,7 +275,7 @@ class TFSTransportModel(Model):
         sig = inspect.signature(self.transport.respond)
         kwargs: dict[str, Any] = {}
         accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-        effort = deps.settings.reasoning_effort
+        effort = bounded_effort(deps.settings.reasoning_effort, "medium")
         for name, value in {
             "timeout": request_timeout,
             "tools": tfs_tools,
@@ -690,20 +694,11 @@ async def execute_direct_dispatch(
         failure = describe_failure(exc)
         record_terminal_failure(failure.message)
     finally:
-        usage = ledger.total_usage()
-        usage_dict = {
-            "prompt_tokens": usage.prompt_tokens,
-            "completion_tokens": usage.completion_tokens,
-            "total_tokens": usage.total_tokens,
-            "cost": usage.cost,
-            "attempts": ledger.attempts,
-            "compaction_count": getattr(ledger, "compaction_count", 0),
-        }
         db.store_execution_state(
             run_id=run_record.id,
             engine="pydantic_ai",
             engine_version="1.0",
-            usage=usage_dict,
+            usage=serialize_ledger_usage(ledger),
             framework_state={
                 "direct_dispatch": True,
                 "workflow": form,

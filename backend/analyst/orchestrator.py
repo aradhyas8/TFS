@@ -182,7 +182,8 @@ class Orchestrator:
         run_id = run_record.id
         start_time = asyncio.get_event_loop().time()
         deadline = start_time + MAX_DEADLINE_SECONDS
-        ledger = create_task_budget(self.settings, max_attempts=15, deadline_seconds=MAX_DEADLINE_SECONDS)
+        max_attempts = getattr(self, "max_attempts", 15)
+        ledger = create_task_budget(self.settings, max_attempts=max_attempts, deadline_seconds=MAX_DEADLINE_SECONDS)
 
         try:
             context = RunContext(self.db, run_record)

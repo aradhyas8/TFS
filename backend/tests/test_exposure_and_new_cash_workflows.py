@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from analyst.api import create_app
 from analyst.config import Settings
+from analyst.decisions import DecisionStore
 from analyst.financial_data import FakeFinancialProvider
 from analyst.orchestrator import Orchestrator
 from analyst.portfolio import PortfolioStore
@@ -347,45 +348,8 @@ def test_ac4_budget_exhaustion_terminates_run_honestly(tmp_path: Path) -> None:
     model = CapturingTransport(exposure_turns())
     settings = Settings(api_key="sk-test", model="test-model", request_timeout=5.0)
 
-    # Use custom orchestrator with max_attempts=1 to trigger exhaustion on second turn
-    db = store.db
-    from analyst.evaluation_budget import create_task_budget
-
-    class LowBudgetOrchestrator(Orchestrator):
-        async def _execute_pydantic_ai_run(self, thread_id: str, run_record: Any, user_text: str, workflow_input: Any, hypothetical_artifact_id: Any) -> None:
-            from analyst.context import READ_CAPABILITIES, RunContext
-            from analyst.conversation_engine import ConversationDeps, execute_pydantic_ai_run
-            from analyst.financial_tools import FinancialTools
-            from analyst.proposal_tools import ProposalTools
-            from analyst.research_tools import ResearchTools
-            from analyst.web_search import HOSTED_TOOL, WebSearchTools
-            from analyst.workflow_tools import WorkflowTools
-
-            context = RunContext(self.db, run_record)
-            financial_tools = FinancialTools(self.financial)
-            research_tools = ResearchTools(financial_tools, self.research, workflow_input, self.discovery)
-            web = WebSearchTools(
-                lambda search_messages, timeout: self._call_transport(search_messages, timeout, [HOSTED_TOOL], tool_choice="required"),
-                self.settings,
-            )
-            # max_attempts=1: first turn charges attempt 1, second turn fails with attempts_exceeded
-            ledger = create_task_budget(self.settings, max_attempts=1, deadline_seconds=600.0)
-            workflow_tools = WorkflowTools(financial_tools, research_tools, self.data, self.transport,
-                                           self.settings, ledger.deadline, user_text, workflow_input, ledger=ledger)
-            capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
-                            **research_tools.capabilities, **workflow_tools.capabilities,
-                            **web.capabilities, **ProposalTools(financial_tools).capabilities}
-            deps = ConversationDeps(
-                db=self.db, thread_id=thread_id, run_record=run_record, context=context, ledger=ledger,
-                settings=self.settings, transport=self.transport, financial_tools=financial_tools,
-                research_tools=research_tools, workflow_tools=workflow_tools,
-                proposal_tools=ProposalTools(financial_tools), web=web, capabilities=capabilities,
-                user_text=user_text, is_stopped=lambda: False,
-                record_terminal_failure=lambda msg: self._record_terminal_failure(run_record.id, msg),
-            )
-            await execute_pydantic_ai_run(deps)
-
-    orch = LowBudgetOrchestrator(db=db, transport=model, settings=settings)
+    orch = Orchestrator(db=store.db, transport=model, settings=settings)
+    orch.max_attempts = 1
     with TestClient(create_app(model=model, data=FakeDataProvider(), portfolio_store=store, settings=settings, orchestrator=orch)) as client:
         thread = client.post("/api/threads").json()["id"]
         run = submit(client, thread, "Review exposure.", workflow_input={"workflow": "run_exposure_review"})
@@ -521,3 +485,99 @@ def test_ac5_and_ac6_legacy_engine_rollback_and_financial_parity(tmp_path: Path,
 
     assert leg_port["guardrails"] == v2_port["guardrails"]
     assert art_leg["payload"]["recommendation"] == art_v2["payload"]["recommendation"]
+
+
+def test_dated_and_undated_evidence_preserved(tmp_path: Path) -> None:
+    """AC 3: Preserve dated and undated evidence across workflow execution."""
+    ev = allocation_evidence()
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
+    model = CapturingTransport(exposure_turns())
+    settings = Settings(api_key="sk-test", model="test-model", request_timeout=5.0)
+
+    with TestClient(create_app(model=model, data=FakeDataProvider(), portfolio_store=store, settings=settings, financial=FakeFinancialProvider(ev))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Review exposure.", workflow_input={"workflow": "run_exposure_review"})
+        assert run["status"] == "completed"
+        artifact = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()
+        port = artifact["payload"]["portfolio"]
+        # Dated and undated evidence properties preserved
+        assert port["holdings_as_of"] is not None
+        assert "positions" in port and len(port["positions"]) > 0
+        for pos in port["positions"]:
+            assert "supplied" in pos
+            assert "value" in pos
+
+
+def test_financial_parity_new_cash_allocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AC 6: Record financial parity between V2 and legacy engines for new-cash allocation."""
+    req = allocation_request()
+    settings = Settings(api_key="sk-test", model="test-model", request_timeout=5.0)
+    ev = allocation_evidence()
+
+    # 1. Run under legacy engine
+    monkeypatch.setenv("TFS_ORCHESTRATOR_ENGINE", "legacy")
+    store_legacy = PortfolioStore(database_path=tmp_path / "legacy.db")
+    store_legacy.save(SavedPortfolio.model_validate({"snapshot": req["portfolio"], "settings": req.get("settings")}))
+    model_legacy = CapturingTransport(allocation_turns())
+    with TestClient(create_app(model=model_legacy, data=FakeDataProvider(), portfolio_store=store_legacy, settings=settings, financial=FakeFinancialProvider(ev))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run_leg = submit(
+            client,
+            thread,
+            req["question"],
+            workflow_input={"workflow": "run_new_cash_allocation", "new_cash": req["new_cash"]},
+        )
+        assert run_leg["status"] == "completed"
+        art_leg = client.get(f"/api/artifacts/{run_leg['artifact_ids'][0]}").json()
+
+    # 2. Run under V2 engine (pydantic_ai)
+    monkeypatch.setenv("TFS_ORCHESTRATOR_ENGINE", "pydantic_ai")
+    store_v2 = PortfolioStore(database_path=tmp_path / "v2.db")
+    store_v2.save(SavedPortfolio.model_validate({"snapshot": req["portfolio"], "settings": req.get("settings")}))
+    model_v2 = CapturingTransport(allocation_turns())
+    with TestClient(create_app(model=model_v2, data=FakeDataProvider(), portfolio_store=store_v2, settings=settings, financial=FakeFinancialProvider(ev))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run_v2 = submit(
+            client,
+            thread,
+            req["question"],
+            workflow_input={"workflow": "run_new_cash_allocation", "new_cash": req["new_cash"]},
+        )
+        assert run_v2["status"] == "completed"
+        art_v2 = client.get(f"/api/artifacts/{run_v2['artifact_ids'][0]}").json()
+
+    # 3. Compare financial results for exact parity
+    assert art_leg["payload"]["portfolio"]["total_value"] == art_v2["payload"]["portfolio"]["total_value"]
+    assert art_leg["payload"]["portfolio"]["positions"] == art_v2["payload"]["portfolio"]["positions"]
+    assert art_leg["payload"]["allocation"]["context"] == art_v2["payload"]["allocation"]["context"]
+    assert art_leg["payload"]["allocation"]["amount"] == art_v2["payload"]["allocation"]["amount"]
+    assert art_leg["payload"]["allocation"]["judgment"] == art_v2["payload"]["allocation"]["judgment"]
+    assert art_leg["payload"]["recommendation"] == art_v2["payload"]["recommendation"]
+    assert art_leg["payload"]["comparison"] == art_v2["payload"]["comparison"]
+
+
+def test_decision_saving_exposure_and_allocation(tmp_path: Path) -> None:
+    """AC 5: Result panels and decision saving persist across exposure and allocation runs."""
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
+    model = CapturingTransport(exposure_turns())
+    settings = Settings(api_key="sk-test", model="test-model", request_timeout=5.0)
+    dec_store = DecisionStore(tmp_path / "decisions")
+
+    with TestClient(create_app(model=model, data=FakeDataProvider(), portfolio_store=store, settings=settings, store=dec_store)) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Review exposure.", workflow_input={"workflow": "run_exposure_review"})
+        assert run["status"] == "completed"
+        art = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()
+
+        # Save decision referencing the workflow artifact payload
+        res = client.post("/api/decisions", json={"result": art["payload"]})
+        assert res.status_code == 200, res.text
+        dec_id = res.json()["id"]
+
+        # Retrieve saved decision
+        get_res = client.get(f"/api/decisions/{dec_id}")
+        assert get_res.status_code == 200
+        assert get_res.json()["id"] == dec_id
+        assert get_res.json()["conclusion"]["preferred_action"] is not None

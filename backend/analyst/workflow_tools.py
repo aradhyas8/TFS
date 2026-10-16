@@ -102,8 +102,6 @@ class DeadlineTransport(DeadlineProvider):
 
         attempt = None
         if self.ledger is not None:
-            if self.ledger.remaining_seconds() <= 0:
-                raise BudgetExhaustedError("Run deadline of 600 seconds exceeded.", reason="deadline_exceeded")
             attempt = self.ledger.charge_attempt("nested_workflow")
 
         try:
@@ -294,7 +292,10 @@ class WorkflowTools:
         if current is None or current.status != "running":
             raise asyncio.CancelledError
         if self.ledger is not None and self.ledger.remaining_seconds() <= 0:
-            raise BudgetExhaustedError("Run deadline of 600 seconds exceeded.", reason="deadline_exceeded")
+            raise BudgetExhaustedError(
+                f"Task wall-clock deadline exceeded ({self.ledger.deadline_seconds:.1f}s limit).",
+                reason="deadline_exceeded",
+            )
         if asyncio.get_running_loop().time() >= self.deadline:
             raise TimeoutError
         self.answer = result.recommendation.reason
