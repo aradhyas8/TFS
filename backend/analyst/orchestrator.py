@@ -28,7 +28,7 @@ from .failures import describe_failure
 from .financial_data import FinancialProvider
 from .financial_tools import FinancialTools
 from .model_view import fit
-from .persistence import Database, DecimalEncoder
+from .persistence import Database, DecimalEncoder, IncompatibleStateError
 from .pipeline import InvalidReview, bounded_effort
 from .proposal_tools import ProposalTools
 from .providers import DataProvider, ModelIncomplete, ModelTurn, SuppliedDataProvider, ToolCall
@@ -147,6 +147,12 @@ class Orchestrator:
     ) -> None:
         """Execute run through selected engine. Selected before start; never switched mid-run."""
         engine = self._resolve_engine()
+        try:
+            self.db.validate_execution_state(run_record.id, expected_engine=engine)
+        except IncompatibleStateError as exc:
+            self._record_terminal_failure(run_record.id, str(exc))
+            return
+
         if engine == "legacy":
             await self._execute_legacy_run(
                 thread_id=thread_id,
@@ -176,7 +182,8 @@ class Orchestrator:
         run_id = run_record.id
         start_time = asyncio.get_event_loop().time()
         deadline = start_time + MAX_DEADLINE_SECONDS
-        ledger = create_task_budget(self.settings, max_attempts=15, deadline_seconds=MAX_DEADLINE_SECONDS)
+        max_attempts = getattr(self, "max_attempts", 15)
+        ledger = create_task_budget(self.settings, max_attempts=max_attempts, deadline_seconds=MAX_DEADLINE_SECONDS)
 
         try:
             context = RunContext(self.db, run_record)
@@ -187,8 +194,17 @@ class Orchestrator:
                     search_messages, timeout, [HOSTED_TOOL], tool_choice="required"),
                 self.settings,
             )
-            workflow_tools = WorkflowTools(financial_tools, research_tools, self.data, self.transport,
-                                           self.settings, deadline, user_text, workflow_input)
+            workflow_tools = WorkflowTools(
+                financial=financial_tools,
+                research=research_tools,
+                data=self.data,
+                transport=self.transport,
+                settings=self.settings,
+                deadline=deadline,
+                user_text=user_text,
+                workflow_input=workflow_input,
+                ledger=ledger,
+            )
             proposal_tools = ProposalTools(financial_tools)
             capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
                             **research_tools.capabilities, **workflow_tools.capabilities,

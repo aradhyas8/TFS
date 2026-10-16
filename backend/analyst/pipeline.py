@@ -676,9 +676,22 @@ async def analyze(
     compacted: list[dict[str, Any]] = []  # normalized pairs for accepted review calls older than the raw tail
     last_pair: list[dict[str, Any]] = []
     try:
-        # One required portfolio tool turn, then a final response. Bound any repeated
-        # tool requests to prevent unbounded loops and reject unknown dispatch names.
-        for iteration in range(theme.context.max_tool_calls + 1 if theme else len(supplied.positions) + 16 if reunderwriting else 18 if allocation else 16 if request.stock else 8):
+        # Under legacy, range(8/16/18) served as an independent normal-completion turn budget.
+        # Under V2 accounting, normal-completion turns are governed by the shared TaskBudgetLedger,
+        # while an emergency iteration ceiling (50) protects against run loops.
+        normal_limit = (
+            theme.context.max_tool_calls + 1
+            if theme
+            else len(supplied.positions) + 16
+            if reunderwriting
+            else 18
+            if allocation
+            else 16
+            if request.stock
+            else 8
+        )
+        max_iterations = 50 if getattr(model, "v2_accounting", False) else normal_limit
+        for iteration in range(max_iterations):
             _forced = forced_tool_next
             forced_tool_next = None
             is_tool_turn = (
@@ -697,15 +710,18 @@ async def analyze(
             final_next = False
             configured_effort = getattr(getattr(model, "settings", None), "reasoning_effort", None)
             is_reunderwrite_tool = reunderwriting is not None and (len(reunderwriting.assessments) != len(reunderwriting.research) or _forced in {"reunderwrite_holding", "calculate_comparison"})
-            turn_effort = "none" if is_reunderwrite_tool else "medium" if is_tool_turn else configured_effort
-            # OpenRouter requires every sent parameter, so a TFS default effort would exclude models without configurable reasoning:
-            # only a configured effort is sent. Tool turns cap it at medium (a forced tool needs arguments, not open-ended
-            # reasoning; at max a live company-case turn reasoned 14K tokens without a call); the final analysis keeps it.
-            if getattr(getattr(model, "settings", None), "openrouter", False):
-                turn_effort = bounded_effort(configured_effort, "medium") if is_tool_turn else configured_effort
-            # Plan synthesis at max consumed most of a whole workflow deadline in live acceptance.
-            if not is_tool_turn and getattr(getattr(model, "settings", None), "provider", None) == "chatgpt_plan" and turn_effort in {"max", "xhigh"}:
-                turn_effort = "medium" if reunderwriting is not None else "high"
+            if getattr(model, "v2_accounting", False):
+                turn_effort = "none" if is_reunderwrite_tool else configured_effort
+            else:
+                turn_effort = "none" if is_reunderwrite_tool else "medium" if is_tool_turn else configured_effort
+                # OpenRouter requires every sent parameter, so a TFS default effort would exclude models without configurable reasoning:
+                # only a configured effort is sent. Tool turns cap it at medium (a forced tool needs arguments, not open-ended
+                # reasoning; at max a live company-case turn reasoned 14K tokens without a call); the final analysis keeps it.
+                if getattr(getattr(model, "settings", None), "openrouter", False):
+                    turn_effort = bounded_effort(configured_effort, "medium") if is_tool_turn else configured_effort
+                # Plan synthesis at max consumed most of a whole workflow deadline in live acceptance.
+                if not is_tool_turn and getattr(getattr(model, "settings", None), "provider", None) == "chatgpt_plan" and turn_effort in {"max", "xhigh"}:
+                    turn_effort = "medium" if reunderwriting is not None else "high"
             import logging
             logging.info(
                 "MODEL TURN START iteration=%s forced_tool=%s require_tool=%s is_tool_turn=%s reasoning_effort=%s",

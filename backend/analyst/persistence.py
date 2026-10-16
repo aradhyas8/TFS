@@ -6,6 +6,7 @@ import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -33,7 +34,7 @@ from .schemas import (
     build_artifact_payload,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class SchemaMigrationError(RuntimeError):
@@ -66,6 +67,23 @@ class ThreadNotFoundError(RuntimeError):
 
 class RunConflictError(RuntimeError):
     """Raised when a run payload conflicts with an existing client request ID or another run is active."""
+
+
+class IncompatibleStateError(RuntimeError):
+    """Raised when framework execution state is incompatible with the engine or version."""
+
+
+@dataclass
+class ExecutionStateRecord:
+    run_id: str
+    engine: str
+    engine_version: str
+    usage: dict[str, Any]
+    framework_state: dict[str, Any] | None
+    updated_at: datetime
+
+    def __getitem__(self, item: str) -> Any:
+        return getattr(self, item)
 
 
 
@@ -162,6 +180,9 @@ class Database:
                 self._apply_migration_v3(conn)
             if current_version < 4:
                 self._apply_migration_v4(conn)
+            if current_version < 5:
+                self._apply_migration_v5(conn)
+
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
 
             # Backfill any missing art-rev-N artifacts for committed revisions
@@ -389,6 +410,24 @@ class Database:
         conn.execute("ALTER TABLE runs ADD COLUMN ai_model TEXT;")
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?);",
+            (datetime.now(UTC).isoformat(),),
+        )
+
+    def _apply_migration_v5(self, conn: sqlite3.Connection) -> None:
+        """Apply migration v5: private_execution_state for framework engine, state and usage tracking."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS private_execution_state (
+                run_id TEXT PRIMARY KEY,
+                engine TEXT NOT NULL,
+                engine_version TEXT NOT NULL,
+                usage_json TEXT NOT NULL,
+                framework_state_json TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (run_id) REFERENCES runs(id)
+            );
+        """)
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (5, ?);",
             (datetime.now(UTC).isoformat(),),
         )
 
@@ -1295,6 +1334,8 @@ class Database:
             existing_run = cursor.fetchone()
             if existing_run:
                 if existing_run["request_payload_hash"] == payload_hash:
+                    # Validate execution state compatibility if present before reusing existing run
+                    self.validate_execution_state(existing_run["id"])
                     # Idempotent match: return existing run
                     return self._row_to_run(existing_run), False
                 else:
@@ -1607,15 +1648,127 @@ class Database:
     def recover_interrupted_runs(self) -> int:
         """
         Mark all currently 'running' runs as 'interrupted' upon process restart without replaying.
+        If an interrupted run has an incompatible saved execution state, marks it as 'failed' safely.
         Returns the number of runs transitioned.
         """
         now_iso = datetime.now(UTC).isoformat()
         with self.connect() as conn:
+            cursor = conn.execute("SELECT id FROM runs WHERE status = 'running';")
+            running_ids = [row["id"] for row in cursor.fetchall()]
+            if not running_ids:
+                return 0
+
+            count = 0
+            for run_id in running_ids:
+                try:
+                    self.validate_execution_state(run_id)
+                    conn.execute(
+                        "UPDATE runs SET status = 'interrupted', updated_at = ? WHERE id = ?;",
+                        (now_iso, run_id),
+                    )
+                except IncompatibleStateError as exc:
+                    conn.execute(
+                        "UPDATE runs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?;",
+                        (str(exc), now_iso, run_id),
+                    )
+                count += 1
+            return count
+
+    def get_proposal_receipt(self, proposal_id: str) -> ProposalReceipt | None:
+        """Retrieve confirmed proposal receipt if available."""
+        with self.connect() as conn:
             cursor = conn.execute(
-                "UPDATE runs SET status = 'interrupted', updated_at = ? WHERE status = 'running';",
-                (now_iso,),
+                "SELECT proposal_id, previous_revision, new_revision, committed_at FROM proposal_receipts WHERE proposal_id = ?;",
+                (proposal_id,),
             )
-            return cursor.rowcount
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return ProposalReceipt(
+                proposal_id=row["proposal_id"],
+                previous_revision=row["previous_revision"],
+                new_revision=row["new_revision"],
+                committed_at=datetime.fromisoformat(row["committed_at"]),
+            )
+
+    def store_execution_state(
+        self,
+        run_id: str,
+        engine: str,
+        engine_version: str,
+        usage: dict[str, Any] | Any | None = None,
+        framework_state: Any | None = None,
+    ) -> None:
+        """Store or update private framework execution state and usage for a run."""
+        now_iso = datetime.now(UTC).isoformat()
+        if usage is not None and hasattr(usage, "model_dump"):
+            usage_dict = usage.model_dump(mode="python")
+        elif usage is not None and hasattr(usage, "__dict__"):
+            usage_dict = {k: v for k, v in usage.__dict__.items() if not k.startswith("_")}
+        elif isinstance(usage, dict):
+            usage_dict = usage
+        else:
+            usage_dict = {}
+
+        usage_json = json.dumps(usage_dict, cls=DecimalEncoder)
+        state_json = json.dumps(framework_state, cls=DecimalEncoder) if framework_state is not None else None
+
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO private_execution_state (run_id, engine, engine_version, usage_json, framework_state_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    engine = excluded.engine,
+                    engine_version = excluded.engine_version,
+                    usage_json = excluded.usage_json,
+                    framework_state_json = excluded.framework_state_json,
+                    updated_at = excluded.updated_at;
+                """,
+                (run_id, engine, engine_version, usage_json, state_json, now_iso),
+            )
+
+    def get_execution_state(self, run_id: str) -> ExecutionStateRecord | None:
+        """Retrieve private framework execution state and usage for a run."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "SELECT run_id, engine, engine_version, usage_json, framework_state_json, updated_at FROM private_execution_state WHERE run_id = ?;",
+                (run_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return ExecutionStateRecord(
+                run_id=row["run_id"],
+                engine=row["engine"],
+                engine_version=row["engine_version"],
+                usage=json.loads(row["usage_json"]),
+                framework_state=json.loads(row["framework_state_json"]) if row["framework_state_json"] else None,
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+            )
+
+    def validate_execution_state(self, run_id: str, expected_engine: str | None = None) -> ExecutionStateRecord | None:
+        """Validate that stored execution state is compatible with the expected engine and version."""
+        state = self.get_execution_state(run_id)
+        if state is None:
+            return None
+        if expected_engine is not None and state.engine != expected_engine:
+            raise IncompatibleStateError(
+                f"Incompatible framework execution state for run '{run_id}': engine '{state.engine}' does not match expected '{expected_engine}'."
+            )
+        SUPPORTED_ENGINES = {
+            "pydantic_ai": {"1.0", "1"},
+            "legacy": {"1.0", "1"},
+        }
+        if state.engine not in SUPPORTED_ENGINES:
+            raise IncompatibleStateError(
+                f"Incompatible framework execution state for run '{run_id}': unknown engine '{state.engine}'."
+            )
+        if state.engine_version not in SUPPORTED_ENGINES[state.engine]:
+            raise IncompatibleStateError(
+                f"Incompatible framework execution state for run '{run_id}': engine '{state.engine}' version '{state.engine_version}' is not supported."
+            )
+        return state
 
     def _row_to_run(self, row: sqlite3.Row) -> RunRecord:
         return RunRecord(

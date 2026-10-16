@@ -48,6 +48,7 @@ from pydantic_ai.tools import ToolDefinition
 from .config import Settings
 from .context import (
     CHARACTER_LIMIT,
+    ReadArguments,
     ReadCapability,
     RunContext,
     read_tools,
@@ -108,6 +109,19 @@ def valid_answer(text: str | None) -> bool:
     )
 
 
+def serialize_ledger_usage(ledger: TaskBudgetLedger) -> dict[str, Any]:
+    """Extract standard usage dictionary for database execution state storage."""
+    usage = ledger.total_usage()
+    return {
+        "prompt_tokens": usage.prompt_tokens,
+        "completion_tokens": usage.completion_tokens,
+        "total_tokens": usage.total_tokens,
+        "cost": usage.cost,
+        "attempts": ledger.attempts,
+        "compaction_count": getattr(ledger, "compaction_count", 0),
+    }
+
+
 @dataclass
 class ConversationDeps:
     """Runtime dependencies injected into the PydanticAI conversational agent."""
@@ -145,6 +159,19 @@ class ConversationDeps:
         available_chars = max(0, (window - headroom) * 4)
         return max(16_000, min(120_000, int(available_chars * 0.25)))
 
+    def save_execution_state(self) -> None:
+        """Persist private framework execution state and usage to SQLite."""
+        self.db.store_execution_state(
+            run_id=self.run_record.id,
+            engine="pydantic_ai",
+            engine_version="1.0",
+            usage=serialize_ledger_usage(self.ledger),
+            framework_state={
+                "seen_calls": list(self.seen_calls),
+                "citations_count": len(self.citations),
+            },
+        )
+
 
 class TFSTransportModel(Model):
     """Bridges any TFS model transport to PydanticAI's Model protocol."""
@@ -180,7 +207,7 @@ class TFSTransportModel(Model):
     ) -> ModelResponse:
         deps = self.deps
         if deps.is_stopped():
-            return ModelResponse(parts=[TextPart("")])
+            raise asyncio.CancelledError()
 
         # Check deadline before model call
         remaining_deadline = deps.ledger.remaining_seconds()
@@ -296,9 +323,11 @@ class TFSTransportModel(Model):
             failure = describe_failure(exc)
             deps.record_terminal_failure(failure.message)
             raise
+        finally:
+            deps.save_execution_state()
 
         if deps.is_stopped():
-            return ModelResponse(parts=[TextPart("")])
+            raise asyncio.CancelledError()
 
         # Validate turn
         if turn.calls:
@@ -384,6 +413,9 @@ def _build_tool_function(cap_name: str, cap: ReadCapability) -> Callable[..., An
         run_id = deps.run_record.id
         thread_id = deps.thread_id
 
+        if deps.is_stopped():
+            raise asyncio.CancelledError()
+
         # Validate arguments against Pydantic schema
         try:
             parsed = arg_cls.model_validate(kwargs)
@@ -419,6 +451,8 @@ def _build_tool_function(cap_name: str, cap: ReadCapability) -> Callable[..., An
                 result = await asyncio.wait_for(pending, timeout=timeout_limit)
             else:
                 result = pending
+        except BudgetExhaustedError:
+            raise
         except TimeoutError:
             if (
                 cap.effect == "workflow"
@@ -445,7 +479,7 @@ def _build_tool_function(cap_name: str, cap: ReadCapability) -> Callable[..., An
                 deps.failed_workflows.pop(cap_name, None)
 
         if deps.is_stopped():
-            return result
+            raise asyncio.CancelledError()
 
         artifact_ids = list(result.get("artifact_ids", []))
         proposal_ids = list(result.get("proposal_ids", []))
@@ -520,6 +554,7 @@ def _build_tool_function(cap_name: str, cap: ReadCapability) -> Callable[..., An
             additional_message_ids=[outcome_message.id],
             additional_artifact_ids=artifact_ids,
         )
+        deps.save_execution_state()
 
         return result
 
@@ -587,23 +622,17 @@ async def execute_direct_dispatch(
     form = workflow_tools.inputs.workflow
     assert form is not None
 
-    parsed_args = getattr(workflow_tools.inputs, form.removeprefix("run_").replace("_analysis", "").replace("_allocation", "").replace("_reunderwriting", "").replace("_exploration", ""), None)
-    if parsed_args is None:
-        from .workflow_tools import StockArguments
+    from .workflow_tools import StockArguments
+
+    arg_cls = workflow_tools.capabilities[form].arguments
+    parsed_args: ReadArguments
+    if arg_cls is StockArguments:
         stock_in = workflow_tools.inputs.stock
         parsed_args = StockArguments(position_id=stock_in.position_id if stock_in else None)
+    else:
+        parsed_args = arg_cls()
 
     try:
-        # Stock analysis workflow runs 5 tool turns + 1 recommendation turn = 6 attempts
-        attempts_count = 6 if form == "run_stock_analysis" else 3
-        for _ in range(attempts_count):
-            att = ledger.charge_attempt("nested_workflow")
-            ledger.record_attempt_result(
-                att,
-                success=True,
-                usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
-            )
-
         try:
             result = await workflow_tools.execute(context, parsed_args, form)
         except (InvalidReview, OpenAIError, ValueError) as exc:
@@ -664,6 +693,17 @@ async def execute_direct_dispatch(
     except Exception as exc:
         failure = describe_failure(exc)
         record_terminal_failure(failure.message)
+    finally:
+        db.store_execution_state(
+            run_id=run_record.id,
+            engine="pydantic_ai",
+            engine_version="1.0",
+            usage=serialize_ledger_usage(ledger),
+            framework_state={
+                "direct_dispatch": True,
+                "workflow": form,
+            },
+        )
 
 
 async def execute_pydantic_ai_run(
@@ -732,23 +772,31 @@ async def execute_pydantic_ai_run(
             status="completed",
             additional_message_ids=[asst_msg.id],
         )
+        deps.save_execution_state()
 
     except asyncio.CancelledError:
         logger.info("Supervised PydanticAI run %s was cancelled.", run_id)
+        deps.save_execution_state()
         # cancel_run already updated status to 'cancelled' in db
-    except UnexpectedModelBehavior as exc:
-        msg = str(exc)
-        if "output retries" in msg or "validation error" in msg:
-            deps.record_terminal_failure(
-                describe_failure(InvalidReview("Empty or tool-call-shaped final answer.")).message
-            )
+    except (UnexpectedModelBehavior, BudgetExhaustedError, Exception) as exc:
+        if deps.is_stopped():
+            return
+        if isinstance(exc, UnexpectedModelBehavior):
+            if isinstance(exc.__cause__, BudgetExhaustedError):
+                deps.record_terminal_failure(str(exc.__cause__))
+            else:
+                msg = str(exc)
+                if "output retries" in msg or "validation error" in msg:
+                    deps.record_terminal_failure(
+                        describe_failure(InvalidReview("Empty or tool-call-shaped final answer.")).message
+                    )
+                else:
+                    deps.record_terminal_failure(describe_failure(exc).message)
+        elif isinstance(exc, BudgetExhaustedError):
+            deps.record_terminal_failure(str(exc))
         else:
-            deps.record_terminal_failure(describe_failure(exc).message)
-    except BudgetExhaustedError as exc:
-        deps.record_terminal_failure(str(exc))
-    except Exception as exc:
-        current_run = deps.db.get_run(thread_id, run_id)
-        if current_run is None or current_run.status != "failed":
-            logger.error("Error in PydanticAI run %s: %s", run_id, exc, exc_info=True)
-            failure = describe_failure(exc)
-            deps.record_terminal_failure("Internal orchestration error." if failure.kind == "internal" else failure.message)
+            current_run = deps.db.get_run(thread_id, run_id)
+            if current_run is None or current_run.status != "failed":
+                logger.error("Error in PydanticAI run %s: %s", run_id, exc, exc_info=True)
+                failure = describe_failure(exc)
+                deps.record_terminal_failure("Internal orchestration error." if failure.kind == "internal" else failure.message)
