@@ -48,6 +48,7 @@ from pydantic_ai.tools import ToolDefinition
 from .config import Settings
 from .context import (
     CHARACTER_LIMIT,
+    ReadArguments,
     ReadCapability,
     RunContext,
     read_tools,
@@ -270,7 +271,7 @@ class TFSTransportModel(Model):
         sig = inspect.signature(self.transport.respond)
         kwargs: dict[str, Any] = {}
         accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-        effort = bounded_effort(deps.settings.reasoning_effort, "medium")
+        effort = deps.settings.reasoning_effort
         for name, value in {
             "timeout": request_timeout,
             "tools": tfs_tools,
@@ -446,6 +447,8 @@ def _build_tool_function(cap_name: str, cap: ReadCapability) -> Callable[..., An
                 result = await asyncio.wait_for(pending, timeout=timeout_limit)
             else:
                 result = pending
+        except BudgetExhaustedError:
+            raise
         except TimeoutError:
             if (
                 cap.effect == "workflow"
@@ -615,23 +618,17 @@ async def execute_direct_dispatch(
     form = workflow_tools.inputs.workflow
     assert form is not None
 
-    parsed_args = getattr(workflow_tools.inputs, form.removeprefix("run_").replace("_analysis", "").replace("_allocation", "").replace("_reunderwriting", "").replace("_exploration", ""), None)
-    if parsed_args is None:
-        from .workflow_tools import StockArguments
+    from .workflow_tools import StockArguments
+
+    arg_cls = workflow_tools.capabilities[form].arguments
+    parsed_args: ReadArguments
+    if arg_cls is StockArguments:
         stock_in = workflow_tools.inputs.stock
         parsed_args = StockArguments(position_id=stock_in.position_id if stock_in else None)
+    else:
+        parsed_args = arg_cls()
 
     try:
-        # Stock analysis workflow runs 5 tool turns + 1 recommendation turn = 6 attempts
-        attempts_count = 6 if form == "run_stock_analysis" else 3
-        for _ in range(attempts_count):
-            att = ledger.charge_attempt("nested_workflow")
-            ledger.record_attempt_result(
-                att,
-                success=True,
-                usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
-            )
-
         try:
             result = await workflow_tools.execute(context, parsed_args, form)
         except (InvalidReview, OpenAIError, ValueError) as exc:
@@ -692,6 +689,26 @@ async def execute_direct_dispatch(
     except Exception as exc:
         failure = describe_failure(exc)
         record_terminal_failure(failure.message)
+    finally:
+        usage = ledger.total_usage()
+        usage_dict = {
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+            "cost": usage.cost,
+            "attempts": ledger.attempts,
+            "compaction_count": getattr(ledger, "compaction_count", 0),
+        }
+        db.store_execution_state(
+            run_id=run_record.id,
+            engine="pydantic_ai",
+            engine_version="1.0",
+            usage=usage_dict,
+            framework_state={
+                "direct_dispatch": True,
+                "workflow": form,
+            },
+        )
 
 
 async def execute_pydantic_ai_run(
@@ -770,13 +787,16 @@ async def execute_pydantic_ai_run(
         if deps.is_stopped():
             return
         if isinstance(exc, UnexpectedModelBehavior):
-            msg = str(exc)
-            if "output retries" in msg or "validation error" in msg:
-                deps.record_terminal_failure(
-                    describe_failure(InvalidReview("Empty or tool-call-shaped final answer.")).message
-                )
+            if isinstance(exc.__cause__, BudgetExhaustedError):
+                deps.record_terminal_failure(str(exc.__cause__))
             else:
-                deps.record_terminal_failure(describe_failure(exc).message)
+                msg = str(exc)
+                if "output retries" in msg or "validation error" in msg:
+                    deps.record_terminal_failure(
+                        describe_failure(InvalidReview("Empty or tool-call-shaped final answer.")).message
+                    )
+                else:
+                    deps.record_terminal_failure(describe_failure(exc).message)
         elif isinstance(exc, BudgetExhaustedError):
             deps.record_terminal_failure(str(exc))
         else:

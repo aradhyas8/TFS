@@ -569,9 +569,12 @@ def build_workflow_tools(request: dict[str, Any]) -> tuple[list[FunctionToolPara
 class WorkflowModelAdapter:
     """Adapts explicit model transport to the workflow-facing ModelProvider protocol."""
 
+    v2_accounting: bool = False
+
     def __init__(self, transport: Any, *, settings: Settings | None = None) -> None:
         self.transport = transport
         self.settings = settings or getattr(transport, "settings", None)
+        self.v2_accounting = False
 
     @property
     def client(self) -> Any:

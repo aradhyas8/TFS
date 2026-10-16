@@ -193,8 +193,17 @@ class Orchestrator:
                     search_messages, timeout, [HOSTED_TOOL], tool_choice="required"),
                 self.settings,
             )
-            workflow_tools = WorkflowTools(financial_tools, research_tools, self.data, self.transport,
-                                           self.settings, deadline, user_text, workflow_input)
+            workflow_tools = WorkflowTools(
+                financial=financial_tools,
+                research=research_tools,
+                data=self.data,
+                transport=self.transport,
+                settings=self.settings,
+                deadline=deadline,
+                user_text=user_text,
+                workflow_input=workflow_input,
+                ledger=ledger,
+            )
             proposal_tools = ProposalTools(financial_tools)
             capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
                             **research_tools.capabilities, **workflow_tools.capabilities,

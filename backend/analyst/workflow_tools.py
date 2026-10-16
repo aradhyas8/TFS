@@ -10,6 +10,7 @@ from . import pipeline
 from .allocation import DiscoveryProvider
 from .config import Settings
 from .context import ReadArguments, ReadCapability, RunContext
+from .evaluation_budget import BudgetExhaustedError, TaskBudgetLedger
 from .financial_data import FinancialProvider
 from .financial_tools import CandidateArguments, FinancialTools
 from .pipeline import analyze
@@ -59,14 +60,25 @@ WORKFLOWS: dict[WorkflowName, tuple[str, Any]] = {
 class DeadlineProvider:
     """Cap nested provider operations by the configured timeout and shared deadline."""
 
-    def __init__(self, transport: Any, settings: Settings, deadline: float) -> None:
+    def __init__(
+        self,
+        transport: Any,
+        settings: Settings,
+        deadline: float,
+        ledger: TaskBudgetLedger | None = None,
+    ) -> None:
         self.transport = transport
         self.settings = settings
         self.deadline = deadline
+        self.ledger = ledger
 
     def timeout(self) -> float:
-        return min(self.settings.request_timeout,
-                   max(0, self.deadline - asyncio.get_running_loop().time()))
+        if self.ledger is not None:
+            return self.ledger.remaining_timeout(self.settings.request_timeout)
+        return min(
+            self.settings.request_timeout,
+            max(0, self.deadline - asyncio.get_running_loop().time()),
+        )
 
     def __getattr__(self, name: str) -> Callable[..., Awaitable[Any]]:
         async def bounded(*args: Any, **kwargs: Any) -> Any:
@@ -76,37 +88,84 @@ class DeadlineProvider:
 
 class DeadlineTransport(DeadlineProvider):
 
-    async def respond(self, messages: list[dict[str, Any]], *, tools: Any = None,
-                      **kwargs: Any) -> ModelTurn:
+    async def respond(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: Any = None,
+        **kwargs: Any,
+    ) -> ModelTurn:
         timeout = self.timeout()
         parameters = inspect.signature(self.transport.respond).parameters
         if "timeout" in parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
             kwargs["timeout"] = timeout
-        return cast(ModelTurn, await asyncio.wait_for(
-            self.transport.respond(messages, tools=tools, **kwargs), timeout=timeout))
+
+        attempt = None
+        if self.ledger is not None:
+            if self.ledger.remaining_seconds() <= 0:
+                raise BudgetExhaustedError("Run deadline of 600 seconds exceeded.", reason="deadline_exceeded")
+            attempt = self.ledger.charge_attempt("nested_workflow")
+
+        try:
+            turn = cast(
+                ModelTurn,
+                await asyncio.wait_for(
+                    self.transport.respond(messages, tools=tools, **kwargs),
+                    timeout=timeout,
+                ),
+            )
+            if self.ledger is not None and attempt is not None:
+                usage_dict = None
+                if hasattr(turn, "usage") and turn.usage:
+                    usage_dict = turn.usage if isinstance(turn.usage, dict) else turn.usage.model_dump()
+                self.ledger.record_attempt_result(attempt, success=True, usage=usage_dict)
+            return turn
+        except Exception as exc:
+            if self.ledger is not None and attempt is not None:
+                self.ledger.record_attempt_result(attempt, success=False, error=str(exc))
+            raise
 
 
 class WorkflowTools:
-    def __init__(self, financial: FinancialTools, research: ResearchTools, data: DataProvider,
-                 transport: Any, settings: Settings, deadline: float,
-                 user_text: str, workflow_input: dict[str, Any] | None) -> None:
+    def __init__(
+        self,
+        financial: FinancialTools,
+        research: ResearchTools,
+        data: DataProvider,
+        transport: Any,
+        settings: Settings,
+        deadline: float,
+        user_text: str,
+        workflow_input: dict[str, Any] | None,
+        ledger: TaskBudgetLedger | None = None,
+    ) -> None:
         self.financial = financial
         self.research = research
         self.data = data
         self.settings = settings
         self.deadline = deadline
-        self.model = WorkflowModelAdapter(DeadlineTransport(transport, settings, deadline), settings=settings)
+        self.ledger = ledger
+        self.model = WorkflowModelAdapter(
+            DeadlineTransport(transport, settings, deadline, ledger=ledger),
+            settings=settings,
+        )
+        self.model.v2_accounting = ledger is not None
         self.user_text = user_text
         self.inputs = WorkflowInput.model_validate(workflow_input or {})
         # The recommendation of the last completed workflow: a form submission's answer, with no model turn.
         self.answer: str | None = None
-        self.capabilities: dict[str, ReadCapability] = {name: ReadCapability(
-            StockArguments if name == "run_stock_analysis" else ReadArguments,
-            f"Execute {name} through the full validated workflow using bound holdings, rules and benchmark. "
-            "Missing fields return form requirements. Theme/new-cash agreement requires explicit workflow form submission; "
-            "conversation and tool arguments cannot authorize it.",
-            "bound_revision_and_explicit_inputs", self.handler(name), effect="workflow")
-            for name in WORKFLOWS}
+        self.capabilities: dict[str, ReadCapability] = {
+            name: ReadCapability(
+                StockArguments if name == "run_stock_analysis" else ReadArguments,
+                f"Execute {name} through the full validated workflow using bound holdings, rules and benchmark. "
+                "Missing fields return form requirements. Theme/new-cash agreement requires explicit workflow form submission; "
+                "conversation and tool arguments cannot authorize it.",
+                "bound_revision_and_explicit_inputs",
+                self.handler(name),
+                effect="workflow",
+            )
+            for name in WORKFLOWS
+        }
 
     def handler(self, name: WorkflowName) -> Any:
         async def run(context: RunContext, parsed: ReadArguments) -> dict[str, Any]:
@@ -222,13 +281,20 @@ class WorkflowTools:
                                 message="The selected inputs conflict with workflow validation; revise the explicit form.")
         request.question = self.user_text
         research = self.research.provider if selected is not None else None
-        result = await analyze(request, self.model, self.data, secret=self.settings.api_key,
-            financial=cast(FinancialProvider, DeadlineProvider(self.financial.provider, self.settings, self.deadline)),
-            research=cast(ResearchProvider, DeadlineProvider(research, self.settings, self.deadline)) if research else None,
-            discovery=cast(DiscoveryProvider, DeadlineProvider(self.research.discovery, self.settings, self.deadline)))
+        result = await analyze(
+            request,
+            self.model,
+            self.data,
+            secret=self.settings.api_key,
+            financial=cast(FinancialProvider, DeadlineProvider(self.financial.provider, self.settings, self.deadline, ledger=self.ledger)),
+            research=cast(ResearchProvider, DeadlineProvider(research, self.settings, self.deadline, ledger=self.ledger)) if research else None,
+            discovery=cast(DiscoveryProvider, DeadlineProvider(self.research.discovery, self.settings, self.deadline, ledger=self.ledger)),
+        )
         current = context.db.get_run(context.run.thread_id, context.run.id)
         if current is None or current.status != "running":
             raise asyncio.CancelledError
+        if self.ledger is not None and self.ledger.remaining_seconds() <= 0:
+            raise BudgetExhaustedError("Run deadline of 600 seconds exceeded.", reason="deadline_exceeded")
         if asyncio.get_running_loop().time() >= self.deadline:
             raise TimeoutError
         self.answer = result.recommendation.reason
