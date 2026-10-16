@@ -137,6 +137,14 @@ class ConversationDeps:
     citations: list[dict[str, Any]] = field(default_factory=list)
     active_turn_call: ToolCall | None = None
 
+    @property
+    def character_limit(self) -> int:
+        """Capability-aware context budget limit for serialized tool returns."""
+        window = getattr(self.ledger, "context_window", 128_000)
+        headroom = getattr(self.ledger, "generation_headroom", 4_096)
+        available_chars = max(0, (window - headroom) * 4)
+        return max(16_000, min(120_000, int(available_chars * 0.25)))
+
 
 class TFSTransportModel(Model):
     """Bridges any TFS model transport to PydanticAI's Model protocol."""
