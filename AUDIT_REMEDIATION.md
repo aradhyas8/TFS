@@ -14,7 +14,7 @@ A finding is marked **Fixed** only after its acceptance tests pass. **Open** mea
 | P1-3 | Raw JSON and internal steps in the conversation | **Fixed** | 3 (backend), 4 (frontend) |
 | P1-4 | Portfolio-update statements trigger the wrong workflow | **Fixed** | 5 (E) |
 | P2-1 | Proposal contract blocks common updates | **Fixed** | 5 (E) |
-| P2-2 | Context waste and tool sprawl in chat | Open (result size reduced in Phase 1) | 6 (F) |
+| P2-2 | Context waste and tool sprawl in chat | **Fixed** | 1 (result size), 6 |
 | P2-3 | Two orchestration stacks | Deferred | 6 (F) |
 | P2-4 | Empty final answer completes the run | **Fixed** | 3 |
 | P3-a | (first P3 item) 409 "Finish or cancel current AI work" message does not explain the cause | Open | Unassigned (outside groups B and C) |
@@ -344,9 +344,95 @@ Totals: `test_chat_proposals.py` 41 passed; `test_context_retrieval.py`, `test_c
 - The holdings index is left out above 60 positions. Those portfolios still need one `get_holdings` turn.
 - The Playwright browser specs for proposals were not rerun. Confirmation and the proposal UI were not changed.
 
+## Phase 6: AI tool and context efficiency (P2-2)
+
+### P2-2: Context waste and tool sprawl in chat
+
+**Status:** Fixed. Phase 1 already bounded result sizes. Phase 6 fixes the remaining items: every tool schema sent on every turn, and tool steps using up the history window. Desk-form migration and the retirement of `/api/analyze` (P2-3, P3-b) are out of scope and stay open.
+
+**Inspection.**
+- `Orchestrator._execute_run` merged the capabilities of `READ_CAPABILITIES`, `FinancialTools`, `ResearchTools`, `WorkflowTools`, `WebSearchTools` and `ProposalTools` into one registry of 23 tools. It sent `read_tools(capabilities)`, the full registry, on every outer turn. The list never changed within a run.
+- Nested workflow calls (inside `run_*` tools) use their own pipeline tool sets of 9 to 11 tools. They were not changed.
+- `RunContext.history` called `Database.read_messages(limit=20)`. That returned the 20 most recent rows, tool steps included. Phase 3 already kept tool steps out of the model's dialogue. But the SQL window still counted them, so a run with 8 tool steps used 8 of the 20 slots. Earlier questions and answers, and the artifacts recorded on their steps, dropped out after two or three tool-heavy runs.
+- The system context (bound revision, settings, pending proposals, artifact references and, since Phase 5, the holdings index) is small. It was 2.3k characters in the simple-question fixture and is not changed.
+
+**Root cause.**
+- Tool exposure ignored run state. The two largest schemas, `calculate_company_cases` (4.3k characters) and `calculate_comparison` (4.4k), were sent on every turn of every run. That includes turns where they could not succeed: company cases need this run's primary retrieval first, and a simple question needs neither.
+- The history window was a row count, not a dialogue count.
+
+**Architecture decisions and rationale.**
+- **State-based tool advertising, not routing.** The registry stays complete and every capability stays callable. Only the list of schemas sent on a turn is filtered. `ResearchTools.unadvertised(user_text)` names the schemas this run cannot use yet:
+  - `calculate_company_cases` is left out until this run has retrieved primary research (`ResearchTools.read`). This is the handler's own prerequisite, so a model can never need the tool before it appears. It appears on the turn after the retrieval, and no extra turn is spent.
+  - `calculate_comparison` is left out unless the run has an explicit comparison selection, a completed company case, a completed opportunity screen, or comparison phrasing in the user's message ("compare", "versus", "vs", "instead", "switch", "swap", "replace", "alternative", "rather", "trade-off", "or keep", "or hold").
+  - The list is recomputed each turn, so a schema appears as soon as the run reaches its prerequisite.
+  - A call to a registered tool that was not advertised still runs. Its handler enforces its own rules as before, so a model that knows the name from history is never refused for that reason alone.
+- **What stays the same.** All 21 other tools are sent on every turn: reads, `review_portfolio`, financial data, quotes, `resolve_candidate`, `check_proposed_changes`, the low-level filing and issuer retrieval tools, `get_company_research`, `scan_opportunities`, the five `run_*` workflows, `web_search` and `prepare_portfolio_proposal`. No capability was removed. The proposal tool and its safety checks are unchanged, and no commit, confirm or cancel tool exists, as before.
+- **Not done, on purpose.**
+  - A keyword router or a "load more tools" meta-tool was not added. A meta-tool costs an extra turn, and the two-company research flow already uses all 8 turns.
+  - Workflow and proposal tools were not hidden from users without a saved portfolio. They return a "save a portfolio first" clarification that is still useful.
+  - Tool descriptions were not shortened.
+- **History counts dialogue.** `Database.read_messages` now applies `limit` to dialogue rows (user messages and answers). It returns every row from just after the first dialogue row outside the window, up to the cursor. Tool steps inside the window come along without using it up. The oldest answer in the window keeps its own tool steps, so their artifacts are still made known to the run by `RunContext.remember`, and follow-up `get_artifact` calls work. A tool step is identified as an assistant row whose `tool_outcomes_json` is not `[]`, the same rule as `is_tool_step`. Tool steps are still stored and shown in the UI. The character budget (`CHARACTER_LIMIT`) and the `get_messages` cursor are unchanged.
+
+**Changed files.**
+- `backend/analyst/research_tools.py`: `COMPARISON_REQUEST`, `ResearchTools.unadvertised`.
+- `backend/analyst/orchestrator.py`: the per-turn tool list leaves out unadvertised schemas.
+- `backend/analyst/persistence.py`: `read_messages` counts dialogue rows.
+- `backend/tests/test_research_tools.py`: the strict-schema test checks every advertised schema across turns, including both calculation tools. The eight-turn test checks when each schema appears. There is a new test for advertising and callability, and a parametrized test for comparison phrasing and explicit selection.
+- `backend/tests/test_context_retrieval.py`: the expected first-turn tool set no longer has the two calculation schemas. There is a new test for the dialogue window with 24 tool steps and an earlier artifact.
+
+### Phase 6 measurements
+
+Method: a temporary pytest plugin (not committed) wrapped `CapturingTransport.respond` and recorded every outer orchestration request in representative scripted tests. It counted tools, the characters of the JSON tool list, and the characters of the JSON message list. Nested workflow requests were excluded. Values are characters of the request payload, not provider tokens. Message characters were identical before and after in every case, so all savings come from the tool list. Turn counts were identical in every case.
+
+| Scripted flow | Turns (before / after) | Tools per turn before | Tools per turn after | Tool-list chars per run | Total input chars per run (tools + messages) |
+|---|---|---|---|---|---|
+| Simple question, first turn ("What is an ETF?", saved portfolio) | 1 / 1 | 23 | 21 | 21,698 → 13,039 (-40%) | 24,034 → 15,375 (-36%) |
+| Chat proposal (`set_quantity`) | 2 / 2 | 23 | 21 | 43,396 → 26,078 | 50,098 → 32,780 (-35%) |
+| Chat proposal (`change_quantity`) | 2 / 2 | 23 | 21 | 43,396 → 26,078 | 50,050 → 32,732 (-35%) |
+| `run_stock_analysis` workflow (outer turns) | 2 / 2 | 23 | 21 | 43,396 → 26,078 | 71,979 → 54,661 (-24%) |
+| `run_new_cash_allocation` | 2 / 2 | 23 | 21 | 43,396 → 26,078 | 68,584 → 51,266 (-25%) |
+| `run_portfolio_reunderwriting` | 2 / 2 | 23 | 21 | 43,396 → 26,078 | 58,696 → 41,378 (-30%) |
+| `run_theme_exploration` (question uses comparison phrasing) | 2 / 2 | 23 | 22 | 43,396 → 34,812 | 77,301 → 68,717 (-11%) |
+| Direct company cases (research, cases) | 4 / 4 | 23 | 21, 22, 22, 23 | 86,792 → 69,399 | 121,032 → 103,639 (-14%) |
+| Direct comparison (no comparison phrasing; called unadvertised) | 2 / 2 | 23 | 21 | 43,396 → 26,078 | 61,320 → 44,002 (-28%) |
+| Two-company screen, cases and comparison | 8 / 8 | 23 | 21, 21, 22, 23 … 23 | 173,584 → 151,974 | 323,380 → 301,770 (-7%) |
+| Same, with an explicit comparison selection | 8 / 8 | 23 | 22, 22, 22, 23 … 23 | 173,584 → 160,708 | 326,164 → 313,288 (-4%) |
+
+Notes on these figures:
+- Savings are largest for simple questions and single-workflow runs, which are the common case. Long research runs save less, because both calculation schemas are needed once the research is done.
+- Provider token counts and prompt caching were not measured, since that would need live calls. Where a provider caches the request prefix, the tool block may already be billed at a discount. A turn whose tool list grows also starts a new cached prefix once.
+- The history fix can make the model input larger, not smaller, in threads with many tool steps. Those threads now keep up to 20 dialogue messages instead of losing them. The 32,000-character history budget still caps the size.
+
+### Phase 6 tests and results
+
+No live or paid model calls. All flows use scripted transports.
+
+| Acceptance criterion | Test | Result |
+|---|---|---|
+| 1. Simple requests no longer get all 23 tools | `test_followup_gets_compact_bound_context_without_full_holdings` (exact 21-tool set); `test_calculation_schemas_wait_for_their_prerequisites_but_stay_callable` | Pass |
+| 2. Complex analysis and research keep the capabilities they need | `test_two_company_screen_cases_and_comparison_deliver_final_answer_in_eight_turns` (both variants: cases advertised after research, comparison advertised before it is called, still 8 turns); `test_comparison_schema_is_offered_for_comparison_requests`; the workflow tests in `test_workflow_tools.py` | Pass |
+| 3. Follow-up questions can retrieve earlier results | `test_tool_steps_do_not_use_the_dialogue_window_and_earlier_results_stay_retrievable`: `get_artifact` on an artifact from the oldest exchange succeeds. It fails without the fix ("Artifact reference is not known to this run"). | Pass |
+| 4. Tool steps do not use up the dialogue limit | Same test: 3 exchanges with 24 tool steps; all 6 earlier dialogue messages reach the model, and all 33 rows stay stored | Pass |
+| 5. Proposal workflows and safety checks unchanged | `test_chat_proposals.py` (41), including the no-commit-capability and injection tests | Pass |
+| 6. Model-provider compatibility preserved | `test_openai_boundary.py`, `test_chatgpt_plan.py`, `test_model_transport.py`; strict-schema test over every advertised schema | Pass |
+| 7. Representative workflows pass with scripted models | `test_workflow_tools.py`, `test_research_tools.py`, `test_allocation.py`, `test_theme.py`, `test_web_search.py` | Pass |
+| 8. Tool and context sizes improve without extra orchestration calls | Measurement table above: identical turn counts, smaller tool lists in every flow | Pass |
+
+Totals:
+- `test_research_tools.py` and `test_web_search.py`: 75 passed.
+- `test_context_retrieval.py`: 30 passed.
+- Regression run over `test_chat_proposals.py`, `test_conversation.py`, `test_workflow_tools.py`, `test_web_search.py`, `test_financial_tools.py`, `test_run_lifecycle.py`, `test_saved_run_replay.py`, `test_openai_boundary.py`, `test_chatgpt_plan.py`, `test_model_transport.py`, `test_allocation.py` and `test_theme.py`: 358 passed and 1 failed. The failure was `test_hosted_search_obeys_the_run_deadline`, a wall-clock deadline test. It passed on two reruns with the change, and it behaves the same without the change.
+- Ruff and mypy pass on the changed backend files.
+
+**Remaining risks.**
+- A comparison request typed without any of the listed phrases ("Should I move my cash into BROAD?") does not see `calculate_comparison` on its first turn. The model can still run the `run_*` workflows, or screen or research first, which makes the schema appear. A real model rarely calls a tool it was not shown. The phrase list is a heuristic and may need widening from real transcripts.
+- The tool list can grow within a run (at most twice), which starts a new provider prompt-cache prefix at that turn.
+- Workflow and research schemas (`run_*`, filing tools, `get_company_research`) are still sent on every turn, about 13k characters in total. Shrinking or merging them belongs with retiring `/api/analyze` and moving the desk forms to thread runs (P2-3).
+- Messages written by older code are classified by `tool_outcomes_json = '[]'`. Every writer in the codebase uses `json.dumps`, but a hand-edited database with other spacing would count tool steps as dialogue. That is harmless: it is the previous behavior.
+
 ## Recommended next phase
 
-Phase 6: fix group F (P2-2, P2-3, P3-b).
+Phase 7: fix group F remainder (P2-3, P3-b).
 - Send the desk forms (`/review`, `/stock`, `/new-cash`, `/theme`, `/rebalance`) through thread runs with `workflow_input`.
 - Retire `/api/analyze` once parity is reached.
-- Remove the low-level research and calculation tools from the default chat tool set, now that workflow summaries exist.
+- Then consider merging the three granular filing tools into `get_company_research` and shortening the `run_*` descriptions, with a fresh measurement.

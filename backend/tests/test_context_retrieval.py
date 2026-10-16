@@ -87,8 +87,7 @@ def test_followup_gets_compact_bound_context_without_full_holdings(tmp_path: Pat
     assert {tool["name"] for tool in request["tools"]} == {
         "get_holdings", "get_artifact", "get_proposal", "get_messages", "web_search",
         "review_portfolio", "get_financial_data", "resolve_candidate", "refresh_quotes", "check_proposed_changes",
-        "get_sec_filings", "get_sedar_filings", "get_issuer_material", "calculate_company_cases",
-        "calculate_comparison", "scan_opportunities", "get_company_research",
+        "get_sec_filings", "get_sedar_filings", "get_issuer_material", "scan_opportunities", "get_company_research",
         "run_exposure_review", "run_stock_analysis", "run_new_cash_allocation",
         "run_portfolio_reunderwriting", "run_theme_exploration",
         "prepare_portfolio_proposal",
@@ -548,3 +547,34 @@ def test_repeated_oversized_retrieval_stops_with_a_clear_error(tmp_path: Path) -
     assert len(model.requests) == 2
     first = json.loads(model.requests[1]["messages"][-1]["output"])
     assert first["error"] == "Result exceeds the context budget even when summarized."
+
+
+def test_tool_steps_do_not_use_the_dialogue_window_and_earlier_results_stay_retrievable(tmp_path: Path) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(sample_portfolio())
+    model = CapturingTransport([])
+    with client_for(store, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        artifact_id = client.post("/api/portfolio/artifacts", json={
+            "portfolio": sample_portfolio().model_dump(mode="json")}).json()["id"]
+        # Three earlier exchanges with eight tool steps each: 30 rows, 6 of them dialogue.
+        for i in range(3):
+            store.db.add_message(thread, "user", f"question-{i}")
+            for j in range(8):
+                store.db.add_message(thread, "assistant", "", tool_outcomes=[ToolOutcome(
+                    id=f"call-{i}-{j}", name="get_holdings", status="success",
+                    artifact_ids=[artifact_id] if (i, j) == (0, 0) else [])])
+            store.db.add_message(thread, "assistant", f"answer-{i}")
+        model.turns = iter([
+            ModelTurn(calls=[ToolCall("recall", "get_artifact", json.dumps({"artifact_id": artifact_id}))]),
+            ModelTurn(text="Here is the first result again."),
+        ])
+        run = submit(client, thread, "Show the first result again.")
+        assert run["status"] == "completed", run
+        step = client.get(f"/api/threads/{thread}").json()["messages"][-2]
+        assert step["tool_outcomes"][0]["status"] == "success"
+        # Tool steps stay stored for the UI.
+        assert len(client.get(f"/api/threads/{thread}").json()["messages"]) == 33
+    dialogue = model.requests[0]["messages"][2:]
+    assert [json.loads(m["content"])["text"] for m in dialogue] == [
+        "question-0", "answer-0", "question-1", "answer-1", "question-2", "answer-2", "Show the first result again."]

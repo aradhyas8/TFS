@@ -178,7 +178,9 @@ class Orchestrator:
                     turn = await self._call_transport(
                         messages=messages,
                         timeout=request_timeout,
-                        tools=read_tools(capabilities),
+                        # Every capability stays callable; only schemas this run cannot use yet are left out.
+                        tools=read_tools({name: capability for name, capability in capabilities.items()
+                                          if name not in research_tools.unadvertised(user_text)}),
                     )
                 except asyncio.CancelledError:
                     # Cancelled while waiting on transport

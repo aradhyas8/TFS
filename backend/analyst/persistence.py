@@ -1215,7 +1215,10 @@ class Database:
         self, thread_id: str, *, limit: int = 20,
         before_id: str | None = None, through_id: str,
     ) -> list[MessageRecord]:
-        """Read a bounded chronological slice, capped at the accepted user message."""
+        """Read a bounded chronological slice, capped at the accepted user message.
+
+        `limit` counts dialogue (user messages and answers). Persisted tool steps are internal records, so the ones
+        inside the window come along without using it up."""
         if not 1 <= limit <= 20:
             raise ValueError("Message limit must be between 1 and 20.")
         with self.connect() as conn:
@@ -1234,11 +1237,19 @@ class Database:
                 if before is None or before[0] > end[0]:
                     raise ValueError("Message cursor not found.")
                 cutoff = before[0]
-            rows = conn.execute(
-                "SELECT * FROM messages WHERE thread_id = ? AND rowid < ? "
-                "ORDER BY rowid DESC LIMIT ?;", (thread_id, cutoff, limit),
+            # A tool step is an assistant row with outcomes; outcomes are always written with json.dumps.
+            dialogue = conn.execute(
+                "SELECT rowid FROM messages WHERE thread_id = ? AND rowid < ? "
+                "AND NOT (role = 'assistant' AND tool_outcomes_json != '[]') "
+                "ORDER BY rowid DESC LIMIT ?;", (thread_id, cutoff, limit + 1),
             ).fetchall()
-            return [self._row_to_message(row) for row in reversed(rows)]
+            # Start after the first dialogue message outside the window, so the oldest answer keeps its tool steps.
+            start = dialogue[-1][0] + 1 if len(dialogue) > limit else 0
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE thread_id = ? AND rowid >= ? AND rowid < ? "
+                "ORDER BY rowid;", (thread_id, start, cutoff),
+            ).fetchall()
+            return [self._row_to_message(row) for row in rows]
 
     def submit_message(
         self,
