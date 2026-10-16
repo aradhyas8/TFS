@@ -126,10 +126,29 @@ test("a direct calculation shows its stored values, and a result that no longer 
 
   const card = thread(page).getByRole("article", { name: "Portfolio exposure and guardrails" });
   await expect(card).toContainText("Portfolio revision 1");
-  // The stored calculation, value for value: the cash balance the backend recorded, not a paraphrase.
+  // A readable summary of the stored calculation, value for value, with its dates and what is missing.
+  const summary = card.getByRole("region", { name: "Portfolio summary" });
+  await expect(summary).toContainText("Total value");
+  await expect(summary).toContainText("cash C$1,000");
+  await expect(summary).toContainText("Holdings last confirmed Sep 30, 2026");
+  await expect(summary.getByRole("table", { name: "Holdings" }).getByRole("row", { name: /ACME/ })).toContainText("TFSA");
+  // The run is dated today, so the September marks are out of date: the gap stays visible, never filled in.
+  await expect(summary.getByRole("alert").or(summary.getByRole("status")).first()).toContainText("Not every holding has a usable value");
+  await expect(card.getByRole("tree")).toHaveCount(0);
+  // The stored values themselves stay one click away.
+  await card.getByText("Show stored values").click();
   const values = card.getByRole("tree", { name: "Portfolio exposure and guardrails values" });
   await expect(values).toContainText('capability:"review_portfolio"');
   await expect(values).toContainText('holdings_as_of:"2026-09-30"');
+
+  // Reading the stored result back in a later run is a routine read: no second card, and the read is folded away.
+  await send(page, "Recall the exposure result");
+  await expect(thread(page)).toContainText("Plain answer to: Recall the exposure result");
+  await expect(thread(page).getByRole("article", { name: "Portfolio exposure and guardrails" })).toHaveCount(1);
+  const reread = thread(page).getByRole("listitem").filter({ hasText: "Read saved data" });
+  await expect(reread).toHaveCount(1);
+  await reread.getByText("1 step").click();
+  await expect(reread.getByRole("list", { name: "Analyst steps" })).toContainText("Checked artifact");
   // Stored values reach the browser without the private cost basis or any credential.
   const shown = (await page.getByRole("main").innerHTML()) + JSON.stringify(await page.evaluate(() => ({ ...localStorage })));
   for (const secret of ["average_cost", "sk-test-backend-only-never-browser", "continuation"]) {
@@ -430,7 +449,7 @@ for (const [name, width, height] of [["phone", 390, 844], ["tablet", 768, 1024],
     await send(page, "What is the latest news on Acme?");
     await expect(thread(page).getByRole("list", { name: "Sources for this answer" })).toBeVisible();
     await send(page, "Show my exposure numbers");
-    await expect(thread(page).getByRole("article", { name: "Portfolio exposure and guardrails" }).getByRole("tree")).toBeVisible();
+    await expect(thread(page).getByRole("article", { name: "Portfolio exposure and guardrails" }).getByRole("region", { name: "Portfolio summary" })).toBeVisible();
     await send(page, "Set my ACME shares to 12");
     const proposal = thread(page).getByRole("article", { name: "Proposed portfolio changes" });
     await expect(proposal).toContainText("Waiting for your review");
@@ -616,4 +635,27 @@ test("a stored stock result is saved under its own listing, and a re-run never s
   await page.getByRole("button", { name: "Re-run with today's portfolio" }).click();
   await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
   expect(analyses).toEqual([expect.objectContaining({ stock: { position_id: "tfsa-acme" } })]);
+});
+
+test("an answer's Markdown is drawn as headings, tables, lists, links and code, and its HTML never runs", async ({ page }) => {
+  await open(page);
+  await send(page, "Format a markdown answer");
+
+  const answer = thread(page).getByRole("listitem").filter({ hasText: "largest" });
+  await expect(answer.getByRole("heading", { name: "Summary" })).toBeVisible();
+  await expect(answer.locator("strong")).toHaveText("largest");
+  await expect(answer.locator("em")).toHaveText("ACME");
+  await expect(answer.getByRole("link", { name: "filing" })).toHaveAttribute("href", "https://example.com/acme");
+  await expect(answer.getByRole("link", { name: "filing" })).toHaveAttribute("rel", "noopener noreferrer");
+  const table = answer.getByRole("table");
+  await expect(table.getByRole("columnheader")).toHaveText(["Holding", "Weight"]);
+  await expect(table.getByRole("row", { name: /BROAD/ })).toContainText("34%");
+  await expect(answer.getByRole("list").getByRole("listitem")).toHaveText(["First point", "Second point"]);
+  await expect(answer.locator("pre code")).toHaveText('print("code")');
+  await expect(answer.locator("code").first()).toHaveText("review");
+  await expect(answer).not.toContainText("**");
+  // Model HTML is text, never markup: nothing it contains runs or renders as an element.
+  await expect(answer).toContainText("<script>");
+  expect(await answer.locator("script, img").count()).toBe(0);
+  expect(await page.evaluate(() => (window as unknown as { injected?: boolean }).injected)).toBeUndefined();
 });

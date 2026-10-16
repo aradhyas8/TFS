@@ -70,6 +70,25 @@ CONVERSATION_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
 ]
 
 
+MARKDOWN_ANSWER = """## Summary
+
+Your **largest** holding is *ACME*. Read the [filing](https://example.com/acme) and run `review`.
+
+| Holding | Weight |
+|---|---|
+| ACME | 26% |
+| BROAD | 34% |
+
+- First point
+- Second point
+
+```
+print("code")
+```
+
+<script>window.injected = true</script><img src=x onerror="window.injected = true">"""
+
+
 class ConversationTestTransport:
     """Scripted conversation turns for the desk thread journeys, keyed by the latest question."""
 
@@ -101,9 +120,16 @@ class ConversationTestTransport:
             explicit = json.loads(messages[1]["content"]).get("explicit_workflow")
             if explicit:
                 return ModelTurn(calls=[ToolCall("thread_workflow", explicit, "{}")])
+            if "Recall the exposure result" in question:
+                # A follow-up that reads an earlier stored calculation back instead of computing a new one.
+                earlier = next(ref["id"] for ref in json.loads(messages[1]["content"])["artifact_references"]
+                               if ref["kind"] == "calculation_result")
+                return ModelTurn(calls=[ToolCall("thread_read", "get_artifact", json.dumps({"artifact_id": earlier}))])
             for phrase, tool, arguments in CONVERSATION_TOOLS:
                 if phrase in question:
                     return ModelTurn(calls=[ToolCall("thread_tool", tool, json.dumps(arguments))])
+        if "Format a markdown answer" in question:
+            return ModelTurn(text=MARKDOWN_ANSWER)
         return ModelTurn(text=f"Plain answer to: {question}\n\nNo portfolio research was needed.")
 
 

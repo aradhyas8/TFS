@@ -160,7 +160,9 @@ test("a failed send and a failed answer stay distinct from the saved conversatio
 
   await send(page, "Fail this answer about diversification");
   const failed = thread(page).getByRole("status").filter({ hasText: "This answer did not finish" });
-  await expect(failed).toContainText("the fake model is unavailable");
+  // The safe message from the shared failure mapping; the raw exception text stays in the backend log.
+  await expect(failed).toContainText("An internal error stopped this request.");
+  await expect(failed).not.toContainText("the fake model is unavailable");
   await thread(page).getByRole("button", { name: "Ask again" }).click();
   await expect(failed).toHaveCount(2);
   // The composer takes the keyboard back once the answer has ended.

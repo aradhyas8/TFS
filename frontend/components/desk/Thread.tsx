@@ -12,15 +12,20 @@ import {
   type Analysis,
   type ArtifactEnvelope,
   type ArtifactReference,
+  type GuardrailReview,
   type MessageRecord,
   type PortfolioProposal,
+  type ProposalReview,
+  type Review,
   type RunRecord,
   type Snapshot,
   type ThemeInput,
   type ThreadDetail,
 } from "../../lib/contracts";
 import { linkOnly, placeCitations, webAddress, type Source } from "./citations";
-import { fullDate } from "./format";
+import { fullDate, money, pct } from "./format";
+import { blocks, inline } from "./Markdown";
+import { Row } from "./Memo";
 import { changeRows, isStale } from "./proposal";
 import type { PendingSend } from "./useConversation";
 import styles from "./Thread.module.css";
@@ -253,12 +258,144 @@ function Artifact({ id, actionable, shared }: { id: string; actionable: boolean;
       </Card>
     );
   }
-  // ponytail: research, evidence and calculation records show their stored values as a tree, never as prose.
-  // Give a kind its own view when its values need more than reading.
+  const calculation = payload as { capability?: string; result?: Review & ProposalReview } | null;
   return (
     <Card label={reference.label} icon={<FileText size={16} />} title={reference.label} meta={source}>
-      <JsonViewer data={payload} rootName="result" label={`${reference.label} values`} defaultExpandDepth={2} searchable={false} showPath={false} maxHeight={320} />
+      {calculation?.capability === "review_portfolio" && calculation.result?.positions ? (
+        <ReviewSummary review={calculation.result} />
+      ) : calculation?.capability === "check_proposed_changes" && calculation.result ? (
+        <ChangeSummary review={calculation.result} />
+      ) : (
+        <Fields value={payload} />
+      )}
+      {/* The stored values stay one click away, exactly as the backend recorded them. */}
+      <details className={styles.stored}>
+        <summary>Show stored values</summary>
+        <JsonViewer data={payload} rootName="result" label={`${reference.label} values`} defaultExpandDepth={2} searchable={false} showPath={false} maxHeight={320} />
+      </details>
     </Card>
+  );
+}
+
+const STATUS: Record<string, string> = { breached: "Breached", within_limit: "Within limit", unknown: "Unknown", unset: "No rule set", within_limits: "Within your rules", blocked: "Blocked by your rules" };
+const humanize = (key: string) => sentenceCase(key.replace(/_/g, " "));
+
+/** Every stored value is shown as the backend computed it; the desk only formats it. */
+function Notes({ items, title = "Notes" }: { items: string[]; title?: string }) {
+  return items.length ? (
+    <Row label={title} kind="needs">
+      <ul className="bullets">{items.map((item, index) => <li key={index}>{sentence(item)}</li>)}</ul>
+    </Row>
+  ) : null;
+}
+
+function Breaches({ guardrails }: { guardrails: GuardrailReview | null }) {
+  if (!guardrails) return null;
+  const breached = guardrails.companies.filter(row => row.status === "breached");
+  const unknown = guardrails.companies.filter(row => row.status === "unknown");
+  return (
+    <>
+      {(breached.length > 0 || guardrails.active.status === "breached") && (
+        <Alert tone="danger" title="A saved rule is breached">
+          <ul className={styles.mdList}>
+            {breached.map(row => <li key={row.company_id}>{`${row.company_name}: ${pct(row.current_weight)} against a ${pct(row.cap)} cap. ${sentence(row.explanation)}`}</li>)}
+            {guardrails.active.status === "breached" && <li>{`Active picks: ${pct(guardrails.active.weight)} against a ${pct(guardrails.active.budget)} budget.`}</li>}
+          </ul>
+        </Alert>
+      )}
+      {unknown.length > 0 && (
+        <Alert tone="warning" title="Some rules could not be checked">
+          {unknown.map(row => row.company_name).join(", ")}
+        </Alert>
+      )}
+      {!breached.length && !unknown.length && guardrails.active.status !== "breached" && (
+        <p className={styles.source}>{`Company caps: ${guardrails.companies.length ? "within your saved rules" : "no company rule applies"}. Active picks: ${STATUS[guardrails.active.status] ?? guardrails.active.status}.`}</p>
+      )}
+    </>
+  );
+}
+
+function ReviewSummary({ review }: { review: Review }) {
+  const cur = review.reporting_currency;
+  const accounts = new Map(review.accounts.map(account => [account.id, account.name]));
+  return (
+    <div className="memo" role="region" aria-label="Portfolio summary">
+      <Row label="Total value">
+        <b>{money(review.total_value, cur)}</b>
+        {!review.complete && <span>{` · known ${money(review.known_value, cur)}`}</span>}
+        <div className={styles.source}>{`Holdings ${money(review.holdings_value, cur)} · cash ${money(review.cash_value, cur)}`}</div>
+      </Row>
+      <Row label="Dates">
+        {`Valued as of ${fullDate(review.as_of)}`}
+        {review.holdings_as_of && <div className={styles.source}>{`Holdings last confirmed ${fullDate(review.holdings_as_of)}`}</div>}
+      </Row>
+      {!review.complete && (
+        <Alert tone="warning" title="Not every holding has a usable value">
+          The total is unknown. Known values are shown; the notes below say what is missing.
+        </Alert>
+      )}
+      {!review.source_inputs_usable && (
+        <p className={styles.source}>Not every price, identity or FX rate is verified, so these values are not used to size trades.</p>
+      )}
+      <Breaches guardrails={review.guardrails} />
+      <div className={styles.tableWrap}>
+        <table className={styles.mdTable} aria-label="Holdings">
+          <thead><tr><th scope="col">Holding</th><th scope="col">Account</th><th scope="col">Value</th><th scope="col">Weight</th><th scope="col">Issues</th></tr></thead>
+          <tbody>
+            {review.positions.map(row => (
+              <tr key={row.supplied.id}>
+                <td>{row.supplied.ticker || (row.supplied.kind === "cash" ? `Cash ${row.supplied.currency}` : row.supplied.id)}</td>
+                <td>{accounts.get(row.supplied.account_id) ?? row.supplied.account_id}</td>
+                <td>{money(row.value, cur)}</td>
+                <td>{pct(row.weight)}</td>
+                <td>{row.issues.map(sentence).join(" ")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {review.direct_companies.length > 0 && (
+        <Row label="Company exposure">
+          {review.direct_companies.map(row => `${row.company_name} ${pct(row.weight)}`).join(" · ")}
+        </Row>
+      )}
+      {(review.currency_exposure ?? []).length > 0 && (
+        <Row label="Currency exposure">
+          {(review.currency_exposure ?? []).map(row => `${row.currency} ${pct(row.weight)}`).join(" · ")}
+        </Row>
+      )}
+      <Notes items={review.qualifications} />
+    </div>
+  );
+}
+
+function ChangeSummary({ review }: { review: ProposalReview }) {
+  return (
+    <div className="memo" role="region" aria-label="Checked changes">
+      <Row label="Result">{STATUS[review.status] ?? humanize(review.status)}</Row>
+      <Row label="After the changes">{`Total ${review.post_total_value ?? "unknown"} · cash ${review.post_cash_value ?? "unknown"}`}</Row>
+      <Breaches guardrails={review.guardrails} />
+      <Notes items={review.qualifications} />
+    </div>
+  );
+}
+
+/** A readable view for a stored kind without its own view: plain values and notes, nested records counted. */
+function Fields({ value }: { value: unknown }) {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : { value };
+  const rows = Object.entries(record).filter(([, item]) => item !== null && item !== undefined && item !== "");
+  return (
+    <div className="memo" role="region" aria-label="Stored result">
+      {rows.map(([key, item]) =>
+        list(item).length && list(item).length === (item as unknown[]).length ? (
+          <Notes key={key} title={humanize(key)} items={list(item)} />
+        ) : (
+          <Row key={key} label={humanize(key)}>
+            {typeof item === "object" ? (Array.isArray(item) ? `${item.length} record${item.length === 1 ? "" : "s"}` : `${Object.keys(item as object).length} fields`) : String(item)}
+          </Row>
+        )
+      )}
+    </div>
   );
 }
 
@@ -472,9 +609,73 @@ function Proposal({ id, shared }: { id: string; shared: Shared }) {
   );
 }
 
+// Reads of data the run already has: kept in the activity details, never announced in the conversation.
+const ROUTINE = new Set(["get_holdings", "get_artifact", "get_proposal", "get_messages"]);
+
+function stepLine(outcome: MessageRecord["tool_outcomes"][number], paused: boolean): string {
+  const [done, failed] = STEP[outcome.name] ?? [`Checked ${toolLabel(outcome.name)}`, `Could not check ${toolLabel(outcome.name)}`];
+  if (paused) return `Paused ${toolLabel(outcome.name)}`;
+  if (outcome.status !== "error") return done;
+  // A step that stored a result is shown by that result below; its error is about reading it back.
+  if (outcome.artifact_ids.length) return outcome.name === "web_search" ? failed : done;
+  return `${failed}. ${sentence(outcome.error || "No result is available")}`;
+}
+
+/** One run's consecutive tool steps as a single status line. Results, requests for inputs and proposals stay in the
+ *  conversation; routine reads and the step-by-step list are in the expandable details. */
+function Activity({ steps, run, owns, actionable, shared }: { steps: MessageRecord[]; run: RunRecord | undefined; owns: (id: string, step: string) => boolean; actionable: boolean; shared: Shared }) {
+  const lines = steps.flatMap(step => step.tool_outcomes.map(outcome => ({ step, outcome, text: stepLine(outcome, !!step.clarification_required) })));
+  const failedLine = ({ outcome }: (typeof lines)[number]) => outcome.status === "error" && (!outcome.artifact_ids.length || outcome.name === "web_search");
+  const paused = steps.some(step => step.clarification_required);
+  const failed = lines.some(failedLine);
+  const shown = lines.filter(line => !ROUTINE.has(line.outcome.name) || failedLine(line));
+  // The holdings a read used are the run's bound revision, which the run records.
+  const revisions = [...steps.flatMap(step => step.artifact_ids),
+    ...(run?.bound_revision && !run.hypothetical_artifact_id && lines.some(line => line.outcome.name === "get_holdings") ? [`art-rev-${run.bound_revision}`] : [])];
+  return (
+    <li className={styles.stepGroup}>
+      <div className={styles.step}>
+        <span className={`${styles.stepIcon} ${paused ? styles.paused : failed ? styles.failed : ""}`} aria-hidden="true">
+          {paused ? <Pause size={10} /> : failed ? <AlertTriangle size={10} /> : <Check size={10} strokeWidth={3} />}
+        </span>
+        <span className="sr-only">Analyst activity: </span>
+        {shown.length ? shown.map(line => <span key={line.outcome.id} className={styles.stepText}>{line.text}</span>) : <span className={styles.stepText}>Read saved data</span>}
+        {lines.length > 1 || shown.length < lines.length ? (
+          <details className={styles.activity}>
+            <summary>{`${lines.length} step${lines.length === 1 ? "" : "s"}`}</summary>
+            <ol aria-label="Analyst steps">
+              {lines.map(line => <li key={line.outcome.id}>{line.text}</li>)}
+            </ol>
+          </details>
+        ) : null}
+        <Revisions ids={revisions} />
+      </div>
+      {steps.map(step => {
+        // A proposal's before and after portfolios are read through its review, not as separate results; a result
+        // is drawn once, under the step that created it, never again under a later read of it.
+        const results = step.proposal_ids.length ? [] : [...new Set(step.artifact_ids)].filter(id => !revisionOf(id) && owns(id, step.id));
+        return [
+          step.clarification_required && <Clarification key={`${step.id}-needed`} clarification={step.clarification_required} actionable={actionable} shared={shared} />,
+          /* Stored records load after the thread opens; they are read on demand, not announced as new messages. */
+          (results.length > 0 || step.proposal_ids.length > 0) && (
+            <div key={`${step.id}-results`} className={styles.stepGroup} aria-live="off">
+              {results.map(id => (
+                <Artifact key={id} id={id} actionable={actionable} shared={shared} />
+              ))}
+              {step.proposal_ids.map(id => (
+                <Proposal key={id} id={id} shared={shared} />
+              ))}
+            </div>
+          ),
+        ];
+      })}
+    </li>
+  );
+}
+
 /** `hypothetical`: the message belongs to a run that analyzed a stored draft, not the saved portfolio.
  *  `proposing`: that run also prepared portfolio changes, which always start from the saved portfolio. */
-function Message({ message, actionable, hypothetical, proposing, shared }: { message: MessageRecord; actionable: boolean; hypothetical: boolean; proposing: boolean; shared: Shared }) {
+function Message({ message, hypothetical, proposing }: { message: MessageRecord; hypothetical: boolean; proposing: boolean }) {
   if (message.role === "user")
     return (
       <li className={styles.user}>
@@ -487,63 +688,21 @@ function Message({ message, actionable, hypothetical, proposing, shared }: { mes
         )}
       </li>
     );
-  // A tool step is stored as a message; its raw record is never shown as prose.
-  if (message.tool_outcomes.length) {
-    const clarification = message.clarification_required;
-    // A proposal's before and after portfolios are read through its review, not as separate results.
-    const results = message.proposal_ids.length ? [] : [...new Set(message.artifact_ids)].filter(id => !revisionOf(id));
-    // Same rule as the step text below: a failed step that still stored its result is shown by that result.
-    const failedStep = message.tool_outcomes.some(outcome => outcome.status === "error" && (!outcome.artifact_ids.length || outcome.name === "web_search"));
-    return (
-      <li className={styles.stepGroup}>
-        <div className={styles.step}>
-          <span className={`${styles.stepIcon} ${clarification ? styles.paused : failedStep ? styles.failed : ""}`} aria-hidden="true">
-            {clarification ? <Pause size={10} /> : failedStep ? <AlertTriangle size={10} /> : <Check size={10} strokeWidth={3} />}
-          </span>
-          <span className="sr-only">Analyst step: </span>
-          {message.tool_outcomes.map(outcome => {
-            const [done, failed] = STEP[outcome.name] ?? [`Checked ${toolLabel(outcome.name)}`, `Could not check ${toolLabel(outcome.name)}`];
-            return (
-              <span key={outcome.id} className={styles.stepText}>
-                {clarification
-                  ? `Paused ${toolLabel(outcome.name)}`
-                  : outcome.status !== "error"
-                    ? done
-                    : // A step that stored a result is shown by that result below; its error is about reading it back.
-                      outcome.artifact_ids.length
-                      ? outcome.name === "web_search" ? failed : done
-                      : `${failed}. ${sentence(outcome.error || "No result is available")}`}
-              </span>
-            );
-          })}
-          <Revisions ids={message.artifact_ids} />
-        </div>
-        {clarification && <Clarification clarification={clarification} actionable={actionable} shared={shared} />}
-        {/* Stored records load after the thread opens; they are read on demand, not announced as new messages. */}
-        {(results.length > 0 || message.proposal_ids.length > 0) && (
-          <div className={styles.stepGroup} aria-live="off">
-            {results.map(id => (
-              <Artifact key={id} id={id} actionable={actionable} shared={shared} />
-            ))}
-            {message.proposal_ids.map(id => (
-              <Proposal key={id} id={id} shared={shared} />
-            ))}
-          </div>
-        )}
-      </li>
-    );
-  }
   const { paragraphs, sources } = placeCitations(message.text, message.citations);
   const anchor = (n: number) => `source-${message.id}-${n}`;
+  // Citation numbers sit at stored character offsets, so a cited answer keeps its paragraphs and gets inline
+  // formatting only; an uncited answer is read as Markdown.
+  const cited = paragraphs.some(pieces => pieces.some(piece => typeof piece !== "string"));
   return (
-    <li className={styles.assistant}>
+    <li className={`${styles.assistant} ${styles.markdown}`}>
       <span className="sr-only">Analyst answered: </span>
-      {/* ponytail: plain paragraphs only; add a Markdown renderer when answers need lists or tables. */}
-      {paragraphs.map((pieces, index) => (
-        <p key={index}>
-          {pieces.map((piece, at) => (typeof piece === "string" ? piece : piece.map(number => <Mark key={`${at}-${number}`} number={number} anchor={anchor(number)} />)))}
-        </p>
-      ))}
+      {cited
+        ? paragraphs.map((pieces, index) => (
+            <p key={index}>
+              {pieces.map((piece, at) => (typeof piece === "string" ? inline(piece) : piece.map(number => <Mark key={`${at}-${number}`} number={number} anchor={anchor(number)} />)))}
+            </p>
+          ))
+        : blocks(message.text)}
       {hypothetical && (
         <p className={styles.source}>
           {proposing
@@ -593,10 +752,23 @@ export default function Thread({ thread, pending, sendError, loadError, onRetryS
 
   if (!messages.length && !unsent) return <p className={styles.empty}>This conversation has no messages yet. Ask a question to start it.</p>;
 
+  // Consecutive tool steps of one run are drawn as one activity entry; every other message stands alone.
+  const items: MessageRecord[][] = [];
+  for (const message of messages) {
+    const previous = items.at(-1);
+    if (message.tool_outcomes.length && previous?.[0].tool_outcomes.length && previous[0].run_id === message.run_id) previous.push(message);
+    else items.push([message]);
+  }
+  // The step that first stored a result owns its card; an older thread's read of it adds no second card.
+  const owner = new Map<string, string>();
+  for (const message of messages) if (message.tool_outcomes.length) for (const id of message.artifact_ids) if (!owner.has(id)) owner.set(id, message.id);
+  const owns = (id: string, step: string) => owner.get(id) === step;
+
   return (
     <div role="log" aria-label="Conversation">
     <ol className={styles.thread}>
-      {messages.map(message => {
+      {items.map(group => {
+        const message = group.at(-1)!;
         const run = message.run_id && lastOfRun.get(message.run_id) === message.id ? runs.get(message.run_id) : undefined;
         const notice = run && RUN_NOTICE[run.status];
         const asked = run && run.id === latestRun?.id && !unsent ? question(run.id) : undefined;
@@ -605,7 +777,11 @@ export default function Thread({ thread, pending, sendError, loadError, onRetryS
         const earlierRevision = messageRun && message.role === "user" ? revisionChanged.get(messageRun.id) : undefined;
         return [
           // Only the latest run's request for inputs can still be answered; earlier ones are history.
-          <Message key={message.id} message={message} actionable={message.run_id === latestRun?.id && !unsent} hypothetical={!!messageRun?.hypothetical_artifact_id} proposing={proposingRuns.has(message.run_id)} shared={shared} />,
+          message.tool_outcomes.length ? (
+            <Activity key={group[0].id} steps={group} run={messageRun} owns={owns} actionable={message.run_id === latestRun?.id && !unsent} shared={shared} />
+          ) : (
+            <Message key={message.id} message={message} hypothetical={!!messageRun?.hypothetical_artifact_id} proposing={proposingRuns.has(message.run_id)} />
+          ),
           messageRun && earlierRevision !== undefined && (
             <li key={`${messageRun.id}-revision`} className={styles.notice} data-testid="revision-notice">
               <Alert tone="info" title="Your saved portfolio changed">

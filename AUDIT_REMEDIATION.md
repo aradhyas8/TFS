@@ -11,7 +11,7 @@ A finding is marked **Fixed** only after its acceptance tests pass. **Open** mea
 | P0-1 | Chat model cannot see workflow results or larger portfolio reviews | **Fixed** | 1 |
 | P1-1 | `max_output_tokens` failures in chat: no effort cap, no retry, raw diagnostics | **Fixed** | 2 |
 | P1-2 | Failures inside chat workflows are mislabeled or hidden | **Fixed** | 2 |
-| P1-3 | Raw JSON and internal steps in the conversation | **Partially fixed** (backend items 3 and 4; frontend items 1, 2 and 5 remain) | 3 (backend), 4 (frontend) |
+| P1-3 | Raw JSON and internal steps in the conversation | **Fixed** | 3 (backend), 4 (frontend) |
 | P1-4 | Portfolio-update statements trigger the wrong workflow | Open | 5 (E) |
 | P2-1 | Proposal contract blocks common updates | Open | 5 (E) |
 | P2-2 | Context waste and tool sprawl in chat | Open (result size reduced in Phase 1) | 6 (F) |
@@ -201,6 +201,79 @@ Static checks: Ruff on `backend/analyst` and `backend/tests` passed. mypy on `co
 - A reply that is only an object such as `{"name": "Acme"}` is treated as a tool call. A legitimate answer of that exact shape would get one retry.
 - The browser still renders every tool step and uses `JsonViewer` for some kinds (P1-3 frontend items). The Playwright check in `thread_artifacts.spec.ts` for duplicate cards was not run in this backend-only phase.
 
+## Phase 4: Chat UI and result presentation (fix group D, frontend)
+
+### P1-3: Raw JSON and internal steps in the conversation (frontend items 1, 2 and 5)
+
+**Status:** Fixed. Backend items 3 and 4 were fixed in Phase 3. Phase 4 fixes frontend items 1, 2 and 5, and all P1-3 acceptance checks pass.
+
+**Root cause.**
+- `Thread.tsx` rendered every artifact kind except analysis and web research through `JsonViewer` as an expanded tree.
+- Each persisted tool step was drawn as its own conversation entry, including routine reads.
+- Assistant answers were split into plain paragraphs (the "ponytail: plain paragraphs only" note), so `**`, `-` and `|` tables appeared literally.
+- Threads stored before Phase 3 still link read artifacts to `get_artifact` steps, which drew duplicate cards.
+
+**Technical decision and rationale.**
+- **Grouped activity.**
+  - Consecutive tool steps of one run render as one `Activity` entry: a status line with the meaningful steps ("Checked review portfolio", "Searched the web", "Prepared portfolio changes for your review").
+  - Failures always appear in that line with their safe message.
+  - Routine reads (`get_holdings`, `get_artifact`, `get_proposal`, `get_messages`) are left out of the line. When a run has only reads, the line says "Read saved data".
+  - The full step-by-step list is in a native `<details>` ("N steps"). It is keyboard accessible and needs no new component, since Arc Free has no disclosure component.
+  - Results, requests for inputs and proposals still appear in the conversation, under the step that created them.
+  - A holdings read shows the run's own bound revision ("Portfolio revision N"). Phase 3 stopped linking `art-rev-N` to read steps, and this keeps the reference visible.
+- **No duplicate cards.** A result card is drawn once, under the first step that stored it. A later read of the same artifact draws nothing, which also covers older threads stored before Phase 3.
+- **Readable results.** These reuse the desk's `Row` and `bullets` memo pattern, the existing format helpers (`money`, `pct`, `fullDate`) and Arc `Alert`. The frontend never computes or rounds a value beyond formatting the stored string.
+  - Portfolio review (`calculation_result` from `review_portfolio`):
+    - total value, with the known value when incomplete; holdings value and cash;
+    - valuation and holdings-confirmed dates;
+    - a warning when not every holding has a usable value;
+    - the sizing restriction when `source_inputs_usable` is false;
+    - guardrail breaches as a danger alert, and unknown checks as a warning;
+    - a holdings table (holding, account, value, weight, stored issues);
+    - company and currency exposure, and all stored notes.
+  - Checked changes (`check_proposed_changes`): the result status, the stored post-change totals, breaches and notes.
+  - Stock analysis and other workflows already use the existing analysis memo and are unchanged.
+  - Any other kind gets a readable fallback: scalar fields as rows, text lists as notes, nested records counted.
+  - The exact stored values are still available under "Show stored values" (the same `JsonViewer`, collapsed by default).
+- **Markdown.** `components/desk/Markdown.tsx` is a small renderer with no dependency. It supports headings, paragraphs, bold, italic, bullet and numbered lists, pipe tables, links and inline or fenced code.
+  - It produces only React elements, never `dangerouslySetInnerHTML`, so model HTML shows as text and cannot run.
+  - Links are drawn only for `http`/`https` addresses (the existing `webAddress` check) and open with `rel="noopener noreferrer"`.
+  - An answer with placed citation numbers keeps its existing paragraph split and gets inline formatting only, because citations are placed at stored character offsets.
+  - No Markdown dependency was added. None was installed, Arc has no renderer, and the needed subset is small.
+- **Unchanged.** Loading, cancellation, run notices and proposal confirmation are untouched. `Message` lost only its now-unused tool-step branch and props.
+
+**Changed files.**
+- `frontend/components/desk/Thread.tsx`: `Activity`, `stepLine`, result ownership, `ReviewSummary`, `ChangeSummary`, `Breaches`, `Notes`, `Fields`, Markdown in answers.
+- `frontend/components/desk/Markdown.tsx` (new).
+- `frontend/components/desk/Thread.module.css`: Markdown, table, activity and stored-values styles, using Arc tokens.
+- `frontend/tests/thread_artifacts.spec.ts`: the calculation test now checks the readable summary, a collapsed tree, and a read-back that adds no card. There is a new Markdown and HTML-safety test, and the responsive test now checks the summary region.
+- `frontend/tests/conversation_desk.spec.ts`: the failed-answer test expects the Phase 2 safe message instead of the raw exception text. That spec was not run in Phase 2.
+- `backend/tests/e2e_server.py` (browser fixture only): scripted "Recall the exposure result" (`get_artifact` on the earlier calculation) and a Markdown answer.
+
+**Verification.** No live model calls. Playwright ran against the scripted e2e backend from an isolated copy of the frontend, because a developer `next dev` server was already running in the working folder. `tsc --noEmit` passed.
+
+| Acceptance criterion | Test | Result |
+|---|---|---|
+| 1. A portfolio review shows a readable summary, not a JSON tree | `thread_artifacts.spec.ts` "a direct calculation shows its stored values…": summary region with total, cash, holdings table and dates; no tree until "Show stored values" is opened | Pass |
+| 2. Internal reads do not clutter the conversation | Same test (the read-back shows only "Read saved data"); `conversation_desk.spec.ts` holdings test | Pass |
+| 3. Activity is grouped and inspectable | Same test: "1 step" opens the "Analyst steps" list with "Checked artifact" | Pass |
+| 4. `get_artifact` adds no duplicate card | Same test: still exactly one "Portfolio exposure and guardrails" card after the read-back | Pass |
+| 5. Markdown renders, including tables | New "an answer's Markdown is drawn…" test: heading, bold, italic, link, table headers and rows, list, inline and block code; no literal `**`; `<script>` and `<img onerror>` show as text and never run | Pass |
+| 6. Warnings, dates and incomplete data stay visible | Calculation test: "Holdings last confirmed Sep 30, 2026" and the "Not every holding has a usable value" warning | Pass |
+| 7. Loading, cancellation and error states still work | `conversation_desk.spec.ts` (13 tests), `run_lifecycle.spec.ts`; the missing (404) and failed (503) artifact states in the calculation test | Pass |
+| 8. Proposal confirmation is unchanged | `thread_artifacts.spec.ts` proposal tests, `identity_and_proposals.spec.ts`, `proposal_review.spec.ts` | Pass |
+
+Totals: `thread_artifacts.spec.ts` and `conversation_desk.spec.ts` 32 passed; `identity_and_proposals.spec.ts`, `run_lifecycle.spec.ts` and `proposal_review.spec.ts` 29 passed.
+
+**Remaining risks.**
+- The Markdown renderer covers one list level and has no block quotes, images or nested tables. A cited answer gets inline formatting only, so its tables or lists show as text.
+- Checked-change totals (`post_total_value`, `post_cash_value`) are shown as stored strings, without a currency symbol, because the stored `ProposalReview` does not carry its currency.
+- A very large portfolio review draws every holding in the table. It scrolls inside the card, but it is long.
+- The other desk specs (screenshots, workflow desks) were not run. They do not render `Thread`'s tool steps or artifact fallback.
+
 ## Recommended next phase
 
-Phase 4: fix group D, frontend part. Collapse a run's steps into one line and hide pure reads. Replace the `JsonViewer` fallback for `calculation_result` with a readable summary. Add minimal Markdown rendering for answers. Verify with `thread_artifacts.spec.ts`. This completes P1-3.
+Phase 5: fix group E (P1-4, P2-1).
+- Route portfolio-update statements ("I bought 5 more MSFT", "I now hold 15 shares", "I sold…", "I deposited…") to chat before ticker matching in `route.ts`.
+- Add a server-side `change_quantity` delta action to `prepare_portfolio_proposal`, so Python does the arithmetic.
+- Add one sentence of proposal guidance to the chat system prompt, and a compact holdings index to the context.

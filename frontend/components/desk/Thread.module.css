@@ -89,3 +89,24 @@
   .cardBody { padding: 14px; }
   .cardBody > .save { margin: 4px -14px -14px; padding: 10px 14px; }
 }
+
+/* Assistant Markdown: drawn from React elements only. Tables and code scroll inside their own box on narrow screens. */
+.markdown p, .markdown .mdHeading, .markdown .mdList { margin: 0; }
+.mdHeading { font-size: 15px; line-height: 22px; font-weight: 600; color: var(--foreground); }
+.mdList { padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.markdown code, .cardBody code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.9em; background: var(--surface-raised); border-radius: 6px; padding: 1px 5px; }
+.code { margin: 0; padding: 12px 14px; border-radius: 12px; background: var(--surface); overflow-x: auto; font-size: 13px; line-height: 20px; }
+.code code { background: none; padding: 0; }
+.markdown a { color: var(--foreground); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 0.2em; overflow-wrap: anywhere; }
+.tableWrap { max-width: 100%; overflow-x: auto; }
+.mdTable { border-collapse: collapse; font-size: 13px; line-height: 18px; min-width: 100%; }
+.mdTable th, .mdTable td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border-subtle); vertical-align: top; }
+.mdTable th { font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+
+/* One run's activity: a status line with the step-by-step list folded away. */
+.activity { display: inline; }
+.activity summary { display: inline-flex; align-items: center; min-height: 24px; cursor: pointer; color: var(--text-secondary); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 0.2em; }
+.activity[open] { display: block; flex-basis: 100%; }
+.activity ol { margin: 6px 0 0; padding-left: 22px; display: flex; flex-direction: column; gap: 2px; }
+.stored summary { cursor: pointer; font-size: 12px; line-height: 16px; color: var(--text-muted); min-height: 24px; display: flex; align-items: center; }
+.stored[open] summary { margin-bottom: var(--space-2); }
