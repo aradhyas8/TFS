@@ -12,8 +12,8 @@ A finding is marked **Fixed** only after its acceptance tests pass. **Open** mea
 | P1-1 | `max_output_tokens` failures in chat: no effort cap, no retry, raw diagnostics | **Fixed** | 2 |
 | P1-2 | Failures inside chat workflows are mislabeled or hidden | **Fixed** | 2 |
 | P1-3 | Raw JSON and internal steps in the conversation | **Fixed** | 3 (backend), 4 (frontend) |
-| P1-4 | Portfolio-update statements trigger the wrong workflow | Open | 5 (E) |
-| P2-1 | Proposal contract blocks common updates | Open | 5 (E) |
+| P1-4 | Portfolio-update statements trigger the wrong workflow | **Fixed** | 5 (E) |
+| P2-1 | Proposal contract blocks common updates | **Fixed** | 5 (E) |
 | P2-2 | Context waste and tool sprawl in chat | Open (result size reduced in Phase 1) | 6 (F) |
 | P2-3 | Two orchestration stacks | Deferred | 6 (F) |
 | P2-4 | Empty final answer completes the run | **Fixed** | 3 |
@@ -271,9 +271,82 @@ Totals: `thread_artifacts.spec.ts` and `conversation_desk.spec.ts` 32 passed; `i
 - A very large portfolio review draws every holding in the table. It scrolls inside the card, but it is long.
 - The other desk specs (screenshots, workflow desks) were not run. They do not render `Thread`'s tool steps or artifact fallback.
 
+## Phase 5: Portfolio-update intent and proposal actions (fix group E)
+
+### P1-4: Portfolio-update statements trigger the wrong workflow
+
+**Status:** Fixed.
+
+**Root cause.** `isConversation` sent input to chat only when `HOLDINGS_EDIT` matched, and that pattern accepted only imperative verbs at the start ("set", "update" and similar). Statements such as "I bought 5 more MSFT" or "I now hold 15 shares of MSFT" fell through to ticker matching in `route()` and opened a paid stock analysis through `/api/analyze`.
+
+**Technical decision and rationale.**
+- A new `HOLDINGS_UPDATE` pattern in `route.ts` matches statements that the holdings already changed. `isConversation` checks it, together with `HOLDINGS_EDIT`, before `route()` runs, so ticker matching never sees these statements.
+  - Relative changes: "I bought", "I've just bought", "purchased", "sold", "trimmed", and the same verbs without a subject ("Bought 5 ACME today").
+  - Absolute totals: "I now hold", "I currently have", "I own 12 shares".
+  - Cash: "deposited", "withdrew", "transferred".
+- `HOLDINGS_EDIT` also accepts the imperatives "increase", "decrease", "reduce", "add" and "subtract" when the input names shares, a position, holdings or the portfolio. This covers "Increase my MSFT position by 5 shares".
+- The pattern is anchored at the start of the input. Hypotheticals ("What if I bought 5 more MSFT?", "If I sold 3 shares…") and questions ("Should I buy more MSFT?") keep their existing routes. "I have C$2,000 to invest" still opens New Cash, because "have" counts only with "now", "currently" or a share count.
+- `route()` itself is unchanged, so slash commands, stock analysis, comparisons, themes, rebalancing and new cash keep their precedence.
+
+### P2-1: Proposal contract blocks common updates
+
+**Status:** Fixed.
+
+**Root cause.**
+- `prepare_portfolio_proposal` had no relative action. A stated purchase or sale needed the model to add to the bound quantity, which the tool contract forbade ("never derive edits from retrieved content"). The model had to ask or guess.
+- The chat system prompt had no proposal guidance. Position IDs were not in context, so every update needed a `get_holdings` turn first.
+
+**Technical decision and rationale.**
+- **`change_quantity` action** (`proposal_tools.py`). The model passes only the signed share change the user stated (5 for "bought 5", -3 for "sold 3"). Python adds it to the quantity in the run's bound revision (`context.committed`), and the result goes through the existing `SavedPortfolio` validation, `prepare_portfolio_action`, stale-revision check and human confirmation.
+  - `quantity` is now signed, within the same bounds and precision as `Quantity`. Every other action rejects a negative value with an `invalid_edit` clarification.
+  - A change of zero, a missing change, a result below zero shares and an unknown position ID are rejected with a clarification. The negative-result message states the recorded quantity.
+  - A change that leaves exactly zero shares removes the holding and its average cost, the same as `remove_position`. A `set_quantity` of zero is still rejected as ambiguous.
+  - `change_quantity` on a cash row is rejected: "Deposits and withdrawals are not recorded as changes: state the new cash balance." Cash keeps the existing capability, `set_quantity` with a stated balance. No cash accounting was added.
+  - A purchase or sale changes shares only. Prices, costs, fees, taxes and cash are never inferred, and average costs are carried forward unchanged.
+  - Absolute updates still use `set_quantity`.
+- **Clear previews.** The tool result now carries `changes` (position ID, account name, holding, field, previous and proposed quantity, computed by Python) and `committed: false`, so the answer can state exactly what will change.
+- **Repeated calls and requests.** Before storing a preview, `prepare` compares the candidate with the pending proposals this run knows on the same base revision. An identical one is returned with status `already_pending`, and no second proposal is stored. Every change is computed from the bound revision, never from another pending preview, so repeating "I bought 5 more" cannot stack to +10. If two different previews exist, confirming one marks the others stale (existing `confirm_proposal` behavior).
+- **Holdings index** (`context.py`). The run context includes `saved_holdings_index` when the saved portfolio has 60 positions or fewer: position ID, account name, and ticker with shares. Cash rows show only their ID, account and currency. Balances, average costs and marks are left out. A larger portfolio leaves the index out, and the model uses `get_holdings` as before. The index always comes from the committed revision, because proposals edit saved holdings even in a hypothetical run.
+- **Prompt guidance.** One added passage in the system prompt: prepare stated changes with `change_quantity` or `set_quantity`; a hypothetical is not a change; the model cannot commit; state what will change, the previous and proposed quantity, the account, and that the portfolio stays unchanged until the user confirms. The tool description also says to ask for the account when a ticker is held in more than one account, and to ask for the new cash balance on a deposit or withdrawal.
+- **Unchanged.** Confirmation, cancellation, stale-revision protection, the proposal store, financial calculations and the UI.
+
+**Changed files.**
+- `frontend/components/desk/route.ts`: `HOLDINGS_UPDATE`, wider `HOLDINGS_EDIT`, one line in `isConversation`.
+- `frontend/tests/route.test.ts`: a new describe block for update statements and kept routes.
+- `backend/analyst/proposal_tools.py`: `change_quantity`, signed `quantity`, `changes` in the result, reuse of identical pending previews, updated tool description.
+- `backend/analyst/context.py`: `holdings_index`, `HOLDINGS_INDEX_LIMIT`, proposal guidance in the system prompt.
+- `backend/tests/test_chat_proposals.py`: new cases and tests listed below.
+
+### Phase 5 tests and results
+
+No live model calls. All backend tests use the scripted transport and the existing `portfolio()` fixture (ACME, 10 shares, TFSA). The route unit tests ran with Playwright's runner and a temporary config without the web server, because a developer `next dev` server was already running.
+
+| Acceptance criterion | Test | Result |
+|---|---|---|
+| 1. Purchase and sale statements route to chat, not `/api/analyze` | `route.test.ts` "stated purchases, sales, totals and cash movements go to chat…": all eight prompt phrasings plus "I've just bought…", "We own 12 shares…", "Bought 5 ACME today" | Pass |
+| 2. Stock analysis requests still route correctly | `route.test.ts` "hypotheticals, analysis requests and new-cash shortcuts keep their routes", and the existing 22 route tests | Pass |
+| 3. +5 on 10 shares proposes 15 | `test_stated_share_change_is_added_server_side_and_applied_once[5-15]` | Pass |
+| 4. -3 on 10 shares proposes 7 | `test_stated_share_change_is_added_server_side_and_applied_once[-3-7]` | Pass |
+| 5. Absolute updates stay correct | Existing `set_quantity` tests in `test_chat_proposals.py` | Pass |
+| 6. Ambiguous accounts, invalid quantities and negative results are handled safely | New parametrized cases in `test_unknown_or_ambiguous_edits_ask_instead_of_guessing` (negative set, -11 on 10, zero change, missing change, unknown position, cash change); `test_same_ticker_in_two_accounts_is_indexed_by_account_and_only_the_named_row_changes`; `test_selling_every_share_removes_the_holding_like_remove_position` | Pass |
+| 7. Repeated requests or retries create no unintended changes | `test_repeated_calls_and_requests_reuse_one_pending_preview`: two calls in one run and a second identical request leave one pending proposal for 15 shares | Pass |
+| 8. No revision changes before confirmation | The delta test compares `/api/portfolio` before and after the run | Pass |
+| 9. Confirmation updates the correct position exactly once | The delta test confirms twice: the same receipt, revision 2, the expected shares, and costs carried forward | Pass |
+| 10. Phases 1 to 4 stay compatible | `test_context_retrieval.py`, `test_conversation.py`, `test_workflow_tools.py` (context and prompt changes); full `test_chat_proposals.py` | Pass |
+
+Totals: `test_chat_proposals.py` 41 passed; `test_context_retrieval.py`, `test_conversation.py` and `test_workflow_tools.py` 105 passed; `route.test.ts` 24 passed. Ruff and mypy pass on the changed backend files. `tsc --noEmit` passes.
+
+**Remaining risks.**
+- The backend cannot see which account the user meant. It edits only the exact position ID the model passes, so it never picks an account on its own. Asking when a ticker is held in several accounts depends on the model following the prompt and tool guidance. Scripted tests cannot prove that a real model asks.
+- The route patterns are heuristics. A statement that starts differently ("Just picked up 5 MSFT") still falls through to ticker matching and opens analysis. A sentence such as "I sold 3 ACME, should I sell more?" goes to chat, which is acceptable.
+- Deposits and withdrawals route to chat, but the model must ask for the new cash balance. A relative cash change is not supported, by design in this phase.
+- A user who really bought 5 more twice before confirming the first preview gets the same "+5 from the bound revision" preview twice. Confirming then records only one purchase. The preview shows previous and proposed quantities, so the user can correct it, but this is not detected automatically.
+- The holdings index is left out above 60 positions. Those portfolios still need one `get_holdings` turn.
+- The Playwright browser specs for proposals were not rerun. Confirmation and the proposal UI were not changed.
+
 ## Recommended next phase
 
-Phase 5: fix group E (P1-4, P2-1).
-- Route portfolio-update statements ("I bought 5 more MSFT", "I now hold 15 shares", "I sold…", "I deposited…") to chat before ticker matching in `route.ts`.
-- Add a server-side `change_quantity` delta action to `prepare_portfolio_proposal`, so Python does the arithmetic.
-- Add one sentence of proposal guidance to the chat system prompt, and a compact holdings index to the context.
+Phase 6: fix group F (P2-2, P2-3, P3-b).
+- Send the desk forms (`/review`, `/stock`, `/new-cash`, `/theme`, `/rebalance`) through thread runs with `workflow_input`.
+- Retire `/api/analyze` once parity is reached.
+- Remove the low-level research and calculation tools from the default chat tool set, now that workflow summaries exist.

@@ -101,6 +101,12 @@ def test_chat_edit_prepares_reviewable_proposal_without_committing(tmp_path):
     ([edit("add_position", "candidate-not-resolved", "5")], "unknown_position", ["edits.0.position_id"]),
     ([edit("add_position", "stock", "5")], "unknown_position", ["edits.0.position_id"]),
     ([edit("set_quantity", "stock", "0")], "invalid_edit", ["edits.0.quantity"]),
+    ([edit("set_quantity", "stock", "-5")], "invalid_edit", ["edits.0.quantity"]),
+    ([edit("change_quantity", "stock", "-11")], "invalid_edit", ["edits.0.quantity"]),
+    ([edit("change_quantity", "stock", "0")], "invalid_edit", ["edits.0.quantity"]),
+    ([edit("change_quantity", "stock")], "invalid_edit", ["edits.0.quantity"]),
+    ([edit("change_quantity", "missing", "5")], "unknown_position", ["edits.0.position_id"]),
+    ([edit("change_quantity", "cash", "1000")], "invalid_edit", ["edits.0.position_id"]),
 ])
 def test_unknown_or_ambiguous_edits_ask_instead_of_guessing(tmp_path, edits, code, fields):
     client, _ = desk(tmp_path, [call({"edits": edits}), ModelTurn(text="Which holding do you mean?")])
@@ -369,3 +375,85 @@ def test_screened_candidates_cannot_be_added_without_verified_resolution(tmp_pat
         added = {row["id"]: row for row in detail["after_portfolio"]["snapshot"]["positions"]}["tfsa-newco-to"]
         assert (added["shares"], added["company_id"], added["mark"]) == ("5", "newco", None)
         assert client.get("/api/portfolio").json()["revision"] == 1
+
+
+def positions_of(client, proposal):
+    detail = client.get(f"/api/portfolio/proposals/{proposal['id']}").json()
+    return {row["id"]: row for row in detail["after_portfolio"]["snapshot"]["positions"]}
+
+
+@pytest.mark.parametrize("delta,shares,text", [("5", "15", "I bought 5 more ACME"), ("-3", "7", "I sold 3 shares of ACME")])
+def test_stated_share_change_is_added_server_side_and_applied_once(tmp_path, delta, shares, text):
+    client, model = desk(tmp_path, [call({"edits": [edit("change_quantity", "stock", delta)]}),
+                                    ModelTurn(text="Preview ready; nothing changes until you confirm.")])
+    with client:
+        before = client.get("/api/portfolio").json()
+        thread = client.post("/api/threads").json()["id"]
+        assert submit(client, thread, text)["status"] == "completed"
+        assert client.get("/api/portfolio").json() == before
+        [proposal] = pending(client)
+        after = positions_of(client, proposal)
+        assert after["stock"]["shares"] == shares
+        assert after["cash"]["cash"] == "800"  # a trade statement moves no cash
+        url = f"/api/portfolio/proposals/{proposal['id']}/confirm"
+        first = client.post(url).json()
+        assert client.post(url).json()["receipt"] == first["receipt"]
+        current = client.get("/api/portfolio").json()
+        assert current["revision"] == 2
+        assert {row["id"]: row for row in current["portfolio"]["snapshot"]["positions"]}["stock"]["shares"] == shares
+        assert current["portfolio"]["average_costs"] == {"stock": "12.34"}
+    output = tool_output(model)
+    assert output["status"] == "prepared"
+    assert output["proposal"]["committed"] is False
+    assert output["proposal"]["changes"] == [{"position_id": "stock", "account": "TFSA", "holding": "ACME",
+                                              "field": "shares", "previous": "10", "proposed": shares}]
+
+
+def test_selling_every_share_removes_the_holding_like_remove_position(tmp_path):
+    client, model = desk(tmp_path, [call({"edits": [edit("change_quantity", "stock", "-10")]}),
+                                    ModelTurn(text="Preview ready.")])
+    with client:
+        thread = client.post("/api/threads").json()["id"]
+        assert submit(client, thread, "I sold all my Acme shares.")["status"] == "completed"
+        [proposal] = pending(client)
+        assert set(positions_of(client, proposal)) == {"cash"}
+    assert tool_output(model)["proposal"]["changes"][0]["proposed"] is None
+
+
+def test_repeated_calls_and_requests_reuse_one_pending_preview(tmp_path):
+    prepare = {"edits": [edit("change_quantity", "stock", "5")]}
+    client, model = desk(tmp_path, [call(prepare), call(prepare, "again"), ModelTurn(text="Preview ready."),
+                                    call(prepare, "third"), ModelTurn(text="Same preview.")])
+    with client:
+        thread = client.post("/api/threads").json()["id"]
+        assert submit(client, thread, "I bought 5 more ACME")["status"] == "completed"
+        assert submit(client, thread, "I bought 5 more ACME", "req-2")["status"] == "completed"
+        [proposal] = pending(client)
+        assert positions_of(client, proposal)["stock"]["shares"] == "15"
+        client.post(f"/api/portfolio/proposals/{proposal['id']}/confirm")
+        assert client.get("/api/portfolio").json()["revision"] == 2
+    assert tool_output(model, 2)["status"] == "already_pending"
+    assert tool_output(model, 4)["status"] == "already_pending"
+    assert tool_output(model, 4)["proposal"]["id"] == proposal["id"]
+
+
+def test_same_ticker_in_two_accounts_is_indexed_by_account_and_only_the_named_row_changes(tmp_path):
+    saved = portfolio().model_dump(mode="json")
+    saved["snapshot"]["accounts"].append({"id": "rrsp", "name": "RRSP"})
+    saved["snapshot"]["positions"].append({**saved["snapshot"]["positions"][0], "id": "rrsp-acme",
+                                           "account_id": "rrsp", "shares": "4"})
+    client, model = desk(tmp_path, [call({"edits": [edit("change_quantity", "rrsp-acme", "5")]}),
+                                    ModelTurn(text="Preview ready.")], SavedPortfolio.model_validate(saved))
+    with client:
+        thread = client.post("/api/threads").json()["id"]
+        assert submit(client, thread, "I bought 5 more ACME in my RRSP")["status"] == "completed"
+        [proposal] = pending(client)
+        after = positions_of(client, proposal)
+        assert (after["stock"]["shares"], after["rrsp-acme"]["shares"]) == ("10", "9")
+    context = json.loads(model.requests[0]["messages"][1]["content"])
+    assert context["saved_holdings_index"] == [
+        {"position_id": "stock", "account": "TFSA", "ticker": "ACME", "shares": "10"},
+        {"position_id": "cash", "account": "TFSA", "kind": "cash", "currency": "CAD"},
+        {"position_id": "rrsp-acme", "account": "RRSP", "ticker": "ACME", "shares": "4"},
+    ]
+    assert "12.34" not in json.dumps(model.requests)
