@@ -145,6 +145,28 @@ class ConversationDeps:
         available_chars = max(0, (window - headroom) * 4)
         return max(16_000, min(120_000, int(available_chars * 0.25)))
 
+    def save_execution_state(self) -> None:
+        """Persist private framework execution state and usage to SQLite."""
+        usage = self.ledger.total_usage()
+        usage_dict = {
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+            "cost": usage.cost,
+            "attempts": self.ledger.attempts,
+            "compaction_count": getattr(self.ledger, "compaction_count", 0),
+        }
+        self.db.store_execution_state(
+            run_id=self.run_record.id,
+            engine="pydantic_ai",
+            engine_version="1.0",
+            usage=usage_dict,
+            framework_state={
+                "seen_calls": list(self.seen_calls),
+                "citations_count": len(self.citations),
+            },
+        )
+
 
 class TFSTransportModel(Model):
     """Bridges any TFS model transport to PydanticAI's Model protocol."""
@@ -180,7 +202,7 @@ class TFSTransportModel(Model):
     ) -> ModelResponse:
         deps = self.deps
         if deps.is_stopped():
-            return ModelResponse(parts=[TextPart("")])
+            raise asyncio.CancelledError()
 
         # Check deadline before model call
         remaining_deadline = deps.ledger.remaining_seconds()
@@ -282,23 +304,28 @@ class TFSTransportModel(Model):
                     await asyncio.wait_for(self.transport.respond(tfs_messages, **kwargs), timeout=remaining),
                 )
                 deps.ledger.record_attempt_result(retry_attempt, success=True)
+                deps.save_execution_state()
 
             deps.ledger.record_attempt_result(attempt, success=True)
+            deps.save_execution_state()
         except asyncio.CancelledError:
             deps.ledger.record_attempt_result(attempt, success=False, error="Cancelled")
+            deps.save_execution_state()
             raise
         except TimeoutError:
             deps.ledger.record_attempt_result(attempt, success=False, error="Timeout")
+            deps.save_execution_state()
             deps.record_terminal_failure(f"Model request timed out after {request_timeout:.1f}s.")
             raise
         except Exception as exc:
             deps.ledger.record_attempt_result(attempt, success=False, error=str(exc))
+            deps.save_execution_state()
             failure = describe_failure(exc)
             deps.record_terminal_failure(failure.message)
             raise
 
         if deps.is_stopped():
-            return ModelResponse(parts=[TextPart("")])
+            raise asyncio.CancelledError()
 
         # Validate turn
         if turn.calls:
@@ -384,6 +411,9 @@ def _build_tool_function(cap_name: str, cap: ReadCapability) -> Callable[..., An
         run_id = deps.run_record.id
         thread_id = deps.thread_id
 
+        if deps.is_stopped():
+            raise asyncio.CancelledError()
+
         # Validate arguments against Pydantic schema
         try:
             parsed = arg_cls.model_validate(kwargs)
@@ -445,7 +475,7 @@ def _build_tool_function(cap_name: str, cap: ReadCapability) -> Callable[..., An
                 deps.failed_workflows.pop(cap_name, None)
 
         if deps.is_stopped():
-            return result
+            raise asyncio.CancelledError()
 
         artifact_ids = list(result.get("artifact_ids", []))
         proposal_ids = list(result.get("proposal_ids", []))
@@ -520,6 +550,7 @@ def _build_tool_function(cap_name: str, cap: ReadCapability) -> Callable[..., An
             additional_message_ids=[outcome_message.id],
             additional_artifact_ids=artifact_ids,
         )
+        deps.save_execution_state()
 
         return result
 
@@ -732,11 +763,15 @@ async def execute_pydantic_ai_run(
             status="completed",
             additional_message_ids=[asst_msg.id],
         )
+        deps.save_execution_state()
 
     except asyncio.CancelledError:
         logger.info("Supervised PydanticAI run %s was cancelled.", run_id)
+        deps.save_execution_state()
         # cancel_run already updated status to 'cancelled' in db
     except UnexpectedModelBehavior as exc:
+        if deps.is_stopped():
+            return
         msg = str(exc)
         if "output retries" in msg or "validation error" in msg:
             deps.record_terminal_failure(
@@ -745,8 +780,12 @@ async def execute_pydantic_ai_run(
         else:
             deps.record_terminal_failure(describe_failure(exc).message)
     except BudgetExhaustedError as exc:
+        if deps.is_stopped():
+            return
         deps.record_terminal_failure(str(exc))
     except Exception as exc:
+        if deps.is_stopped():
+            return
         current_run = deps.db.get_run(thread_id, run_id)
         if current_run is None or current_run.status != "failed":
             logger.error("Error in PydanticAI run %s: %s", run_id, exc, exc_info=True)
