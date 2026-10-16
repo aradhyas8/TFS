@@ -383,82 +383,81 @@ def test_fastapi_thread_and_run_endpoints(tmp_path: Path) -> None:
         portfolio_store=portfolio_store,
         orchestrator=orch,
     )
-    client = TestClient(app)
+    with TestClient(app) as client:
+        # 1. POST /api/threads creates a thread
+        resp = client.post("/api/threads")
+        assert resp.status_code == 201
+        thread_data = resp.json()
+        assert "id" in thread_data
+        thread_id = thread_data["id"]
 
-    # 1. POST /api/threads creates a thread
-    resp = client.post("/api/threads")
-    assert resp.status_code == 201
-    thread_data = resp.json()
-    assert "id" in thread_data
-    thread_id = thread_data["id"]
+        # 2. GET /api/threads lists thread summaries
+        resp = client.get("/api/threads")
+        assert resp.status_code == 200
+        threads_list = resp.json()
+        assert any(t["id"] == thread_id for t in threads_list)
 
-    # 2. GET /api/threads lists thread summaries
-    resp = client.get("/api/threads")
-    assert resp.status_code == 200
-    threads_list = resp.json()
-    assert any(t["id"] == thread_id for t in threads_list)
+        # 3. POST /api/threads/{id}/messages submits message and returns 202
+        msg_payload = {
+            "client_request_id": "req-fastapi-1",
+            "text": "Explain compound interest",
+        }
+        resp = client.post(f"/api/threads/{thread_id}/messages", json=msg_payload)
+        assert resp.status_code == 202
+        run_data = resp.json()
+        assert run_data["client_request_id"] == "req-fastapi-1"
+        assert run_data["thread_id"] == thread_id
+        assert run_data["status"] == "running"
+        # Revision was bound once at acceptance!
+        assert run_data["bound_revision"] == 1
+        # The run records the model that answers it.
+        assert (run_data["ai_provider"], run_data["ai_model"]) == ("openai", "gpt-4o")
+        run_id = run_data["id"]
 
-    # 3. POST /api/threads/{id}/messages submits message and returns 202
-    msg_payload = {
-        "client_request_id": "req-fastapi-1",
-        "text": "Explain compound interest",
-    }
-    resp = client.post(f"/api/threads/{thread_id}/messages", json=msg_payload)
-    assert resp.status_code == 202
-    run_data = resp.json()
-    assert run_data["client_request_id"] == "req-fastapi-1"
-    assert run_data["thread_id"] == thread_id
-    assert run_data["status"] == "running"
-    # Revision was bound once at acceptance!
-    assert run_data["bound_revision"] == 1
-    # The run records the model that answers it.
-    assert (run_data["ai_provider"], run_data["ai_model"]) == ("openai", "gpt-4o")
-    run_id = run_data["id"]
+        # 4. Duplicate submission returns existing run (202)
+        resp_dup = client.post(f"/api/threads/{thread_id}/messages", json=msg_payload)
+        assert resp_dup.status_code == 202
+        assert resp_dup.json()["id"] == run_id
 
-    # 4. Duplicate submission returns existing run (202)
-    resp_dup = client.post(f"/api/threads/{thread_id}/messages", json=msg_payload)
-    assert resp_dup.status_code == 202
-    assert resp_dup.json()["id"] == run_id
+        # 5. Conflicting submission with same request ID returns 409
+        resp_conflict = client.post(
+            f"/api/threads/{thread_id}/messages",
+            json={"client_request_id": "req-fastapi-1", "text": "Different text"},
+        )
+        assert resp_conflict.status_code == 409
 
-    # 5. Conflicting submission with same request ID returns 409
-    resp_conflict = client.post(
-        f"/api/threads/{thread_id}/messages",
-        json={"client_request_id": "req-fastapi-1", "text": "Different text"},
-    )
-    assert resp_conflict.status_code == 409
+        # Wait briefly for in-process background task
+        time.sleep(0.3)
 
-    # Wait briefly for in-process background task
-    time.sleep(0.3)
+        # 6. GET /api/threads/{id}/runs/{run_id} checks run status
+        resp_run = client.get(f"/api/threads/{thread_id}/runs/{run_id}")
+        assert resp_run.status_code == 200
+        assert resp_run.json()["status"] == "completed"
 
-    # 6. GET /api/threads/{id}/runs/{run_id} checks run status
-    resp_run = client.get(f"/api/threads/{thread_id}/runs/{run_id}")
-    assert resp_run.status_code == 200
-    assert resp_run.json()["status"] == "completed"
+        # 7. Cross-thread run lookup returns 404
+        resp_other = client.post("/api/threads")
+        other_thread_id = resp_other.json()["id"]
+        resp_cross = client.get(f"/api/threads/{other_thread_id}/runs/{run_id}")
+        assert resp_cross.status_code == 404
 
-    # 7. Cross-thread run lookup returns 404
-    resp_other = client.post("/api/threads")
-    other_thread_id = resp_other.json()["id"]
-    resp_cross = client.get(f"/api/threads/{other_thread_id}/runs/{run_id}")
-    assert resp_cross.status_code == 404
+        # 8. GET /api/threads/{id} returns detail without credentials or private continuation
+        resp_detail = client.get(f"/api/threads/{thread_id}")
+        assert resp_detail.status_code == 200
+        detail = resp_detail.json()
+        assert len(detail["messages"]) == 2
+        assert detail["messages"][0]["role"] == "user"
+        assert detail["messages"][1]["role"] == "assistant"
+        assert "Compound interest" in detail["messages"][1]["text"]
 
-    # 8. GET /api/threads/{id} returns detail without credentials or private continuation
-    resp_detail = client.get(f"/api/threads/{thread_id}")
-    assert resp_detail.status_code == 200
-    detail = resp_detail.json()
-    assert len(detail["messages"]) == 2
-    assert detail["messages"][0]["role"] == "user"
-    assert detail["messages"][1]["role"] == "assistant"
-    assert "Compound interest" in detail["messages"][1]["text"]
+        # Verify private continuation was NOT leaked into messages or public detail
+        detail_str = resp_detail.text
+        assert "SECRET" not in detail_str
+        assert "private_continuation" not in detail_str
 
-    # Verify private continuation was NOT leaked into messages or public detail
-    detail_str = resp_detail.text
-    assert "SECRET" not in detail_str
-    assert "private_continuation" not in detail_str
-
-    # But private continuation was safely persisted in server storage
-    saved_cont = portfolio_store.db.get_private_continuation(run_id)
-    assert saved_cont is not None
-    assert saved_cont[0]["val"] == "SECRET"
+        # But private continuation was safely persisted in server storage
+        saved_cont = portfolio_store.db.get_private_continuation(run_id)
+        assert saved_cont is not None
+        assert saved_cont[0]["val"] == "SECRET"
 
 
 def test_fastapi_no_portfolio_conceptual_question(tmp_path: Path) -> None:
@@ -479,32 +478,31 @@ def test_fastapi_no_portfolio_conceptual_question(tmp_path: Path) -> None:
         portfolio_store=portfolio_store,
         orchestrator=orch,
     )
-    client = TestClient(app)
+    with TestClient(app) as client:
+        # Create thread
+        resp = client.post("/api/threads")
+        thread_id = resp.json()["id"]
 
-    # Create thread
-    resp = client.post("/api/threads")
-    thread_id = resp.json()["id"]
+        # Submit conceptual question with no portfolio
+        resp = client.post(
+            f"/api/threads/{thread_id}/messages",
+            json={"client_request_id": "req-no-port", "text": "What is an ETF?"},
+        )
+        assert resp.status_code == 202
+        run_data = resp.json()
+        assert run_data["bound_revision"] is None
 
-    # Submit conceptual question with no portfolio
-    resp = client.post(
-        f"/api/threads/{thread_id}/messages",
-        json={"client_request_id": "req-no-port", "text": "What is an ETF?"},
-    )
-    assert resp.status_code == 202
-    run_data = resp.json()
-    assert run_data["bound_revision"] is None
+        time.sleep(0.3)
 
-    time.sleep(0.3)
+        resp_run = client.get(f"/api/threads/{thread_id}/runs/{run_data['id']}")
+        assert resp_run.status_code == 200
+        assert resp_run.json()["status"] == "completed"
 
-    resp_run = client.get(f"/api/threads/{thread_id}/runs/{run_data['id']}")
-    assert resp_run.status_code == 200
-    assert resp_run.json()["status"] == "completed"
-
-    resp_detail = client.get(f"/api/threads/{thread_id}")
-    assert resp_detail.status_code == 200
-    messages = resp_detail.json()["messages"]
-    assert len(messages) == 2
-    assert "exchange-traded fund" in messages[1]["text"]
+        resp_detail = client.get(f"/api/threads/{thread_id}")
+        assert resp_detail.status_code == 200
+        messages = resp_detail.json()["messages"]
+        assert len(messages) == 2
+        assert "exchange-traded fund" in messages[1]["text"]
 
 
 def test_thread_list_titles_each_thread_by_its_first_question(tmp_path: Path) -> None:
@@ -513,18 +511,17 @@ def test_thread_list_titles_each_thread_by_its_first_question(tmp_path: Path) ->
     model = ScriptedModel([ModelTurn(text="An ETF is an exchange-traded fund.")])
     app = create_app(model=model, settings=settings, portfolio_store=portfolio_store,
                      orchestrator=Orchestrator(db=portfolio_store.db, transport=model, settings=settings))
-    client = TestClient(app)
+    with TestClient(app) as client:
+        thread_id = client.post("/api/threads").json()["id"]
+        assert client.get("/api/threads").json()[0]["title"] is None
 
-    thread_id = client.post("/api/threads").json()["id"]
-    assert client.get("/api/threads").json()[0]["title"] is None
+        client.post(f"/api/threads/{thread_id}/messages",
+                    json={"client_request_id": "req-title", "text": "What is an ETF?"})
+        time.sleep(0.3)
 
-    client.post(f"/api/threads/{thread_id}/messages",
-                json={"client_request_id": "req-title", "text": "What is an ETF?"})
-    time.sleep(0.3)
-
-    summary = client.get("/api/threads").json()[0]
-    assert summary["title"] == "What is an ETF?"
-    assert summary["last_message_preview"] == "An ETF is an exchange-traded fund."
+        summary = client.get("/api/threads").json()[0]
+        assert summary["title"] == "What is an ETF?"
+        assert summary["last_message_preview"] == "An ETF is an exchange-traded fund."
 
 
 def chat_client(tmp_path: Path, model: Any) -> TestClient:
