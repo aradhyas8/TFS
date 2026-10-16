@@ -10,13 +10,13 @@
 
 ## Acceptance criteria
 
-- [ ] Compare TFS's actual sign-in endpoint, token audience/scopes and account identity with the framework's Codex integration; document whether a custom adapter is required.
-- [ ] Keep TFS's DPAPI/Keychain credential ownership, sign-out and account separation. No dependency on another application's credential file is introduced.
-- [ ] Establish one refresh owner; rotated tokens are persisted through the existing secure store and concurrent refresh does not reuse invalidated tokens.
-- [ ] Verify streaming-only behavior, store=false, unsupported parameter omission, tool continuation, reasoning state and deadline handling with fake credentials and mocked HTTP.
-- [ ] Expired/revoked grants and interrupted/malformed streams produce safe existing error outcomes; logs/public records contain no tokens or private continuation.
-- [ ] Document request-budget limits the endpoint cannot enforce, and the compensating run/time controls.
-- [ ] Deliver a mocked-contract verdict and minimum adapter approach while production sign-in remains unchanged. Label actual sign-in, refresh and real-provider compatibility unverified until the approved live gate in 10 passes.
+- [x] Compare TFS's actual sign-in endpoint, token audience/scopes and account identity with the framework's Codex integration; document whether a custom adapter is required.
+- [x] Keep TFS's DPAPI/Keychain credential ownership, sign-out and account separation. No dependency on another application's credential file is introduced.
+- [x] Establish one refresh owner; rotated tokens are persisted through the existing secure store and concurrent refresh does not reuse invalidated tokens.
+- [x] Verify streaming-only behavior, store=false, unsupported parameter omission, tool continuation, reasoning state and deadline handling with fake credentials and mocked HTTP.
+- [x] Expired/revoked grants and interrupted/malformed streams produce safe existing error outcomes; logs/public records contain no tokens or private continuation.
+- [x] Document request-budget limits the endpoint cannot enforce, and the compensating run/time controls.
+- [x] Deliver a mocked-contract verdict and minimum adapter approach while production sign-in remains unchanged. Label actual sign-in, refresh and real-provider compatibility unverified until the approved live gate in 10 passes.
 
 ## Verification
 
