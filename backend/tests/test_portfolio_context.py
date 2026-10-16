@@ -15,6 +15,7 @@ from analyst.schemas import (
     SavedPortfolio,
     Snapshot,
 )
+from tests.analysis_harness import analyze_with
 from tests.test_allocation import (
     allocation_answer,
     allocation_evidence,
@@ -214,7 +215,7 @@ def test_new_cash_analysis_does_not_alter_the_saved_portfolio(tmp_path):
         + [ModelTurn(answer=allocation_answer())])
     api = TestClient(create_app(model=model, data=FakeDataProvider(), financial=FakeFinancialProvider(allocation_evidence()), portfolio_store=store))
     request["portfolio"] = api.get("/api/portfolio").json()["portfolio"]["snapshot"]
-    assert api.post("/api/analyze", json=request).status_code == 200
+    assert analyze_with(api, request).status_code == 200
     assert store.get_revisioned() == before
     assert all(row["id"] != NEW_CASH_DESTINATION for row in api.get("/api/portfolio").json()["portfolio"]["snapshot"]["positions"])
     assert saved.saved_at

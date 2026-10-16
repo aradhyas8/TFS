@@ -8,9 +8,10 @@ from openai import AsyncOpenAI
 
 from analyst.api import create_app
 from analyst.config import Settings
-from analyst.providers import FakeDataProvider
+from analyst.providers import FakeDataProvider, latest_price_position
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import AnalysisRequest, CompanyResearch
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation, snapshot
 from tests.test_comparison import comparison_request, judgments
 from tests.test_stock import (
@@ -18,6 +19,7 @@ from tests.test_stock import (
     research_fixture,
     stock_answer,
     stock_comparison_judgments,
+    stock_comparison_request,
     stock_request,
 )
 
@@ -41,7 +43,9 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
         if len(sent) == 1 or (failure == "financial_tools" and len(sent) <= 4) or (failure == "comparison" and len(sent) == 2) or (failure == "stock" and len(sent) <= 5):
             assert request.url == "https://api.openai.com/v1/responses"
             assert request.headers["Authorization"] == "Bearer sk-test-backend-only-never-browser"
-            assert payload["tool_choice"] == ({"type": "function", "name": "review_portfolio"} if len(sent) == 1 else "auto")
+            stock_steps = ["review_portfolio", "get_sec_filings", "get_issuer_material", "calculate_company_cases", "calculate_comparison"]
+            forced = stock_steps[len(sent) - 1] if failure == "stock" or len(sent) == 1 else None
+            assert payload["tool_choice"] == ({"type": "function", "name": forced} if forced else "auto")
             assert {tool["name"] for tool in payload["tools"]} == {
                 "review_portfolio", "resolve_identities", "get_quotes", "get_fx", "check_proposed_changes", "calculate_comparison", "get_sec_filings", "get_issuer_material", "calculate_company_cases", "get_sponsor_holdings"
             }
@@ -89,7 +93,8 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
                     "type": "output_text",
                     "text": "broken"
                     if failure == "malformed_json"
-                    else json.dumps(stock_answer() if failure == "stock" else recommendation()),
+                    # The stock answer states where the price sits, from the valuation the tools returned.
+                    else json.dumps({**stock_answer(), "price_position": latest_price_position(payload["input"])} if failure == "stock" else recommendation()),
                     "annotations": [],
                 }
             ]
@@ -132,9 +137,7 @@ def test_production_sdk_request_path_with_fake_http_provider(monkeypatch, failur
         data=FakeDataProvider(),
         research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}),
     )
-    response = TestClient(app).post(
-        "/api/analyze", json=stock_request() if failure == "stock" else comparison_request() if failure == "comparison" else {"question": "Review my exposure", "portfolio": snapshot()}
-    )
+    response = analyze_with(TestClient(app), stock_request() if failure == "stock" else comparison_request() if failure == "comparison" else {"question": "Review my exposure", "portfolio": snapshot()})
     assert response.status_code == (200 if failure in {None, "financial_tools", "comparison", "stock"} else 502), response.text
     assert "sk-test-backend-only-never-browser" not in response.text
     if failure in {None, "financial_tools", "comparison", "stock"}:
@@ -187,8 +190,8 @@ def test_new_cash_uses_production_sdk_tools_and_backend_only_amounts(monkeypatch
     def local_sdk(**kwargs):
         return AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openai)))
     monkeypatch.setattr("analyst.providers.AsyncOpenAI", local_sdk)
-    response = TestClient(create_app(settings=Settings("sk-test-backend-only-never-browser", "test-model"),
-                                    financial=FakeFinancialProvider(allocation_evidence()))).post("/api/analyze", json=allocation_request())
+    response = analyze_with(TestClient(create_app(settings=Settings("sk-test-backend-only-never-browser", "test-model"),
+                                    financial=FakeFinancialProvider(allocation_evidence()))), allocation_request())
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["amount"]["maximum"] == "2400"
     assert "sk-test-backend-only-never-browser" not in response.text
@@ -249,8 +252,8 @@ def test_portfolio_review_uses_production_sdk_tools_and_preserves_bound_evidence
         return AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openai)))
 
     monkeypatch.setattr("analyst.providers.AsyncOpenAI", local_sdk)
-    response = TestClient(create_app(settings=Settings("sk-test-backend-only-never-browser", "test-model"),
-        data=FakeDataProvider(), research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=review_request())
+    response = analyze_with(TestClient(create_app(settings=Settings("sk-test-backend-only-never-browser", "test-model"),
+        data=FakeDataProvider(), research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))), review_request())
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["preferred_action"] == "reduce"
     assert response.json()["reunderwriting"]["assessments"][0]["status"] == "changed"
@@ -374,7 +377,7 @@ def test_tiered_reasoning_pipeline_scripted_model():
 @pytest.mark.parametrize("configured", [None, "high"])
 def test_openrouter_turns_send_only_the_configured_reasoning_effort(configured):
     """require_parameters drops every endpoint that cannot honour a sent parameter, so TFS never adds its own
-    tool-turn effort on OpenRouter. An explicitly configured effort is still sent on every turn."""
+    tool-turn effort on OpenRouter. An explicitly configured effort is sent on every turn, capped at medium on tool turns."""
     from analyst.pipeline import analyze
     from analyst.providers import ModelTurn, ScriptedModel, ToolCall
     from analyst.schemas import AnalysisRequest
@@ -391,10 +394,10 @@ def test_openrouter_turns_send_only_the_configured_reasoning_effort(configured):
     model = ScriptedModel(turns, settings=settings)
     req = AnalysisRequest.model_validate({"question": "Review my exposure", "portfolio": snapshot()})
     asyncio.run(analyze(req, model, FakeDataProvider()))
-    assert model.reasoning_efforts == [configured, configured]
+    assert model.reasoning_efforts == [{None: None, "high": "medium"}[configured], configured]
 
 
-def test_incomplete_response_detailed_diagnostics(monkeypatch):
+def test_incomplete_response_detailed_diagnostics(monkeypatch, caplog):
     import asyncio
 
     from analyst.providers import OpenAIModel
@@ -438,14 +441,17 @@ def test_incomplete_response_detailed_diagnostics(monkeypatch):
     with pytest.raises(ValueError) as excinfo:
         asyncio.run(model.respond([{"role": "system", "content": "instructions"}, {"role": "user", "content": json.dumps({"question": "test"})}], require_tool=True, reasoning_effort="medium"))
 
+    # The diagnostics are logged; the user-facing message names only the stop reason.
     err_str = str(excinfo.value)
-    assert "reason=max_output_tokens" in err_str
-    assert "input_tokens=20048" in err_str
-    assert "output_tokens=16000" in err_str
-    assert "reasoning_tokens=15413" in err_str
-    assert "max_output_tokens=16000" in err_str
-    assert "reasoning_effort=medium" in err_str
-    assert "partial_tools=['calculate_comparison']" in err_str
+    assert err_str == "The model response is incomplete (reason: max_output_tokens)."
+    logged = caplog.text
+    assert "reason=max_output_tokens" in logged
+    assert "input_tokens=20048" in logged
+    assert "output_tokens=16000" in logged
+    assert "reasoning_tokens=15413" in logged
+    assert "max_output_tokens=16000" in logged
+    assert "reasoning_effort=medium" in logged
+    assert "partial_tools=['calculate_comparison']" in logged
 
 
 def test_openrouter_is_an_opt_in_base_url_for_the_same_client(monkeypatch):
@@ -466,7 +472,7 @@ def test_openrouter_is_an_opt_in_base_url_for_the_same_client(monkeypatch):
         Settings.from_environment()
 
 
-def test_openrouter_omits_parallel_flag_but_multiple_tool_calls_are_still_rejected(monkeypatch):
+def test_openrouter_omits_parallel_flag_and_runs_only_the_first_of_parallel_calls(monkeypatch):
     from tests.test_portfolio_review import review_request, review_research_fixture
     sent = []
 
@@ -476,7 +482,6 @@ def test_openrouter_omits_parallel_flag_but_multiple_tool_calls_are_still_reject
         assert request.url == "https://openrouter.ai/api/v1/responses"
         assert "parallel_tool_calls" not in payload
         assert payload["provider"] == {"only": ["openai"], "allow_fallbacks": False, "require_parameters": True}
-        assert payload["tool_choice"] == {"type": "function", "name": "review_portfolio"}
         output = [{"type": "function_call", "id": f"fc_{n}", "call_id": f"call_{n}", "name": "review_portfolio",
                    "arguments": "{}", "status": "completed"} for n in (1, 2)]
         return httpx.Response(200, json={"id": "gen-1", "object": "response", "created_at": 1, "model": "openai/test",
@@ -484,11 +489,13 @@ def test_openrouter_omits_parallel_flag_but_multiple_tool_calls_are_still_reject
 
     monkeypatch.setattr("analyst.providers.AsyncOpenAI", lambda **kwargs: AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(fake_openrouter))))
     settings = Settings("sk-or-test", "openai/test", base_url="https://openrouter.ai/api/v1")
-    response = TestClient(create_app(settings=settings, data=FakeDataProvider(),
-        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))).post("/api/analyze", json=review_request())
-    assert response.status_code != 200
-    assert "recommendation" not in response.json()
-    assert len(sent) == 1
+    response = analyze_with(TestClient(create_app(settings=settings, data=FakeDataProvider(),
+        research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(review_research_fixture())}))), review_request())
+    assert len(sent) >= 2, response.text
+    assert sent[0]["tool_choice"] == {"type": "function", "name": "review_portfolio"}
+    # Only call_1 ran: the next request carries call_1 and its output, never call_2.
+    replayed = [(item.get("type"), item.get("call_id")) for item in sent[1]["input"] if item.get("type") in {"function_call", "function_call_output"}]
+    assert replayed == [("function_call", "call_1"), ("function_call_output", "call_1")]
 
 
 OPENROUTER_TOOL = {"type": "function", "name": "review_portfolio", "strict": True,
@@ -559,7 +566,8 @@ def raising(error):
 @pytest.mark.parametrize("provider", ["openrouter", "openai"])  # an OpenRouter URL is OpenRouter whatever the label
 @pytest.mark.parametrize("handler, expected", [
     (failing(429), "rate limit reached"),
-    (failing(404, "No endpoints found that support the provided 'tool_choice' value"), "does not support the required"),
+    (failing(404, "No endpoints found that support the provided 'tool_choice' value"), "does not support every parameter TFS requires"),
+    (failing(404, "No endpoints found that can handle the requested parameters."), "does not support every parameter TFS requires"),
     (failing(404, "No endpoints found that support the provided 'reasoning' value"), "OPENAI_REASONING_EFFORT"),
     (failing(404, "No endpoints found for vendor/model:free."), "is unavailable"),
     (failing(400), "rejected the request (HTTP 400)"),
@@ -594,8 +602,7 @@ def openrouter_app(monkeypatch, handler):
 
 
 def test_analyze_keeps_the_specific_openrouter_failure(monkeypatch):
-    response = openrouter_app(monkeypatch, failing(429)).post(
-        "/api/analyze", json={"question": "Review my exposure", "portfolio": snapshot()})
+    response = analyze_with(openrouter_app(monkeypatch, failing(429)), {"question": "Review my exposure", "portfolio": snapshot()})
     assert response.status_code == 502
     assert "rate limit reached" in response.json()["detail"] and "sk-or-secret" not in response.text
 
@@ -610,8 +617,7 @@ def test_analyze_rejects_invalid_openrouter_structured_output(monkeypatch):
                                          "name": "review_portfolio", "arguments": "{}", "status": "completed"}])
         return openrouter_response(openrouter_message("{not json"))
 
-    response = openrouter_app(monkeypatch, handler).post(
-        "/api/analyze", json={"question": "Review my exposure", "portfolio": snapshot()})
+    response = analyze_with(openrouter_app(monkeypatch, handler), {"question": "Review my exposure", "portfolio": snapshot()})
     assert response.status_code == 502, response.text
     assert "recommendation" not in response.json()
 
@@ -632,3 +638,47 @@ async def test_conversation_run_records_the_specific_openrouter_failure(monkeypa
     assert failed is not None and failed.status == "failed"
     assert "OpenRouter vendor/model:free: rate limit reached" in (failed.error or "")
     assert len(sent) == 1
+
+
+
+def forced_choice(name):
+    return {"type": "function", "name": name}
+
+
+@pytest.mark.parametrize("workflow", ["us_supplied_comparison", "us_default_comparison", "canadian"])
+def test_openrouter_stock_analysis_forces_each_mandatory_step_when_the_model_prefers_answering(monkeypatch, workflow):
+    """Regression: a free OpenRouter model ignored prose MANDATORY instructions under tool_choice=auto and answered
+    early (until the loop bound, or once per research step). Python forces each required stock step by name."""
+    from analyst.providers import WorkflowModelAdapter
+    from tests.test_canadian_stock import (
+        canadian_research_fixture,
+        canadian_stock_answer,
+        canadian_stock_request,
+    )
+    request, answer, records, filing = {
+        "us_supplied_comparison": (stock_comparison_request(), stock_answer(), {"acme": research_fixture()}, "get_sec_filings"),
+        "us_default_comparison": (stock_request(), stock_answer(), {"acme": research_fixture()}, "get_sec_filings"),
+        "canadian": (canadian_stock_request(), canadian_stock_answer(), {"acme:XTSE": canadian_research_fixture()}, "get_sedar_filings"),
+    }[workflow]
+    bound = AnalysisRequest.model_validate(request).model_dump(mode="json")  # stock requests always bind a comparison
+    arguments = {"calculate_company_cases": json.dumps(company_judgments()),
+                 "calculate_comparison": json.dumps(stock_comparison_judgments(bound))}
+
+    def prefers_answering(request):
+        # Obeys a named tool_choice and answers whenever the choice is left to it.
+        payload = json.loads(request.content)
+        choice = payload.get("tool_choice")
+        if not isinstance(choice, dict):
+            return openrouter_response(openrouter_message(json.dumps({**answer, "price_position": latest_price_position(payload["input"])})))
+        name = choice["name"]
+        return openrouter_response([{"type": "function_call", "id": f"fc_{name}", "call_id": f"call_{name}", "name": name,
+                                     "arguments": arguments.get(name, "{}"), "status": "completed"}])
+
+    transport, sent = openrouter_transport(monkeypatch, prefers_answering)
+    research = ReviewedResearchProvider({key: CompanyResearch.model_validate(value) for key, value in records.items()})
+    response = analyze_with(TestClient(create_app(model=WorkflowModelAdapter(transport), data=FakeDataProvider(), research=research)), request)
+    assert response.status_code == 200, response.text
+    assert response.json()["stock"] is not None and response.json()["comparison"] is not None
+    steps = ["review_portfolio", filing, "get_issuer_material", "calculate_company_cases", "calculate_comparison"]
+    # One request per mandatory step, then exactly one final answer: no premature answers.
+    assert [payload.get("tool_choice") for payload in sent] == [*map(forced_choice, steps), "auto"]

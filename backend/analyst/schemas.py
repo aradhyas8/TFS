@@ -75,7 +75,7 @@ class Position(Contract):
         return self
 
 
-US_LISTINGS = frozenset({"XNAS", "XNYS", "XASE"})
+US_LISTINGS = frozenset({"XNAS", "XNYS", "XASE", "ARCX"})
 CANADIAN_LISTINGS = frozenset({"XTSE", "XTSX", "NEOE", "XCNQ"})
 
 
@@ -825,8 +825,13 @@ class Recommendation(Contract):
     what_could_change: list[Text] = Field(min_length=1, max_length=8)
 
 
+PricePosition = Literal["below_downside", "downside_to_base", "base_to_upside", "above_upside", "unknown"]
+
+
 class StockRecommendation(Recommendation):
     evidence_ids: list[Identifier] = Field(min_length=0, max_length=20)
+    # Stock Analysis: the model states where today's price sits, and Python checks it against its own valuation.
+    price_position: PricePosition | None = None
 
 
 class PositionResult(Contract):
@@ -1313,9 +1318,7 @@ class StockValuation(Contract):
     base: str | None
     upside: str | None
     price_to_base: str | None
-    position: Literal[
-        "below_downside", "downside_to_base", "base_to_upside", "above_upside", "unknown"
-    ]
+    position: PricePosition
     # Reported figures for the same period, so the modeled path can be checked against what the company reported.
     reported_margin: str | None = None
     modeled_first_year_margin: str | None = None
@@ -1428,6 +1431,9 @@ class AnalysisResult(Contract):
     reunderwriting: ReunderwritingResult | None = None
     theme: ThemeResult | None = None
     artifact_reference: Any | None = None
+    # The AI provider and model that produced this analysis; TFS never switches models silently.
+    ai_provider: str | None = None
+    ai_model: str | None = None
 
 
 DecisionAction = Literal[
@@ -1817,10 +1823,20 @@ WorkflowName = Literal["run_exposure_review", "run_stock_analysis", "run_new_cas
                        "run_portfolio_reunderwriting", "run_theme_exploration"]
 
 
+class CandidateChoice(Contract):
+    """An unowned security a form selected. Only its name travels: the backend resolves the identity again."""
+
+    id: Annotated[Identifier, StringConstraints(pattern=r"^candidate-")]
+    ticker: Identifier
+    listing: Identifier | None = None
+
+
 class WorkflowInput(Contract):
     """Explicit form inputs; bound portfolio, rules and benchmark are never replaceable."""
 
     workflow: WorkflowName | None = None
+    # Securities a stock or theme form named that are not held; stock.position_id and theme.shortlist use their IDs.
+    candidates: list[CandidateChoice] = Field(default_factory=list, max_length=4)
     analysis_date: date | None = None
     stock: StockInput | None = None
     new_cash: NewCashInput | None = None
@@ -1903,6 +1919,9 @@ class RunRecord(Contract):
     artifact_ids: list[Identifier] = Field(default_factory=list)
     # The immutable draft this run analyzes instead of the committed holdings; never a commit.
     hypothetical_artifact_id: Identifier | None = None
+    # The AI provider and model selected when the run was accepted.
+    ai_provider: str | None = None
+    ai_model: str | None = None
 
 
 class ThreadDetail(Contract):

@@ -18,6 +18,7 @@ from analyst.schemas import (
     SavedPortfolio,
     Snapshot,
 )
+from tests.analysis_harness import analyze_with
 
 
 def recommendation():
@@ -191,17 +192,14 @@ def test_hypothetical_analysis_api_boundary_and_unchanged_revision(tmp_path):
     assert art_res.status_code == 200
     artifact_ref = art_res.json()
 
-    # Call /api/analyze with draft snapshot, settings, and artifact_reference
+    # Analyze the draft snapshot, settings, and artifact_reference
     # Average costs stay outside the analysis request
-    analysis_res = api.post(
-        "/api/analyze",
-        json={
+    analysis_res = analyze_with(api, {
             "question": "Review exposure, concentration and fund overlap",
             "portfolio": draft.snapshot.model_dump(mode="json"),
             "settings": draft.settings.model_dump(mode="json"),
             "artifact_reference": artifact_ref,
-        },
-    )
+        })
     assert analysis_res.status_code == 200, analysis_res.text
     result = analysis_res.json()
     assert result["status"] == "completed"
@@ -242,14 +240,11 @@ def test_ordinary_analysis_uses_committed_state_while_draft_exists(tmp_path):
     api.post("/api/portfolio/artifacts", json={"portfolio": draft.model_dump(mode="json")})
 
     # Ordinary analysis sends committed snapshot without artifact_reference
-    analysis_res = api.post(
-        "/api/analyze",
-        json={
+    analysis_res = analyze_with(api, {
             "question": "Review exposure, concentration and fund overlap",
             "portfolio": initial.snapshot.model_dump(mode="json"),
             "settings": initial.settings.model_dump(mode="json"),
-        },
-    )
+        })
     assert analysis_res.status_code == 200
     result = analysis_res.json()
     analyzed_pos_ids = [p["supplied"]["id"] for p in result["portfolio"]["positions"]]
@@ -266,11 +261,8 @@ def test_hypothetical_analysis_rejects_invalid_inputs(tmp_path):
     invalid_snapshot = initial.snapshot.model_dump(mode="json")
     invalid_snapshot["reporting_currency"] = "INVALID"
 
-    res = api.post(
-        "/api/analyze",
-        json={
+    res = analyze_with(api, {
             "question": "Review invalid portfolio",
             "portfolio": invalid_snapshot,
-        },
-    )
+        })
     assert res.status_code == 422

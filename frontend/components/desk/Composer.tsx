@@ -2,6 +2,7 @@ import { ArrowUp, Slash } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { isThemeCandidate, type NewCashInput, type Position, type Snapshot, type ThemeInput } from "../../lib/contracts";
 import { accountName, fullDate, money, newCashLabel } from "./format";
+import ModelPicker from "./ModelPicker";
 import { isConversation, parseMoney } from "./route";
 
 const WORKFLOWS = [
@@ -31,8 +32,6 @@ type Props = {
   inThread: boolean;
   /** The home screen: the composer is the main thing on the page and carries its own shortcuts. */
   home: boolean;
-  collapsed: boolean;
-  onExpand: () => void;
   onSubmit: () => void;
 };
 
@@ -80,8 +79,6 @@ export default function Composer({
   running,
   inThread,
   home,
-  collapsed,
-  onExpand,
   onSubmit,
 }: Props) {
   const [active, setActive] = useState(0);
@@ -255,7 +252,7 @@ export default function Composer({
       </div>}
 
       <div className={`box${slashOpen ? " focus" : ""}`}>
-        {workflow === "new-cash" && !collapsed && <fieldset className="nc-form" disabled={running}>
+        {workflow === "new-cash" && <fieldset className="nc-form" disabled={running}>
           <legend className="sr-only">New cash inputs</legend>
           <div className="nc-grid">
             <label className="field"><span className="cap">Amount</span>
@@ -281,7 +278,7 @@ export default function Composer({
               : "Confirm this is new money and where it arrives."}</span></label>
         </fieldset>}
 
-        {workflow === "theme" && !collapsed && <fieldset className="theme-form" disabled={running}>
+        {workflow === "theme" && <fieldset className="theme-form" disabled={running}>
           <legend className="sr-only">Theme inputs</legend>
           <label className="field"><span className="cap">Theme name</span>
             <input className="in" aria-label="Theme name" placeholder="e.g. Industrial automation" value={theme.name || ""}
@@ -330,31 +327,23 @@ export default function Composer({
           </div>
         </fieldset>}
 
-        {workflow === "new-cash" && collapsed && <div className="box-line" style={{ minHeight: 44 }}>
-          <span className="cap n" style={{ flex: 1 }}>{label || "New cash inputs"}{newCash.risk_context ? " · loss tolerance given" : " · no loss tolerance"}</span>
-          <button type="button" className="link cap" onClick={onExpand}>Edit inputs</button>
-        </div>}
-
-        {workflow === "theme" && collapsed && <div className="box-line" style={{ minHeight: 44 }}>
-          <span className="cap n" style={{ flex: 1 }}>{theme.name || "Theme inputs"} · {theme.shortlist.length} candidate{theme.shortlist.length === 1 ? "" : "s"} · bound {theme.max_tool_calls} calls</span>
-          <button type="button" className="link cap" onClick={onExpand}>Edit inputs</button>
-        </div>}
-
         <div className="box-line">
           {workflow === "new-cash" && <span className="prefix">New cash</span>}
           {workflow === "theme" && <span className="prefix">Theme</span>}
           <label htmlFor="ask" className="sr-only">{workflow ? "Question" : "Ask anything, or type / for workflows"}</label>
           <textarea id="ask" ref={field} rows={1} autoComplete="off" maxLength={1000} value={question} disabled={running} onKeyDown={keys}
             aria-controls={slashOpen ? "slash-menu" : undefined} aria-expanded={slashOpen}
-            placeholder={running ? "Wait for this answer to finish" : workflow === "new-cash" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "I have new cash. Where should I allocate it?") : workflow === "theme" ? (collapsed ? "Follow up. This runs a new analysis with the same portfolio." : "Explore a theme against your shortlist.") : inThread ? "Ask a follow-up, or type / for a workflow" : "Ask anything, or type / for a workflow"}
+            placeholder={running ? "Wait for this answer to finish" : workflow === "new-cash" ? "I have new cash. Where should I allocate it?" : workflow === "theme" ? "Explore a theme against your shortlist." : inThread ? "Ask a follow-up, or type / for a workflow" : "Ask anything, or type / for a workflow"}
             onChange={event => { onQuestion(event.target.value); setActive(0); }} />
           {(workflow || question.trim()) && blocked && !running && !slashOpen && <span className="cap amber hint">{blocked}</span>}
+          {!tools && <ModelPicker running={running} />}
           {!tools && send}
         </div>
         {tools && <div className="box-tools">
           <button type="button" className="pill" disabled={running} onClick={() => { onQuestion("/"); setActive(0); document.getElementById("ask")?.focus(); }}>
             <Slash size={14} aria-hidden="true" />Workflows</button>
           {snapshot && <span className="pill status n"><span className="live" aria-hidden="true" /><span className="hide-sm">Using portfolio as of {fullDate(snapshot.as_of)}</span><span className="show-sm" aria-hidden="true">As of {fullDate(snapshot.as_of)}</span></span>}
+          <ModelPicker running={running} />
           {send}
         </div>}
       </div>

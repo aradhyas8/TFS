@@ -1,5 +1,6 @@
 """Run-local primary research and calculations, using existing source adapters."""
 
+import re
 from datetime import date
 from typing import Any, Literal, cast
 
@@ -32,6 +33,11 @@ from .schemas import (
 )
 from .sec_research import SecResearchProvider
 from .stock import calculate_company_cases
+
+# Phrasing that asks to weigh held capital against alternatives; it makes the comparison tool visible from turn one.
+COMPARISON_REQUEST = re.compile(
+    r"\b(?:compar\w*|versus|vs|instead|switch\w*|swap\w*|replac\w*|alternatives?|rather|trade-?offs?|or (?:keep|hold))\b",
+    re.IGNORECASE)
 
 
 class ResearchArguments(ReadArguments):
@@ -120,6 +126,16 @@ class ResearchTools:
             "Candidates stay temporary; primary research is limited to two screened stock candidates. "
             "Use get_company_research and then calculate_company_cases for each candidate before comparison and a final answer.",
             "bound_revision", self.scan)
+
+    def unadvertised(self, user_text: str) -> set[str]:
+        """The two largest schemas, left out of a turn until this run can use them. They stay registered, and each
+        handler still enforces its own prerequisite, so a call is never refused for being unadvertised."""
+        hidden = set()
+        if not self.read:  # company cases need this run's primary retrieval first
+            hidden.add("calculate_company_cases")
+        if not (self.comparison or self.stocks or self.scan_result or COMPARISON_REQUEST.search(user_text)):
+            hidden.add("calculate_comparison")
+        return hidden
 
     def handler(self, name: ResearchName) -> Any:
         async def retrieve(context: RunContext, parsed: ResearchArguments) -> dict[str, Any]:

@@ -42,17 +42,14 @@ const SAVED = {
   unresolved: [],
 };
 
-import { openDetails, seedPortfolio } from "./test_helpers";
+import { openDetails, seedPortfolio, recordWorkflows } from "./test_helpers";
 
 async function open(page: Page, saved: object = SAVED) {
   await page.route("**/*", route =>
     ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort()
   );
   await seedPortfolio(page, saved);
-  const sent: any[] = [];
-  page.on("request", request => {
-    if (request.url().endsWith("/api/analyze")) sent.push(request.postDataJSON());
-  });
+  const sent = recordWorkflows(page);
   await page.goto("/");
   await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   return sent;
@@ -111,47 +108,47 @@ test("theme discovery full flow: form, agreement card, edit clearing, agreed res
   await expect(analyzeBtn).toBeEnabled();
   await analyzeBtn.click();
 
-  // Verify first sent request had confirmed: false
+  // Verify first sent request had confirmed: false. The unowned SPY travels by ticker and listing only.
   await expect.poll(() => sent.length).toBe(1);
-  expect(sent[0].theme).toBeDefined();
+  expect(sent[0].workflow).toBe("run_theme_exploration");
   expect(sent[0].theme.confirmed).toBe(false);
   expect(sent[0].theme.name).toBe("Industrial automation");
   expect(sent[0].theme.shortlist).toEqual(["tfsa-acme", "candidate-SPY-XNYS"]);
+  expect(sent[0].candidates).toEqual([{ id: "candidate-SPY-XNYS", ticker: "SPY", listing: "XNYS" }]);
 
-  // 3. Verify "Needs you" agreement state renders
-  const memo = page.getByRole("region", { name: "Analyst memo" });
-  await expect(memo.getByRole("heading", { level: 2 })).toHaveText(
-    "Agree the theme mechanism and shortlist before researching."
-  );
-  await expect(memo).toContainText("Needs your agreement");
-  await expect(memo).toContainText("Industrial automation");
-  await expect(memo).toContainText("Automation demand may expand revenue while competition compresses margins.");
-  await expect(memo).toContainText("ACME, SPY");
-  await expect(memo.getByRole("button", { name: "Agree and research" })).toBeVisible();
+  // 3. The run asks for agreement in the conversation, with the theme as it stands
+  const thread = page.getByRole("log", { name: "Conversation" });
+  const agreement = thread.getByTestId("clarification").last();
+  await expect(agreement).toContainText("Your agreement to the theme and shortlist");
+  const terms = agreement.getByRole("definition");
+  await expect(terms).toHaveText(["Industrial automation", "Automation demand may expand revenue while competition compresses margins.", "ACME, SPY"]);
+  await expect(agreement.getByRole("button", { name: "Agree and research" })).toBeVisible();
 
-  // 4. Test that edits in composer clear agreement and update the agreement card
-  await page.getByRole("button", { name: "Edit inputs" }).click();
+  // 4. Editing the form updates what is offered for agreement
+  await agreement.getByRole("button", { name: "Edit theme form" }).click();
   await page.getByLabel("Economic mechanism").fill("Revised mechanism demand expanding.");
-  await expect(memo).toContainText("Revised mechanism demand expanding.");
+  await expect(agreement).toContainText("Revised mechanism demand expanding.");
 
   // Restore original mechanism for test fixture alignment
   await page.getByLabel("Economic mechanism").fill(
     "Automation demand may expand revenue while competition compresses margins."
   );
-  await expect(memo).toContainText("Automation demand may expand revenue while competition compresses margins.");
+  await expect(agreement).toContainText("Automation demand may expand revenue while competition compresses margins.");
 
-  // Submitting edited form from composer sends confirmed: false and collapses composer
+  // Submitting the edited form continues the same conversation and asks for agreement again
   await page.getByRole("button", { name: "Analyze", exact: true }).click();
   await expect.poll(() => sent.length).toBe(2);
   expect(sent[1].theme.confirmed).toBe(false);
-  await expect(memo).toContainText("Needs your agreement");
+  await expect(thread.getByTestId("clarification")).toHaveCount(2);
 
   // 5. Agree and research submits confirmed: true
-  await memo.getByRole("button", { name: "Agree and research" }).click();
+  await thread.getByTestId("clarification").last().getByRole("button", { name: "Agree and research" }).click();
 
   // Verify third request had confirmed: true
   await expect.poll(() => sent.length).toBe(3);
   expect(sent[2].theme.confirmed).toBe(true);
+  expect(sent[2].candidates).toEqual(sent[0].candidates);
+  const memo = page.getByRole("region", { name: "Analyst memo" });
 
   // 6. Verify completed Theme memo renders (conditional because SPY fund facts are unknown)
   await expect(memo.getByRole("heading", { level: 2 })).toHaveText("Not enough to size this yet.");

@@ -41,6 +41,24 @@ def local_request(request: Request) -> None:
         raise HTTPException(403, "Use the local TFS connection controls.")
 
 
+# Models offered in the selector. The configured OPENROUTER_MODEL is listed first when it is not one of these.
+OPENROUTER_MODELS = {"deepseek/deepseek-v4.1-flash": "DeepSeek V4.1 Flash", "nvidia/nemotron-3-super-120b-a12b:free": "Nemotron 3 Super Free"}
+OPENROUTER_CATALOG = "https://openrouter.ai/api/v1/models"
+
+
+def openrouter_problem(model: str, reasoning: bool) -> str | None:
+    """Why OpenRouter cannot run this model for TFS, or None. Reads the public catalog; no credential is sent."""
+    response = httpx.get(OPENROUTER_CATALOG, timeout=15)
+    response.raise_for_status()
+    row = next((item for item in response.json()["data"] if item["id"] == model), None)
+    if row is None:
+        return f"OpenRouter does not offer {model} now. Choose another model."
+    missing = {"tools", "tool_choice", "structured_outputs", *(["reasoning"] if reasoning else [])} - set(row.get("supported_parameters") or [])
+    if missing:
+        return f"{model} does not support {', '.join(sorted(missing))} on OpenRouter, which TFS analysis needs. Choose another model."
+    return None
+
+
 STORAGE_ERRORS = {
     "unsupported_storage": "Use Windows or macOS for ChatGPT sign-in, or choose the API-key provider.",
     "keychain_locked": "Unlock the macOS login Keychain and allow TFS to use it, then retry.",
@@ -54,6 +72,9 @@ class Connection:
         self.managed = managed
         self.api_settings = settings if settings.provider != "chatgpt_plan" else replace(
             settings, provider="openai", api_key=os.environ.get("OPENAI_API_KEY", ""), model=os.environ.get("OPENAI_MODEL", ""))
+        self.openrouter = settings if settings.openrouter else replace(
+            settings, provider="openrouter", base_url="https://openrouter.ai/api/v1",
+            api_key=os.environ.get("OPENROUTER_API_KEY", ""), model=os.environ.get("OPENROUTER_MODEL", ""))
         self.provider = settings.provider
         self.model = settings.model
         self.task: asyncio.Task[None] | None = None
@@ -62,11 +83,14 @@ class Connection:
         self.error_state = "failed"
         self.catalog: list[dict[str, Any]] = []
         try:
+            # The choice saved from the UI outlives restarts; .env only sets the first-run default.
             saved = json.loads((plan.home() / "selection.json").read_text())
-            if not os.environ.get("LLM_PROVIDER", "").strip():
-                self.provider = saved["provider"] if saved["provider"] in {"chatgpt_plan", self.api_settings.provider} else self.provider
-            if self.provider == "chatgpt_plan" and saved.get("provider") == self.provider:
-                self.model = saved.get("model", self.model)
+            # Sign-out saves ChatGPT without a model; that is not a choice, so the .env provider stays.
+            signed_out = saved["provider"] == "chatgpt_plan" and not saved.get("model")
+            if not signed_out and saved["provider"] in {"chatgpt_plan", "openrouter", self.api_settings.provider}:
+                self.provider = saved["provider"]
+                self.model = saved.get("model") or (self.openrouter.model if self.provider == "openrouter" else self.api_settings.model
+                                                   if self.provider != "chatgpt_plan" else "")
         except (OSError, ValueError, KeyError):
             pass
 
@@ -97,13 +121,21 @@ class Connection:
         # state/message describe the provider that answers AI questions; chatgpt_state drives the sign-in controls.
         chatgpt_state, active_state = state, state
         if self.provider != "chatgpt_plan":
-            active_state = "connected" if self.api_ready else "failed"
-            api_message = (f"API-key provider ready. AI questions use {self.api_settings.model}." if self.api_ready
+            ready = bool(self.openrouter.api_key and self.model) if self.provider == "openrouter" else self.api_ready
+            active_state = "connected" if ready else "failed"
+            label = "OpenRouter" if self.provider == "openrouter" else "API-key provider"
+            api_message = (f"{label} ready. AI questions use {self.model}." if ready
                            else "The API-key provider is not configured. Follow API-key setup in README.md, then restart TFS.")
             message = f"{api_message} ChatGPT: {message}" if chatgpt_state == "connecting" or self.error else api_message
         return {"provider": self.provider, "model": self.model, "state": active_state, "chatgpt_state": chatgpt_state,
                 "message": message, "account": account, "models": self.catalog,
-                "api_provider": self.api_settings.provider, "api_key_available": self.api_ready}
+                "api_provider": self.api_settings.provider, "api_key_available": self.api_ready,
+                "openrouter_models": self.openrouter_models(), "openrouter_available": bool(self.openrouter.api_key)}
+
+    def openrouter_models(self) -> list[dict[str, str]]:
+        configured = self.openrouter.model
+        models = ({configured: configured} if configured and configured not in OPENROUTER_MODELS else {}) | OPENROUTER_MODELS
+        return [{"slug": slug, "display_name": name} for slug, name in models.items()]
 
     @property
     def api_ready(self) -> bool:
@@ -112,6 +144,10 @@ class Connection:
     def resolve(self) -> Settings:
         if not self.managed:
             return self.initial
+        if self.provider == "openrouter":
+            if not self.openrouter.api_key:
+                raise HTTPException(503, "Add OPENROUTER_API_KEY to backend/.env to use OpenRouter, or select ChatGPT.")
+            return replace(self.openrouter, model=self.model)
         if self.provider != "chatgpt_plan":
             return self.api_settings
         try:

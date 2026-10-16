@@ -8,15 +8,15 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, AsyncIterator, Literal, cast
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from openai import OpenAIError
 from pydantic import ValidationError
 
 from .allocation import DiscoveryProvider
 from .config import Settings
-from .connection import Connection, ProviderChoice, local_request
+from .connection import Connection, ProviderChoice, local_request, openrouter_problem
 from .csv_input import COLUMNS, load_csv
 from .decisions import DecisionStore, extract_decision
 from .financial_data import (
@@ -25,7 +25,6 @@ from .financial_data import (
     PersonalFinancialProvider,
     eodhd_symbol,
 )
-from .issuer_research import IssuerResearchProvider
 from .orchestrator import Orchestrator
 from .persistence import (
     DatabaseLockError,
@@ -35,7 +34,6 @@ from .persistence import (
     StaleBaseRevisionError,
     ThreadNotFoundError,
 )
-from .pipeline import InvalidReview, analyze
 from .portfolio import (
     HOLDINGS_COLUMNS,
     PortfolioStore,
@@ -53,15 +51,11 @@ from .portfolio_actions import (
 from .providers import (
     DataProvider,
     ModelProvider,
-    ModelServiceError,
-    OpenAIModel,
     SuppliedDataProvider,
 )
 from .research import ResearchProvider
 from .schemas import (
     BENCHMARK_FUND,
-    AnalysisRequest,
-    AnalysisResult,
     ArtifactEnvelope,
     ArtifactReference,
     CancelProposalResult,
@@ -94,7 +88,6 @@ from .schemas import (
     ThreadSummary,
     UpdatePortfolioRequest,
 )
-from .sec_research import SecResearchProvider
 
 
 def create_app(
@@ -172,10 +165,8 @@ def create_app(
             return orch
 
     def ensure_idle() -> None:
-        if orch is not None and orch.has_active_runs or legacy_active:
+        if orch is not None and orch.has_active_runs:
             raise HTTPException(409, "Finish or cancel current AI work before changing the connection.")
-
-    legacy_active = 0
 
     @app.get("/api/ai/connection")
     async def connection_status(request: Request) -> dict[str, Any]:
@@ -238,9 +229,21 @@ def create_app(
                 await connection.refresh()
                 if choice.model not in {row["slug"] for row in connection.catalog}:
                     raise HTTPException(422, "Choose an available ChatGPT model. Refresh or reconnect to retry.")
+            elif choice.provider == "openrouter":
+                if not connection.openrouter.api_key:
+                    raise HTTPException(422, "Add OPENROUTER_API_KEY to backend/.env, then restart TFS to use OpenRouter.")
+                choice.model = choice.model or connection.openrouter.model
+                if choice.model not in {row["slug"] for row in connection.openrouter_models()}:
+                    raise HTTPException(422, "Choose a listed OpenRouter model.")
+                try:
+                    problem = await asyncio.to_thread(openrouter_problem, choice.model, connection.openrouter.reasoning_effort is not None)
+                except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                    raise HTTPException(503, f"Could not check {choice.model} with OpenRouter. The model was not changed. Try again.") from None
+                if problem:
+                    raise HTTPException(422, problem)
             elif choice.provider != connection.api_settings.provider or not connection.api_ready:
                 raise HTTPException(422, "Configure the API-key provider in backend/.env before selecting it.")
-            selected_model = choice.model if choice.provider == "chatgpt_plan" else connection.api_settings.model
+            selected_model = choice.model if choice.provider in {"chatgpt_plan", "openrouter"} else connection.api_settings.model
             from .chatgpt_plan import _write, home
             await asyncio.to_thread(_write, home() / "selection.json", json.dumps({"provider": choice.provider, "model": selected_model}).encode())
             connection.provider, connection.model = choice.provider, selected_model
@@ -483,7 +486,7 @@ def create_app(
 
     @app.post("/api/market/refresh")
     async def refresh_prices(request: RefreshPrices) -> dict[str, Any]:
-        """Fills the local quote cache for the saved holdings. Analyses only read that cache."""
+        """Fills the local quote cache for the saved holdings now. Analyses also fill missing or earlier-day prices themselves."""
         current = portfolios.get()
         provider = market_data()
         if current is None or not isinstance(provider, PersonalFinancialProvider):
@@ -628,79 +631,6 @@ def create_app(
     def reference_identities() -> FinancialEvidence | None:
         return getattr(market_data(), "reference", None)
 
-    @app.post("/api/analyze", response_model=AnalysisResult)
-    async def analysis(request: AnalysisRequest) -> AnalysisResult:
-        if request.artifact_id and request.artifact_reference is None:
-            ref = portfolios.get_artifact_reference(request.artifact_id)
-            if ref:
-                request = request.model_copy(update={"artifact_reference": ref})
-        nonlocal legacy_active
-        needs_ai = not (request.theme and not request.theme.confirmed)
-        if needs_ai and connection.task and not connection.task.done() and model is None:
-            raise HTTPException(409, "Finish or cancel ChatGPT sign-in before starting AI work.")
-        async with provider_lock:
-            config = app_settings if not needs_ai or model is not None else await asyncio.to_thread(connection.resolve)
-            legacy_active += int(needs_ai)
-        provider = model
-        if provider is None and needs_ai:
-            if not config.api_key or not config.model:
-                legacy_active -= 1
-                raise HTTPException(
-                    503, "Configure the backend OpenAI API key and model to analyze."
-                )
-            provider = OpenAIModel(config)
-        try:
-            financial_source = financial or PersonalFinancialProvider.from_environment()
-            # Stock Analysis, portfolio review, new cash, and confirmed theme read SEC EDGAR live
-            # (cached) and issuer material; the reviewed file stays optional extra evidence.
-            needs_research = (
-                request.stock
-                or request.portfolio_review
-                or request.new_cash
-                or (request.theme and request.theme.confirmed)
-            )
-            research_source = research or (
-                IssuerResearchProvider.from_environment(SecResearchProvider.from_environment())
-                if needs_research
-                else None
-            )
-            return await analyze(
-                request,
-                provider,
-                source,
-                secret=config.api_key,
-                financial=financial_source,
-                research=research_source,
-                discovery=discovery,
-            )
-        except (ValueError, OSError):
-            raise HTTPException(503, "Backend financial source configuration is invalid.") from None
-        except InvalidReview as exc:
-            import logging
-
-            logging.error("InvalidReview in /api/analyze: %s", exc, exc_info=True)
-            raise HTTPException(
-                502,
-                "The model did not produce a valid portfolio review. No recommendation was completed.",
-            ) from None
-
-        except OpenAIError as exc:
-            import logging
-
-            logging.error(
-                "OpenAI request failed: type=%s status=%s request_id=%s",
-                type(exc).__name__,
-                getattr(exc, "status_code", None),
-                getattr(exc, "request_id", None),
-            )
-            raise HTTPException(
-                502, str(exc) if isinstance(exc, ModelServiceError) else "The model service could not complete the review. Try again."
-            ) from None
-        finally:
-            legacy_active -= int(needs_ai)
-            if isinstance(provider, OpenAIModel):
-                await provider.client.close()
-
     @app.get("/api/decisions", response_model=list[SavedDecision])
     def list_decisions() -> list[SavedDecision]:
         return decisions.list_decisions()
@@ -801,6 +731,8 @@ def create_app(
             thread_id=thread_id,
             request=request,
             bound_revision=bound_revision,
+            ai_provider=selected_orch.settings.provider,
+            ai_model=selected_orch.settings.model or None,
         )
 
         if is_new:

@@ -41,15 +41,12 @@ const SAVED = {
   unresolved: [],
 };
 
-import { seedPortfolio } from "./test_helpers";
+import { seedPortfolio, recordWorkflows } from "./test_helpers";
 
 async function open(page: Page, saved: object = SAVED) {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
   await seedPortfolio(page, saved);
-  const sentAnalyze: any[] = [];
-  page.on("request", request => {
-    if (request.url().endsWith("/api/analyze")) sentAnalyze.push(request.postDataJSON());
-  });
+  const sentAnalyze = recordWorkflows(page);
   await page.goto("/");
   await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   return sentAnalyze;
@@ -123,10 +120,10 @@ test("unowned ticker queries route directly to candidate lookup and Stock Analys
   await expect(page.locator(".ctx")).toContainText("Stock analysis · NVDA");
   await expect(page.locator(".echo")).toContainText("What do you think about NVDA?");
 
-  // Verify analyze was called with candidate position in portfolio
+  // The run names the unowned candidate by ticker and listing; the backend resolves it again
   expect(sent.length).toBe(1);
   expect(sent[0].stock?.position_id).toContain("candidate-NVDA");
-  expect(sent[0].portfolio.positions.some((p: any) => p.ticker === "NVDA")).toBe(true);
+  expect(sent[0].candidates).toEqual([expect.objectContaining({ id: sent[0].stock?.position_id, ticker: "NVDA" })]);
 });
 
 test("unknown company names are answered in conversation, and /stock still asks one short clarification question", async ({ page }) => {

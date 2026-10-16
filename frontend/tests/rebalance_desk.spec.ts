@@ -22,15 +22,12 @@ const SAVED = {
 };
 const NO_RULES = { ...SAVED, settings: null };
 
-type Sent = { question: string; stock?: unknown; portfolio_review?: unknown; comparison?: { alternatives: { id: string }[] } };
-
-import { openDetails, seedPortfolio } from "./test_helpers";
+import { openDetails, seedPortfolio, recordWorkflows } from "./test_helpers";
 
 async function open(page: Page, saved: object = SAVED) {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
   await seedPortfolio(page, saved);
-  const sent: Sent[] = [];
-  page.on("request", request => { if (request.url().endsWith("/api/analyze")) sent.push(request.postDataJSON()); });
+  const sent = recordWorkflows(page);
   await page.goto("/");
   await expect(page.getByTestId("portfolio-date")).toHaveText("Holdings as of Sep 30, 2026");
   return sent;
@@ -60,7 +57,7 @@ test("a natural rebalance question runs the rebalance memo in order and never ch
   await expect(page.locator(".echo")).toContainText("Rebalance · your whole saved portfolio as of Sep 30, 2026");
   expect(sent).toHaveLength(1);
   expect(sent[0].portfolio_review).toEqual({ prior_theses: [], risk_context: null });
-  expect(sent[0].comparison?.alternatives.map(alt => alt.id)).toEqual(["company-p1", "fund", "cash", "keep"]);
+  expect(sent[0].comparison?.alternatives.map((alt: { id: string }) => alt.id)).toEqual(["company-p1", "fund", "cash", "keep"]);
 
   const labels = await memo(page).locator(":scope > .row > .lbl").allTextContents();
   expect(labels).toEqual(["Recommendation", "Portfolio today", "What I would change", "Before → after", "Why", "Trade-offs and risks", "Alternatives", "Would change this", "Notes"]);

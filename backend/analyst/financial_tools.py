@@ -17,6 +17,7 @@ from .financial_data import (
     refresh_financial_data,
 )
 from .guardrails import apply_guardrails, preview_changes
+from .model_view import model_envelope
 from .portfolio import listing_currency, split_ticker
 from .schemas import (
     ArtifactBasis,
@@ -135,7 +136,7 @@ class FinancialTools:
         context.artifact_ids.add(reference.id)
         envelope = context.db.get_artifact_envelope(reference.id, projection="model")
         assert envelope is not None
-        return envelope.model_dump(mode="json")
+        return model_envelope(envelope.model_dump(mode="json"))
 
     async def review(self, context: RunContext, parsed: ReadArguments) -> dict[str, Any]:
         if context.portfolio is None:

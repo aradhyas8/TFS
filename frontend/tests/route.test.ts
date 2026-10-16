@@ -340,3 +340,33 @@ test.describe("holdings corrections belong to the conversation", () => {
     expect(isConversation("/stock ACME set shares", SNAPSHOT)).toBe(false);
   });
 });
+
+test.describe("portfolio-update statements belong to the conversation", () => {
+  test("stated purchases, sales, totals and cash movements go to chat before ticker matching", () => {
+    for (const text of [
+      "I bought 5 more ACME",
+      "I sold 3 shares of ACME",
+      "I now hold 15 shares of ACME",
+      "Increase my ACME position by 5 shares",
+      "Set my ACME holdings to 20 shares",
+      "I sold all my Acme shares",
+      "I deposited $1,000 cash",
+      "I withdrew $500",
+      "I've just bought 2 more BROAD",
+      "We own 12 shares of ACME",
+      "Bought 5 ACME today",
+    ]) expect(isConversation(text, SNAPSHOT), text).toBe(true);
+  });
+
+  test("hypotheticals, analysis requests and new-cash shortcuts keep their routes", () => {
+    for (const text of [
+      "What if I bought 5 more ACME?",
+      "If I sold 3 shares of ACME, would I be less concentrated?",
+      "Should I buy more ACME?",
+      "What do you think about ACME?",
+      "I have C$2,000 to invest",
+    ]) expect(isConversation(text, SNAPSHOT), text).toBe(false);
+    expect(route("What if I bought 5 more ACME?", SNAPSHOT)).toMatchObject({ kind: "stock", position: ACME });
+    expect(route("Should I rebalance my portfolio?", SNAPSHOT).kind).toBe("rebalance");
+  });
+});

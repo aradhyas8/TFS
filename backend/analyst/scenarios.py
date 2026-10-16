@@ -3,7 +3,7 @@
 from datetime import date
 from decimal import Decimal, localcontext
 
-from .calculations import money
+from .calculations import money, recent
 from .schemas import (
     CalculatedAlternative,
     CalculatedCase,
@@ -67,7 +67,9 @@ def component(
             raise ValueError("Same-currency paths must use identity FX multipliers.")
         fx = Decimal(1)
     else:
-        fx = row.fx_used.rate if row.fx_used and row.fx_used.as_of == as_of and row.fx_used.status != "stale" else None
+        # The valuation rule: manual FX on the snapshot date, provider FX the latest published within the recent window,
+        # never stale or later than the snapshot. Same-day FX is a sizing requirement (source_inputs_usable), not a case one.
+        fx = row.fx_used.rate if row.fx_used and recent(row.fx_used.as_of, as_of, row.fx_used.status) else None
     if row.value is None or fx is None:
         issues.append("Starting identity, unadjusted quote or dated FX is unusable; outcome is unknown.")
         starting = None

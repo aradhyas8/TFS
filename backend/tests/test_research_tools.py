@@ -12,9 +12,11 @@ from fastapi.testclient import TestClient
 from analyst.api import create_app
 from analyst.config import Settings
 from analyst.financial_data import FakeFinancialProvider
+from analyst.financial_tools import FinancialTools
 from analyst.portfolio import PortfolioStore
 from analyst.providers import ModelTurn, ToolCall
 from analyst.research import ReviewedResearchProvider
+from analyst.research_tools import ResearchTools
 from analyst.schemas import CompanyResearch, DiscoveryCandidate, DiscoveryScan
 from tests.test_canadian_stock import canadian_research_fixture
 from tests.test_comparison import driver
@@ -86,7 +88,8 @@ def test_direct_primary_research_retains_sources_and_run_basis(tmp_path):
 
 
 def test_research_and_scenario_tool_schemas_are_strict_at_transport_boundary(tmp_path):
-    _, _, model = run_tools(tmp_path, [("get_sec_filings", {"position_id": "stock"})])
+    # The retrieval and the screen make both calculation schemas visible on later turns.
+    _, _, model = run_tools(tmp_path, [("get_sec_filings", {"position_id": "stock"}), ("scan_opportunities", {})])
 
     def check(schema):
         if isinstance(schema, dict):
@@ -100,7 +103,9 @@ def test_research_and_scenario_tool_schemas_are_strict_at_transport_boundary(tmp
             for value in schema:
                 check(value)
 
-    for tool in model.requests[0]["tools"]:
+    tools = {tool["name"]: tool for request in model.requests for tool in request["tools"]}
+    assert {"calculate_company_cases", "calculate_comparison"} <= set(tools)
+    for tool in tools.values():
         check(tool["parameters"])
 
 
@@ -176,6 +181,9 @@ def test_two_company_screen_cases_and_comparison_deliver_final_answer_in_eight_t
         workflow_input={"comparison": {key: args[key] for key in ("scope_position_ids", "alternatives")}} if structured else None)
     assert run["status"] == "completed", run.get("error")
     assert len(model.requests) == 8
+    advertised = [{tool["name"] for tool in request["tools"]} for request in model.requests]
+    assert "calculate_company_cases" not in advertised[0] and "calculate_company_cases" in advertised[3]
+    assert "calculate_comparison" in advertised[6]
     assert run["messages"][-1]["text"] == "Done."
     comparison = artifacts[-1]["payload"]
     assert len(comparison["source_artifact_ids"]) == 2
@@ -527,3 +535,33 @@ def test_company_cases_do_not_turn_unsupported_evidence_into_value(tmp_path, fau
     result = artifacts[-1]["payload"]["result"]
     assert all(case["terminal_price"] is None for case in result["cases"])
     assert result["qualifications"]
+
+
+def test_calculation_schemas_wait_for_their_prerequisites_but_stay_callable(tmp_path):
+    run, _, model = run_tools(tmp_path, [
+        ("calculate_comparison", comparison_args()),
+        ("get_company_research", {"position_id": "stock"}),
+        ("calculate_company_cases", {"position_id": "stock", "judgments": company_judgments()}),
+    ])
+    assert run["status"] == "completed", run.get("error")
+    advertised = [{tool["name"] for tool in request["tools"]} for request in model.requests]
+    assert len(advertised[0]) == 21
+    assert not {"calculate_company_cases", "calculate_comparison"} & advertised[0]
+    # The comparison ran without being advertised: its handler, not the tool list, enforces its rules.
+    assert "calculate_company_cases" in advertised[2] and "calculate_comparison" in advertised[3]
+    outcomes = [outcome for message in run["messages"] for outcome in message["tool_outcomes"]]
+    assert [(o["name"], o["status"]) for o in outcomes] == [
+        ("calculate_comparison", "success"), ("get_company_research", "success"),
+        ("calculate_company_cases", "success")]
+
+
+@pytest.mark.parametrize("text,workflow_input,hidden", [
+    ("What is an ETF?", None, {"calculate_company_cases", "calculate_comparison"}),
+    ("Compare my cash with ACME", None, {"calculate_company_cases"}),
+    ("Should I keep ACME or switch to the index fund?", None, {"calculate_company_cases"}),
+    ("Is the cash better here?", {"comparison": {"scope_position_ids": ["cash"], "alternatives": [
+        {"id": "keep", "kind": "no_action", "position_id": None}]}}, {"calculate_company_cases"}),
+])
+def test_comparison_schema_is_offered_for_comparison_requests(text, workflow_input, hidden):
+    tools = ResearchTools(FinancialTools(FakeFinancialProvider(evidence())), None, workflow_input)
+    assert tools.unadvertised(text) == hidden

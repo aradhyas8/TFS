@@ -99,3 +99,21 @@ test('an OpenRouter provider is named with its selected model', async ({ page })
   await page.getByText('AI connection · connected', { exact: true }).click();
   await expect(page.getByText('Selected model:', { exact: false })).toContainText('vendor/model:free');
 });
+
+test('OpenRouter has its own section with its models', async ({ page }) => {
+  const status = { state: 'connected', chatgpt_state: 'disconnected', provider: 'chatgpt_plan', model: '', account: null, models: [], api_key_available: true,
+    api_provider: 'openrouter', message: 'Connect your ChatGPT plan for AI questions.', openrouter_available: true,
+    openrouter_models: [{ slug: 'deepseek/deepseek-v4.1-flash', display_name: 'DeepSeek V4.1 Flash' }, { slug: 'nvidia/nemotron-3-super-120b-a12b:free', display_name: 'Nemotron 3 Super Free' }] };
+  const sent: object[] = [];
+  await page.route('**/api/ai/**', async route => {
+    if (route.request().url().endsWith('/provider')) { const body = route.request().postDataJSON(); sent.push(body); Object.assign(status, body); }
+    await route.fulfill({ json: status });
+  });
+  await page.goto('/');
+  await page.getByText('AI connection · connected', { exact: true }).click();
+  await page.getByLabel('OpenRouter model').selectOption('deepseek/deepseek-v4.1-flash');
+  await page.getByRole('button', { name: 'Use OpenRouter', exact: true }).click();
+  await expect(page.getByText('Selected model:', { exact: false })).toContainText('deepseek/deepseek-v4.1-flash');
+  expect(sent).toEqual([{ provider: 'openrouter', model: 'deepseek/deepseek-v4.1-flash' }]);
+  await expect(page.getByRole('button', { name: 'Use API-key provider' })).toHaveCount(0);
+});

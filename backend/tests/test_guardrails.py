@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from analyst.api import create_app
 from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCall
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation, snapshot
 
 
@@ -25,9 +26,7 @@ def review(portfolio=None, settings=None, proposed_changes=None, model_proposal=
         payload["settings"] = settings
     if proposed_changes is not None:
         payload["proposed_changes"] = proposed_changes
-    return TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider())).post(
-        "/api/analyze", json=payload
-    )
+    return analyze_with(TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider())), payload)
 
 
 def test_explicit_cap_aggregates_accounts_and_explains_reduction_to_cash():

@@ -1,9 +1,10 @@
+import asyncio
 import copy
 import json
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Protocol, cast
+from dataclasses import dataclass, field, replace
+from typing import Any, Literal, Protocol, cast
 
 from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI, OpenAIError, omit
 from openai.types.responses import FunctionToolParam, ResponseInputParam, ToolChoiceFunctionParam
@@ -104,7 +105,26 @@ class ScriptedModel:
         self.finals.append(final)
         if not self.turns:
             raise ValueError("Scripted model has no remaining turn.")
-        return self.turns.pop(0)
+        turn = self.turns.pop(0)
+        position = latest_price_position(messages)
+        if isinstance(turn.answer, dict) and "price_position" not in turn.answer and position:
+            # A scripted answer reads where today's price sits from the tool output, as a correct model does.
+            turn = replace(turn, answer={**turn.answer, "price_position": position})
+        return turn
+
+
+def latest_price_position(messages: list[dict[str, Any]]) -> str | None:
+    """The valuation position from the most recent company-case tool output, if any."""
+    for message in reversed(messages):
+        if message.get("type") != "function_call_output":
+            continue
+        try:
+            valuation = json.loads(message["output"]).get("valuation")
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if isinstance(valuation, dict) and valuation.get("position"):
+            return str(valuation["position"])
+    return None
 
 
 PORTFOLIO_TOOL: FunctionToolParam = {
@@ -202,24 +222,39 @@ def openrouter_routing(model: str) -> dict[str, Any]:
 class ModelServiceError(OpenAIError):
     """A model-service failure whose message is safe to show the user: no upstream body, key or request detail."""
 
+    def __init__(self, message: str, *, kind: Literal["rate_limit", "timeout", "model_service"] = "model_service") -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+class ModelIncomplete(ModelServiceError, ValueError):
+    """The provider returned a response that stopped before any tool call or answer (e.g. reasoning only)."""
+
+    def __init__(self, message: str, *, reason: str | None) -> None:
+        super().__init__(message)
+        self.reason = reason
+
 
 def openrouter_failure(exc: APIError, model: str) -> ModelServiceError:
     """Classify an OpenRouter failure. Upstream bodies are read only to classify and logged by status, never echoed."""
     status = getattr(exc, "status_code", None)
     logging.error("OPENROUTER REQUEST FAILED type=%s status=%s model=%s", type(exc).__name__, status, model)
     upstream = str(getattr(exc, "body", None) or "").lower()
+    kind: Literal["rate_limit", "timeout", "model_service"] = "model_service"
     if isinstance(exc, APITimeoutError):
-        reason = "timed out. Nothing was retried; try again later"
+        reason, kind = "timed out. Nothing was retried; try again later", "timeout"
     elif isinstance(exc, APIConnectionError):
         reason = "could not be reached. Nothing was retried; check the connection and try again"
     elif status == 429:
+        kind = "rate_limit"
         reason = "rate limit reached (free-tier models have per-minute and daily limits). Nothing was retried; try again later"
     elif status == 404 and "that support" in upstream and "reasoning" in upstream:
         reason = ("does not support the configured reasoning effort at the allowed price. "
                   "Unset OPENAI_REASONING_EFFORT or choose a model that supports reasoning; no other model was used")
-    elif status == 404 and "that support" in upstream:
-        reason = ("does not support the required tools, tool choice and structured outputs at the allowed price. "
-                  "Choose a model that does; no other model was used")
+    elif status == 404 and ("that support" in upstream or "can handle the requested parameters" in upstream):
+        reason = ("does not support every parameter TFS requires (tools, named tool choice, strict structured outputs "
+                  "and any configured reasoning effort) at the allowed price. Retrying will not help; choose a model whose "
+                  "provider supports all of them. No other model was used")
     elif status == 402:
         reason = "rejected the request for insufficient credits. No other model was used"
     elif status == 400:
@@ -227,7 +262,7 @@ def openrouter_failure(exc: APIError, model: str) -> ModelServiceError:
                   "Retrying will not help; choose another model")
     else:
         reason = f"is unavailable (HTTP {status}). No other model was used; try again later"
-    return ModelServiceError(f"OpenRouter {model}: {reason}.")
+    return ModelServiceError(f"OpenRouter {model}: {reason}.", kind=kind)
 
 
 class OpenAIResponseTransport:
@@ -306,7 +341,13 @@ class OpenAIResponseTransport:
                 del params["max_output_tokens"]
                 response = await stream_response(self.client, params, effective_timeout)
             else:
-                response = await self.client.responses.create(**params)
+                # The SDK timeout bounds each socket read, not the request: a provider streaming keep-alives could hold
+                # a call open indefinitely. This is the real per-call limit.
+                response = await asyncio.wait_for(self.client.responses.create(**params), effective_timeout)
+        except TimeoutError:
+            prefix = f"OpenRouter {self.settings.model}: " if openrouter else ""
+            raise ModelServiceError(f"{prefix}the model did not respond within {effective_timeout:.0f} seconds. "
+                                    "Nothing was retried; try again later.", kind="timeout") from None
         except APIError as exc:
             if not openrouter:
                 raise
@@ -342,7 +383,9 @@ class OpenAIResponseTransport:
                 f"max_output_tokens=16000, reasoning_effort={effort}, partial_tools={partial_tools}"
             )
             logging.error("OPENAI INCOMPLETE RESPONSE: %s", msg)
-            raise ValueError(msg)
+            # Token diagnostics stay in the log; the exception message is shown to the user.
+            raise ModelIncomplete(f"The model response is incomplete (reason: {inc_reason or 'not given by the provider'}).",
+                                  reason=inc_reason)
 
         # Check for model refusals in output items
         for item in response.output:
@@ -399,8 +442,14 @@ class OpenAIResponseTransport:
             for item in response.output
             if item.type == "function_call"
         ]
+        if len(calls) > 1 and self.settings.openrouter:
+            # OpenRouter cannot be sent parallel_tool_calls=false, so run the first call only; the model asks again for the rest.
+            logging.warning("OpenRouter %s requested %s parallel calls; keeping the first.", self.settings.model, len(calls))
+            continuation = [item for item in continuation if item.get("type") != "function_call" or item.get("call_id") == calls[0].call_id]
+            calls = calls[:1]
         if calls:
-            return ModelTurn(calls=calls, continuation=continuation)
+            # Prose beside a call is narration ("Let me check"); like the turn's text, it is not kept.
+            return ModelTurn(calls=calls, continuation=[item for item in continuation if item.get("type") != "message"])
 
         answer: dict[str, Any] | None = None
         raw_text = response.output_text or ("".join(plain_texts) if plain_texts else None)
@@ -486,7 +535,9 @@ def build_workflow_tools(request: dict[str, Any]) -> tuple[list[FunctionToolPara
             },
         ]
     raw_tools = [PORTFOLIO_TOOL, *FINANCIAL_TOOLS, PROPOSAL_TOOL, COMPARISON_TOOL, *stock_tools, *(ALLOCATION_TOOLS if allocation else [])]
-    if review:
+    # Stock analysis reuses its calculated company cases like a review does, instead of the model restating them:
+    # in logged runs those restated cases were over half of the slowest turn's output.
+    if review or request.get("stock") and request.get("comparison") and not allocation and not theme:
         comparison_schema = sanitize_schema(ComparisonJudgments.model_json_schema())
         selection = request.get("comparison") or {}
         selected = selection.get("alternatives", [])

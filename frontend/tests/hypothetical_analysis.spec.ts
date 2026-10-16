@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openDetails } from "./test_helpers";
+import { openDetails, recordWorkflows } from "./test_helpers";
 
 const SAVED = {
   snapshot: {
@@ -73,16 +73,13 @@ test.describe("Ticket 08: Immutable hypothetical draft analysis", () => {
     page,
   }) => {
     const artifactRequests: any[] = [];
-    const analyzeRequests: any[] = [];
+    const analyzeRequests = recordWorkflows(page);
 
     page.on("request", request => {
       if (request.url().includes("/api/portfolio/artifacts") || request.url().includes("/api/artifacts")) {
         if (request.method() === "POST") {
           artifactRequests.push(request.postDataJSON());
         }
-      }
-      if (request.url().endsWith("/api/analyze")) {
-        analyzeRequests.push(request.postDataJSON());
       }
     });
 
@@ -135,30 +132,30 @@ test.describe("Ticket 08: Immutable hypothetical draft analysis", () => {
     // Captured snapshot at click time: single_company_cap was 0.2, NOT subsequent edit 0.99
     expect(sentArtifact.portfolio.settings.single_company_cap).not.toBe("0.99");
 
+    // The review runs in a conversation on the stored draft, named only by its artifact ID.
     expect(analyzeRequests.length).toBeGreaterThanOrEqual(1);
     const sentAnalyze = analyzeRequests[0];
-    expect(sentAnalyze.artifact_reference).toBeDefined();
-    expect(sentAnalyze.artifact_reference.basis).toBe("hypothetical");
-    expect(sentAnalyze.artifact_reference.label).toBe("Hypothetical Draft Portfolio");
-    expect(sentAnalyze.settings.single_company_cap).toBe("0.2");
-    expect(sentAnalyze.settings.single_company_cap).not.toBe("0.99");
+    expect(sentAnalyze.workflow).toBe("run_exposure_review");
+    const draftId = sentAnalyze.hypothetical_artifact_id;
+    expect(draftId).toBeDefined();
 
     // Check stored artifact directly from backend endpoint
-    const artifactLookup = await page.request.get(`/api/portfolio/artifacts/${sentAnalyze.artifact_reference.id}`);
+    const artifactLookup = await page.request.get(`/api/portfolio/artifacts/${draftId}`);
     expect(artifactLookup.ok()).toBeTruthy();
     const artifactRefData = await artifactLookup.json();
-    expect(artifactRefData.id).toBe(sentAnalyze.artifact_reference.id);
+    expect(artifactRefData.id).toBe(draftId);
     expect(artifactRefData.basis).toBe("hypothetical");
+    expect(artifactRefData.label).toBe("Hypothetical Draft Portfolio");
 
-    const payloadLookup = await page.request.get(`/api/portfolio/artifacts/${sentAnalyze.artifact_reference.id}/payload`);
+    const payloadLookup = await page.request.get(`/api/portfolio/artifacts/${draftId}/payload`);
     expect(payloadLookup.ok()).toBeTruthy();
     const artifactRecord = await payloadLookup.json();
     expect(artifactRecord.settings.single_company_cap).toBe("0.2");
     expect(artifactRecord.settings.single_company_cap).not.toBe("0.99");
 
-    // Average costs must stay OUTSIDE analysis requests
-    expect((sentAnalyze as any).average_costs).toBeUndefined();
-    expect(sentAnalyze.portfolio.average_costs).toBeUndefined();
+    // Average costs and holdings never travel with the run request; the backend reads the stored draft
+    expect(sentAnalyze.average_costs).toBeUndefined();
+    expect(sentAnalyze.portfolio).toBeUndefined();
 
     // 7. Verify committed revision did not advance and no proposals were created/confirmed
     const afterHypoRes = await page.request.get("/api/portfolio");
@@ -197,7 +194,7 @@ test.describe("Ticket 08: Immutable hypothetical draft analysis", () => {
     await expect(page.getByTestId("hypothetical-banner")).toHaveCount(0);
 
     const ordinaryAnalyze = analyzeRequests[analyzeRequests.length - 1];
-    expect(ordinaryAnalyze.artifact_reference).toBeUndefined();
-    expect(ordinaryAnalyze.settings.single_company_cap).toBe("0.5"); // uses committed state
+    expect(ordinaryAnalyze.workflow).toBe("run_exposure_review");
+    expect(ordinaryAnalyze.hypothetical_artifact_id).toBeUndefined(); // uses committed state
   });
 });

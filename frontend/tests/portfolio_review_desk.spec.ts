@@ -113,8 +113,8 @@ test("portfolio review: without rules the analyst's own answer is shown and noth
   await expect(memo.getByRole("heading", { level: 2 })).toHaveText("Here is where your portfolio stands.");
   await expect(memo).toContainText("No rules set");
   await expect(memo.getByTestId("review-total")).toContainText("C$3,700");
-  // A follow-up is a new review of the same saved portfolio.
-  await expect(ask).toHaveAttribute("placeholder", "Ask anything, or type / for a workflow");
+  // The review is its own conversation, so a follow-up continues it.
+  await expect(ask).toHaveAttribute("placeholder", "Ask a follow-up, or type / for a workflow");
 });
 
 test("benchmark fund: configure in holdings rules, verify comparison alternative, absent from rail and weights, persist and clear", async ({ page }) => {
@@ -262,7 +262,7 @@ test("missing mark displays unknown total and qualifies the completed review", a
   await expect(memo.getByTestId("review-total")).toContainText("known");
 });
 
-test("invalid model output clears the previous result and cannot display as a completed recommendation", async ({ page }) => {
+test("invalid model output is withheld and cannot display as a completed recommendation", async ({ page }) => {
   await page.route("**/*", route => ["127.0.0.1", "localhost"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
   await seedPortfolio(page, SAVED);
   await page.goto("/");
@@ -276,13 +276,21 @@ test("invalid model output clears the previous result and cannot display as a co
 
   // 2. Submit question returning invalid output
   await ask.fill("/review Return invalid output");
-  const rejected = page.waitForResponse(response => response.url().endsWith("/api/analyze") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
-  expect((await rejected).status()).toBe(502);
+  await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Return invalid output");
+  await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
+  // The model supplied an amount twice: the calculated review is kept, but its direction and the amount are withheld.
+  const threads: { id: string; title: string }[] = await (await page.request.get("/api/threads")).json();
+  const asked = threads.find(item => item.title.includes("Return invalid output"))!;
+  const { runs } = await (await page.request.get(`/api/threads/${asked.id}`)).json();
+  expect(runs.at(-1).status).toBe("completed");
+  const { payload } = await (await page.request.get(`/api/artifacts/${runs.at(-1).artifact_ids[0]}`)).json();
+  const { recommendation } = payload;
+  expect(["wait_for_inputs", "review_only"]).toContain(recommendation.preferred_action); // breached limits take precedence
+  expect(recommendation.amount).toBeNull();
 
-  // 3. Displays failure and no completed memo
-  await expect(page.getByText("The analysis didn't return an answer.")).toBeVisible();
-  await expect(memo).toHaveCount(0);
+  // 3. Displays a result without a direction; the model's amount never reached it (amount is null above)
+  await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
 });
 
 test("existing analysis journey works without saving", async ({ page }) => {

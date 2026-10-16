@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
-import { openDetails, seedPortfolio } from "./test_helpers";
+import { openDetails, recordWorkflows, seedPortfolio } from "./test_helpers";
 
 // ACME has reviewed research fixtures on the test server; with the 15% cap it breaks a rule.
 const SAVED = {
@@ -44,16 +44,15 @@ async function send(page: Page, question: string) {
 
 test("a workflow run in the conversation shows the stored financial result, unchanged after a reload", async ({ page }) => {
   await open(page);
-  const analyses: string[] = [];
-  page.on("request", request => { if (request.url().includes("/api/analyze")) analyses.push(request.url()); });
+  const workflows = recordWorkflows(page);
 
   await send(page, "Review my exposure in chat");
   const result = thread(page).getByRole("article", { name: "Exposure review result" });
   const memo = result.getByRole("region", { name: "Analyst memo" });
-  // The backend's computed values, in the existing review memo. The run is dated today, so the test server's
-  // September marks are out of date and only the cash balance is a known value: nothing is filled in by prose.
+  // The backend's computed values, in the existing review memo. Chat and form runs value on the same market date
+  // as every analysis (the test server's fixture date), so the September marks are current.
   await expect(memo).toContainText("ACME · TFSA");
-  await expect(memo).toContainText("Total unknown · known C$1,000 · holdings Unknown · cash C$1,000");
+  await expect(memo).toContainText("C$3,700 · holdings C$2,700 · cash C$1,000");
   await expect(result).toContainText("Portfolio revision 1");
   await expect(thread(page)).toContainText("Plain answer to: Review my exposure in chat");
   // The stored tool record is never shown as prose.
@@ -70,13 +69,13 @@ test("a workflow run in the conversation shows the stored financial result, unch
   expect((await holdings(page)).revision).toBe(2);
 
   await page.reload();
-  await expect(memo).toContainText("known C$1,000");
+  await expect(memo).toContainText("cash C$1,000");
   await expect(memo).toContainText("ACME · TFSA");
   expect(await result.innerText()).toBe(first);
   await expect(result).toContainText("Portfolio revision 1");
   expect((await detail(page)).runs[0].artifact_ids).toEqual(stored);
-  // The thread never re-runs an analysis to draw a result.
-  expect(analyses).toHaveLength(0);
+  // The thread never re-runs an analysis to draw a result, and the chat request started no form workflow.
+  expect(workflows).toHaveLength(0);
 });
 
 test("a sourced web answer keeps clickable citations with its text after a reload", async ({ page }) => {
@@ -126,10 +125,29 @@ test("a direct calculation shows its stored values, and a result that no longer 
 
   const card = thread(page).getByRole("article", { name: "Portfolio exposure and guardrails" });
   await expect(card).toContainText("Portfolio revision 1");
-  // The stored calculation, value for value: the cash balance the backend recorded, not a paraphrase.
+  // A readable summary of the stored calculation, value for value, with its dates and what is missing.
+  const summary = card.getByRole("region", { name: "Portfolio summary" });
+  await expect(summary).toContainText("Total value");
+  await expect(summary).toContainText("cash C$1,000");
+  await expect(summary).toContainText("Holdings last confirmed Sep 30, 2026");
+  await expect(summary.getByRole("table", { name: "Holdings" }).getByRole("row", { name: /ACME/ })).toContainText("TFSA");
+  // The run is dated today, so the September marks are out of date: the gap stays visible, never filled in.
+  await expect(summary.getByRole("alert").or(summary.getByRole("status")).first()).toContainText("Not every holding has a usable value");
+  await expect(card.getByRole("tree")).toHaveCount(0);
+  // The stored values themselves stay one click away.
+  await card.getByText("Show stored values").click();
   const values = card.getByRole("tree", { name: "Portfolio exposure and guardrails values" });
   await expect(values).toContainText('capability:"review_portfolio"');
   await expect(values).toContainText('holdings_as_of:"2026-09-30"');
+
+  // Reading the stored result back in a later run is a routine read: no second card, and the read is folded away.
+  await send(page, "Recall the exposure result");
+  await expect(thread(page)).toContainText("Plain answer to: Recall the exposure result");
+  await expect(thread(page).getByRole("article", { name: "Portfolio exposure and guardrails" })).toHaveCount(1);
+  const reread = thread(page).getByRole("listitem").filter({ hasText: "Read saved data" });
+  await expect(reread).toHaveCount(1);
+  await reread.getByText("1 step").click();
+  await expect(reread.getByRole("list", { name: "Analyst steps" })).toContainText("Checked artifact");
   // Stored values reach the browser without the private cost basis or any credential.
   const shown = (await page.getByRole("main").innerHTML()) + JSON.stringify(await page.evaluate(() => ({ ...localStorage })));
   for (const secret of ["average_cost", "sk-test-backend-only-never-browser", "continuation"]) {
@@ -351,11 +369,10 @@ test("a proposal prepared before the portfolio changed is shown as out of date a
 test("a stored result is saved as a decision with its workflow and subject, journaled, reopened and re-run", async ({ page }) => {
   await open(page);
   const commits: string[] = [];
-  const analyses: { stock?: { position_id: string } }[] = [];
   page.on("request", request => {
     if (/\/api\/portfolio\/proposals\/[^/]+\/confirm$/.test(request.url())) commits.push(request.url());
-    if (request.url().endsWith("/api/analyze")) analyses.push(request.postDataJSON());
   });
+  const analyses = recordWorkflows(page);
   const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
 
   await send(page, "Analyze a stock in chat");
@@ -398,16 +415,20 @@ test("a stored result is saved as a decision with its workflow and subject, jour
   await register.getByTestId("decision-row").click();
   await expect(page.locator(".ctx")).toContainText("Read-only");
 
-  // Re-running is a fresh analysis of today's saved portfolio for the same subject.
-  expect(analyses).toHaveLength(0);
+  // Re-running is a fresh analysis of today's saved portfolio for the same subject. The only run so far was the
+  // form chosen in the conversation.
+  expect(analyses.map(body => body.stock?.position_id)).toEqual(["tfsa-acme"]);
   await page.getByRole("button", { name: "Re-run with today's portfolio" }).click();
   await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
-  expect(analyses.map(body => body.stock?.position_id)).toEqual(["tfsa-acme"]);
+  expect(analyses.map(body => body.stock?.position_id)).toEqual(["tfsa-acme", "tfsa-acme"]);
 
-  // The conversation and its stored result are still there, untouched by the re-run.
-  await rail.getByTestId("thread-item").first().click();
+  // The conversation and its stored result are still there, untouched by the re-run (saved as its own conversation).
+  await rail.getByTestId("thread-item").filter({ hasText: "Analyze a stock in chat" }).click();
   await expect(result.getByRole("region", { name: "Stock analysis" })).toBeVisible();
-  expect((await detail(page)).runs).toHaveLength(2);
+  const threads: { id: string; title: string }[] = await (await page.request.get("/api/threads")).json();
+  expect(threads).toHaveLength(2);
+  const original = threads.find(item => item.title === "Analyze a stock in chat")!;
+  expect((await (await page.request.get(`/api/threads/${original.id}`)).json()).runs).toHaveLength(2);
 });
 
 test("a calculation that needs a saved portfolio asks for it instead of showing an empty result", async ({ page }) => {
@@ -427,7 +448,7 @@ for (const [name, width, height] of [["phone", 390, 844], ["tablet", 768, 1024],
     await send(page, "What is the latest news on Acme?");
     await expect(thread(page).getByRole("list", { name: "Sources for this answer" })).toBeVisible();
     await send(page, "Show my exposure numbers");
-    await expect(thread(page).getByRole("article", { name: "Portfolio exposure and guardrails" }).getByRole("tree")).toBeVisible();
+    await expect(thread(page).getByRole("article", { name: "Portfolio exposure and guardrails" }).getByRole("region", { name: "Portfolio summary" })).toBeVisible();
     await send(page, "Set my ACME shares to 12");
     const proposal = thread(page).getByRole("article", { name: "Proposed portfolio changes" });
     await expect(proposal).toContainText("Waiting for your review");
@@ -579,10 +600,18 @@ test("a proposal that this page knows is out of date offers no review, whatever 
 
 test("a stored stock result is saved under its own listing, and a re-run never switches to another listing", async ({ page }) => {
   await open(page);
+  // Candidate lookups and workflow runs, in the order the page starts them.
   const analyses: unknown[] = [];
-  page.on("request", request => { if (/\/api\/(analyze|candidates)$/.test(request.url())) analyses.push(request.postDataJSON()); });
+  page.on("request", request => {
+    if (request.url().endsWith("/api/candidates")) analyses.push(request.postDataJSON());
+    if (request.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(request.url())) {
+      const body = request.postDataJSON();
+      if (body.workflow_input?.workflow) analyses.push({ question: body.text, ...body.workflow_input });
+    }
+  });
   const rail = page.getByRole("navigation", { name: "Portfolio, conversations and decisions" });
   const result = await stockResult(page);
+  analyses.length = 0;
 
   // The same position ID is later saved with a different listing.
   const moved = { ...SAVED.snapshot, positions: SAVED.snapshot.positions.map(row => (row.id === "tfsa-acme" ? { ...row, listing: "XNYS" } : row)) };
@@ -613,4 +642,27 @@ test("a stored stock result is saved under its own listing, and a re-run never s
   await page.getByRole("button", { name: "Re-run with today's portfolio" }).click();
   await expect(page.getByRole("region", { name: "Stock analysis" })).toBeVisible();
   expect(analyses).toEqual([expect.objectContaining({ stock: { position_id: "tfsa-acme" } })]);
+});
+
+test("an answer's Markdown is drawn as headings, tables, lists, links and code, and its HTML never runs", async ({ page }) => {
+  await open(page);
+  await send(page, "Format a markdown answer");
+
+  const answer = thread(page).getByRole("listitem").filter({ hasText: "largest" });
+  await expect(answer.getByRole("heading", { name: "Summary" })).toBeVisible();
+  await expect(answer.locator("strong")).toHaveText("largest");
+  await expect(answer.locator("em")).toHaveText("ACME");
+  await expect(answer.getByRole("link", { name: "filing" })).toHaveAttribute("href", "https://example.com/acme");
+  await expect(answer.getByRole("link", { name: "filing" })).toHaveAttribute("rel", "noopener noreferrer");
+  const table = answer.getByRole("table");
+  await expect(table.getByRole("columnheader")).toHaveText(["Holding", "Weight"]);
+  await expect(table.getByRole("row", { name: /BROAD/ })).toContainText("34%");
+  await expect(answer.getByRole("list").getByRole("listitem")).toHaveText(["First point", "Second point"]);
+  await expect(answer.locator("pre code")).toHaveText('print("code")');
+  await expect(answer.locator("code").first()).toHaveText("review");
+  await expect(answer).not.toContainText("**");
+  // Model HTML is text, never markup: nothing it contains runs or renders as an element.
+  await expect(answer).toContainText("<script>");
+  expect(await answer.locator("script, img").count()).toBe(0);
+  expect(await page.evaluate(() => (window as unknown as { injected?: boolean }).injected)).toBeUndefined();
 });

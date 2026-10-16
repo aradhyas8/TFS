@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openDetails, seedPortfolio } from "./test_helpers";
+import { openDetails, recordWorkflows, seedPortfolio } from "./test_helpers";
 
 const SAVED = {
   snapshot: {
@@ -36,8 +36,7 @@ async function send(page: Page, question: string) {
 
 test("a conceptual question without a portfolio is answered in a durable thread, not a review", async ({ page }) => {
   await open(page);
-  const analyses: string[] = [];
-  page.on("request", request => { if (request.url().includes("/api/analyze")) analyses.push(request.url()); });
+  const analyses = recordWorkflows(page);
 
   await expect(rail(page)).toContainText("No conversations yet");
   await send(page, "What is an ETF?");
@@ -160,7 +159,9 @@ test("a failed send and a failed answer stay distinct from the saved conversatio
 
   await send(page, "Fail this answer about diversification");
   const failed = thread(page).getByRole("status").filter({ hasText: "This answer did not finish" });
-  await expect(failed).toContainText("the fake model is unavailable");
+  // The safe message from the shared failure mapping; the raw exception text stays in the backend log.
+  await expect(failed).toContainText("An internal error stopped this request.");
+  await expect(failed).not.toContainText("the fake model is unavailable");
   await thread(page).getByRole("button", { name: "Ask again" }).click();
   await expect(failed).toHaveCount(2);
   // The composer takes the keyboard back once the answer has ended.
@@ -177,7 +178,7 @@ test("a failed send and a failed answer stay distinct from the saved conversatio
   expect((await (await page.request.get("/api/portfolio")).json()).portfolio.settings.single_company_cap).toBe("0.15");
 });
 
-test("slash shortcuts, natural workflow routes and the decision register still work, and none of them creates a thread", async ({ page }) => {
+test("slash shortcuts, natural workflow routes and the decision register still work, and each answer is saved as a conversation", async ({ page }) => {
   await open(page, SAVED);
   await ask(page).fill("/rev");
   await ask(page).press("Enter");
@@ -189,28 +190,28 @@ test("slash shortcuts, natural workflow routes and the decision register still w
   await page.getByRole("button", { name: "Save decision" }).click();
   await expect(rail(page).getByTestId("all-decisions-link")).toContainText("1 open");
 
-  // The cached last answer and the saved decision come back after a reload; neither becomes a conversation.
+  // The answer and the saved decision come back after a reload, and the answer is a saved conversation.
   await page.reload();
   await expect(memo.getByRole("heading", { level: 2 })).toBeVisible();
-  await expect(rail(page)).toContainText("No conversations yet");
-  expect(await (await page.request.get("/api/threads")).json()).toEqual([]);
+  await expect(rail(page)).toContainText("Review my portfolio");
+  expect(await (await page.request.get("/api/threads")).json()).toHaveLength(1);
 
   await send(page, "What do you think about ACME?");
   await expect(page.locator(".ctx")).toContainText("Stock analysis · ACME");
   await expect(page.getByRole("main").getByRole("heading", { level: 2 })).toContainText("ACME");
   await rail(page).getByTestId("all-decisions-link").click();
   await expect(page.getByRole("heading", { name: "Decisions", level: 1 })).toBeVisible();
-  expect(await (await page.request.get("/api/threads")).json()).toEqual([]);
+  expect(await (await page.request.get("/api/threads")).json()).toHaveLength(2); // the review and the stock analysis
 
-  // Back from Decisions to the answer on screen, a question starts its own conversation; a shortcut there still
-  // opens its workflow and the conversation stays in the list.
+  // Back from Decisions to the answer on screen, which is its own conversation: a question continues it, and a
+  // shortcut there still opens its workflow.
   await page.getByRole("button", { name: "Back to chat" }).click();
   await send(page, "What is a stock split?");
   await expect(thread(page)).toContainText("Plain answer to: What is a stock split?");
   await ask(page).fill("/new-cash");
   await ask(page).press("Enter");
   await expect(page.getByLabel("Amount", { exact: true })).toBeVisible();
-  await expect(rail(page).getByTestId("thread-item")).toHaveCount(1);
+  await expect(rail(page).getByTestId("thread-item")).toHaveCount(2); // the review, and the stock analysis with its follow-up
 });
 
 test("conversation state shows result references but never credentials, private continuation or average costs", async ({ page }) => {

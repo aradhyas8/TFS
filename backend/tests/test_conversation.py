@@ -411,6 +411,8 @@ def test_fastapi_thread_and_run_endpoints(tmp_path: Path) -> None:
     assert run_data["status"] == "running"
     # Revision was bound once at acceptance!
     assert run_data["bound_revision"] == 1
+    # The run records the model that answers it.
+    assert (run_data["ai_provider"], run_data["ai_model"]) == ("openai", "gpt-4o")
     run_id = run_data["id"]
 
     # 4. Duplicate submission returns existing run (202)
@@ -523,3 +525,107 @@ def test_thread_list_titles_each_thread_by_its_first_question(tmp_path: Path) ->
     summary = client.get("/api/threads").json()[0]
     assert summary["title"] == "What is an ETF?"
     assert summary["last_message_preview"] == "An ETF is an exchange-traded fund."
+
+
+def chat_client(tmp_path: Path, model: Any) -> TestClient:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(sample_portfolio())
+    settings = Settings(api_key="sk-test", model="test-model", request_timeout=5, reasoning_effort="high")
+    return TestClient(create_app(settings=settings, portfolio_store=store,
+                                 orchestrator=Orchestrator(store.db, model, settings)))
+
+
+def test_chat_incomplete_turn_retries_once_at_lower_effort_without_repeating_tools(tmp_path: Path) -> None:
+    from analyst.providers import ModelIncomplete
+    from tests.test_context_retrieval import CapturingTransport, submit
+
+    stopped = ModelIncomplete("The model response is incomplete (reason: max_output_tokens).", reason="max_output_tokens")
+    model = CapturingTransport([ModelTurn(calls=[ToolCall("read", "get_holdings", '{"offset":0,"limit":20}')]),
+                                stopped, ModelTurn(text="You hold TD.")])
+    original = model.respond
+
+    async def respond(messages: Any, **kwargs: Any) -> ModelTurn:
+        turn = await original(messages, **kwargs)
+        if isinstance(turn, Exception):
+            raise turn
+        return turn
+
+    model.respond = respond  # type: ignore[method-assign]
+    with chat_client(tmp_path, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "What do I hold?")
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+    assert run["status"] == "completed", run
+    # Tool-selection turns are capped at medium; the retry lowers the effort once.
+    assert [r["reasoning_effort"] for r in model.requests] == ["medium", "medium", "low"]
+    assert sum(len(m["tool_outcomes"]) for m in messages) == 1
+    assert messages[-1]["text"] == "You hold TD."
+
+
+def test_chat_incomplete_twice_fails_with_a_clear_message(tmp_path: Path) -> None:
+    from analyst.providers import ModelIncomplete
+    from tests.test_context_retrieval import CapturingTransport, submit
+
+    class Incomplete(CapturingTransport):
+        async def respond(self, messages: Any, **kwargs: Any) -> ModelTurn:
+            self.requests.append(kwargs)
+            raise ModelIncomplete("The model response is incomplete (reason: max_output_tokens).", reason="max_output_tokens")
+
+    model = Incomplete([])
+    with chat_client(tmp_path, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "What do I hold?")
+    assert run["status"] == "failed"
+    assert "ran out of output space" in run["error"] and "lower the reasoning effort" in run["error"]
+    assert "tokens=" not in run["error"] and "Model service error" not in run["error"]
+    assert [r["reasoning_effort"] for r in model.requests] == ["medium", "low"]
+
+
+@pytest.mark.parametrize("text,valid", [
+    ("", False), ("   \n", False),
+    ('{"name": "get_holdings", "arguments": {}}', False),
+    ('```json\n{"retrieval": {"tool": "get_holdings", "arguments": {"offset": 0}}}\n```', False),
+    ('[{"type": "function_call", "name": "review_portfolio", "arguments": "{}"}]', False),
+    ('{"total_value": "3600", "cash": "1300"}', True),
+    ('```python\nprint({"name": "get_holdings"})\n```', True),
+    ('Call it like this: {"name": "get_holdings", "arguments": {}}', True),
+    ('{"name": "Acme", "weight": "0.64"}', True),
+])
+def test_final_answer_validation_rejects_only_empty_or_tool_call_shaped_text(text: str, valid: bool) -> None:
+    from analyst.orchestrator import valid_answer
+
+    assert valid_answer(text) is valid
+
+
+@pytest.mark.parametrize("invalid", ["", '{"name":"get_holdings","arguments":{}}'])
+def test_invalid_final_answer_retries_once_without_repeating_tools(tmp_path: Path, invalid: str) -> None:
+    from tests.test_context_retrieval import CapturingTransport, submit
+
+    model = CapturingTransport([ModelTurn(calls=[ToolCall("read", "get_holdings", '{"offset":0,"limit":20}')]),
+                                ModelTurn(text=invalid), ModelTurn(text="You hold 100 TD shares.")])
+    with chat_client(tmp_path, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "What do I hold?")
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+    assert run["status"] == "completed", run
+    assert len(model.requests) == 3
+    assert "tool interface" in model.requests[2]["messages"][-1]["content"]
+    # The completed read stays in the retried context and is not executed again.
+    assert sum(len(m["tool_outcomes"]) for m in messages) == 1
+    assert any(m.get("type") == "function_call_output" for m in model.requests[2]["messages"])
+    assert [m["text"] for m in messages if m["role"] == "assistant" and not m["tool_outcomes"]] == ["You hold 100 TD shares."]
+
+
+@pytest.mark.parametrize("invalid", ["", '{"name":"get_holdings","arguments":{}}'])
+def test_invalid_final_answer_twice_fails_clearly_and_is_never_stored(tmp_path: Path, invalid: str) -> None:
+    from tests.test_context_retrieval import CapturingTransport, submit
+
+    model = CapturingTransport([ModelTurn(text=invalid), ModelTurn(text=invalid)])
+    with chat_client(tmp_path, model) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "What do I hold?")
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+    assert run["status"] == "failed"
+    assert run["error"] == "The model did not produce a valid result. Nothing was completed; try again."
+    assert [m["role"] for m in messages] == ["user"]
+    assert len(model.requests) == 2

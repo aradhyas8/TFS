@@ -1,11 +1,31 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-/** Details are closed until asked for. Opens them with the Details button if nothing else has, and returns them. */
+/** Details are closed until asked for. Opens them for the latest stored result in the conversation, else with the
+ *  Details button, if nothing else has, and returns them. */
 export async function openDetails(page: Page) {
   const details = page.getByRole("complementary", { name: "Details" });
-  if (!(await details.isVisible())) await page.getByRole("button", { name: "Details", exact: true }).click();
+  if (!(await details.isVisible())) {
+    const result = page.getByRole("button", { name: "Open details", exact: true });
+    if (await result.count()) await result.last().click();
+    else await page.getByRole("button", { name: "Details", exact: true }).click();
+  }
   await expect(details).toBeVisible();
   return details;
+}
+
+/** A desk form or workflow shortcut as the page sent it: the question and its explicit workflow input. */
+export type SentWorkflow = { question: string; workflow?: string; hypothetical_artifact_id?: string } & Record<string, any>;
+
+/** Records every workflow run the page starts. Desk forms are thread messages that carry explicit workflow input. */
+export function recordWorkflows(page: Page): SentWorkflow[] {
+  const sent: SentWorkflow[] = [];
+  page.on("request", request => {
+    if (request.method() !== "POST" || !/\/api\/threads\/[^/]+\/messages$/.test(new URL(request.url()).pathname)) return;
+    const body = request.postDataJSON();
+    if (body?.workflow_input?.workflow)
+      sent.push({ question: body.text, ...body.workflow_input, hypothetical_artifact_id: body.hypothetical_artifact_id ?? undefined });
+  });
+  return sent;
 }
 
 export async function seedPortfolio(page: Page, saved: object) {

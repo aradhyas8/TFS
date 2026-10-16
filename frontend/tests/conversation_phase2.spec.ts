@@ -250,12 +250,13 @@ for (const [width, priced] of [[390, true], [390, false], [1440, false]] as cons
     await open(page, CANADA);
     if (!priced)
       // The same result with its price quoted in another currency: there is no comparable price to mark.
-      await page.route("**/api/analyze", async route => {
+      await page.route(/\/api\/artifacts\/[^/?]+(\?|$)/, async route => {
         const response = await route.fetch();
-        const body = await response.json();
+        const envelope = await response.json();
+        const body = envelope.payload ?? {};
         if (body.stock?.valuation) body.stock.valuation.currency = "USD";
         for (const row of body.portfolio?.positions ?? []) if (row.quote_used) row.quote_used.currency = "USD";
-        await route.fulfill({ response, json: body });
+        await route.fulfill({ response, json: envelope });
       });
     await ask(page).fill("/stock ACME");
     await page.getByRole("button", { name: "Ask", exact: true }).click();

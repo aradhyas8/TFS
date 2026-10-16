@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from analyst.api import create_app
 from analyst.config import Settings
 from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCall
+from tests.analysis_harness import analyze_with
 
 
 def snapshot():
@@ -77,9 +78,7 @@ def test_question_receives_computed_whole_portfolio_review():
     )
     data = FakeDataProvider()
     client = TestClient(create_app(model=model, data=data))
-    response = client.post(
-        "/api/analyze", json={"question": "How concentrated am I?", "portfolio": snapshot()}
-    )
+    response = analyze_with(client, {"question": "How concentrated am I?", "portfolio": snapshot()})
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["question"] == "How concentrated am I?"
@@ -114,9 +113,7 @@ def test_question_receives_computed_whole_portfolio_review():
     ],
 )
 def test_invalid_tool_calls_cannot_complete_a_review(turns):
-    response = TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider())).post(
-        "/api/analyze", json={"question": "Review my exposure", "portfolio": snapshot()}
-    )
+    response = analyze_with(TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider())), {"question": "Review my exposure", "portfolio": snapshot()})
     assert response.status_code == 502
     assert "recommendation" not in response.json()
 
@@ -143,9 +140,7 @@ def test_unvalidated_model_claims_do_not_replace_calculated_values(patch):
         ModelTurn(calls=[ToolCall("call", "review_portfolio", "{}")]),
         ModelTurn(answer=answer),
     ]
-    response = TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider())).post(
-        "/api/analyze", json={"question": "Review my exposure", "portfolio": snapshot()}
-    )
+    response = analyze_with(TestClient(create_app(model=ScriptedModel(turns), data=FakeDataProvider())), {"question": "Review my exposure", "portfolio": snapshot()})
     assert response.status_code == 502
     assert "portfolio" not in response.json()
     assert "sk-test-backend-only-never-browser" not in response.text
@@ -177,18 +172,17 @@ def test_invalid_portfolio_is_rejected_at_application_boundary(fault):
     else:
         portfolio["positions"][1]["listing"] = "XNAS"
         portfolio["positions"][1]["company_id"] = "other-issuer"
-    response = TestClient(create_app(model=ScriptedModel([]), data=FakeDataProvider())).post(
-        "/api/analyze", json={"question": "Review my exposure", "portfolio": portfolio}
-    )
+    response = analyze_with(TestClient(create_app(model=ScriptedModel([]), data=FakeDataProvider())), {"question": "Review my exposure", "portfolio": portfolio})
     assert response.status_code == 422
     assert "recommendation" not in response.json()
 
 
-def test_backend_configuration_does_not_leak_on_failure():
+def test_backend_configuration_does_not_leak_on_failure(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "")
     client = TestClient(create_app(settings=Settings(api_key="", model="")))
-    response = client.post(
-        "/api/analyze", json={"question": "Review my exposure", "portfolio": snapshot()}
-    )
+    thread = client.post("/api/threads").json()["id"]
+    response = client.post(f"/api/threads/{thread}/messages", json={
+        "text": "Review my exposure", "client_request_id": "unconfigured", "workflow_input": {"workflow": "run_exposure_review"}})
     assert response.status_code == 503
     assert "sk-test-backend-only-never-browser" not in response.text
     assert client.get("/api/health").json() == {"status": "ok"}
@@ -203,9 +197,7 @@ def test_explicitly_declining_unsupported_rebalancing_is_a_valid_qualification()
             ModelTurn(answer=answer),
         ]
     )
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
-        "/api/analyze", json={"question": "Should I change my exposure?", "portfolio": snapshot()}
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), {"question": "Should I change my exposure?", "portfolio": snapshot()})
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["reason"] == answer["reason"]
 
@@ -225,9 +217,7 @@ def test_empty_account_and_zero_balance_are_preserved_without_defined_weights():
             ModelTurn(answer=recommendation()),
         ]
     )
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
-        "/api/analyze", json={"question": "Review my exposure", "portfolio": portfolio}
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), {"question": "Review my exposure", "portfolio": portfolio})
     assert response.status_code == 200, response.text
     review = response.json()["portfolio"]
     assert review["total_value"] == "0"
@@ -256,12 +246,8 @@ def test_csv_and_manual_snapshots_have_identical_review():
         json={"csv": csv_text, "as_of": "2026-09-30", "reporting_currency": "CAD"},
     )
     assert loaded.status_code == 200, loaded.text
-    first = client.post(
-        "/api/analyze", json={"question": "Review my exposure", "portfolio": manual}
-    )
-    second = client.post(
-        "/api/analyze", json={"question": "Review my exposure", "portfolio": loaded.json()}
-    )
+    first = analyze_with(client, {"question": "Review my exposure", "portfolio": manual})
+    second = analyze_with(client, {"question": "Review my exposure", "portfolio": loaded.json()})
     assert second.status_code == 200, second.text
     first_review = first.json()["portfolio"]
     second_review = second.json()["portfolio"]
@@ -289,9 +275,7 @@ def test_decisive_missing_facts_remain_unknown(missing):
             ModelTurn(answer=recommendation()),
         ]
     )
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
-        "/api/analyze", json={"question": "Can I change my holdings?", "portfolio": portfolio}
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), {"question": "Can I change my holdings?", "portfolio": portfolio})
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["portfolio"]["total_value"] is None
@@ -312,9 +296,7 @@ def test_explanations_of_portfolio_risk_are_not_execution_directions(downside):
     model = ScriptedModel(
         [ModelTurn(calls=[ToolCall("risk", "review_portfolio", "{}")]), ModelTurn(answer=answer)]
     )
-    response = TestClient(create_app(model=model, data=FakeDataProvider())).post(
-        "/api/analyze", json={"question": "What is my risk?", "portfolio": snapshot()}
-    )
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider())), {"question": "What is my risk?", "portfolio": snapshot()})
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["downside"] == downside
 
@@ -456,63 +438,108 @@ def test_validate_prose_allows_descriptive_trading_properties():
         validate_prose("Execute a buy order for the ETF.")
 
 
-def test_research_source_selection_for_new_cash_and_theme(monkeypatch):
-    import analyst.api
+VALUATION_TERMS = [
+    # DeepSeek Run 4: sentence-initial "Exit multiple" was read as "exit the position".
+    "Payout reflects the observed mix of dividends and buybacks. Exit multiple is a normalized multiple on final-year free cash flow.",
+    "Exit multiples on free cash flow are a judgment and move value materially.",
+    "Distributions stay idle cash. Exit value depends on the final-year margin.",
+    "Increase in capital spending may persist. Shift in mix toward cloud supports margins.",
+    "Put options are not modeled.",
+]
+TRADING_INSTRUCTIONS = [
+    ("Exit the position.", "Exit"), ("The thesis is weak. Exit Microsoft now.", "Exit"),
+    ("Then add to the fund.", "Then add"), ("You should trim the stock.", "You should trim"),
+    ("Increase the position.", "Increase"), ("Put the cash into the ETF.", "Put"),
+    ("Shift into bonds.", "Shift"), ("Sell the shares.", "Sell"),
+]
+
+
+@pytest.mark.parametrize("explanatory", [False, True])
+def test_validate_prose_allows_valuation_terms_that_share_a_trade_word(explanatory):
+    from analyst.pipeline import validate_prose
+
+    for text in VALUATION_TERMS:
+        validate_prose(text, explanatory=explanatory)
+
+
+@pytest.mark.parametrize("text, phrase", TRADING_INSTRUCTIONS)
+def test_validate_prose_rejects_trading_instructions_and_names_the_phrase(text, phrase):
+    from analyst.pipeline import ProseRejected, validate_prose
+
+    with pytest.raises(ProseRejected) as caught:
+        validate_prose(text, explanatory=True)
+    message = str(caught.value)
+    assert message.startswith(ProseRejected.public)
+    assert f"Rejected phrase {phrase!r}: reads as a" in message
+
+
+def test_form_runs_research_new_cash_and_confirmed_theme_through_issuer_and_sec_sources(monkeypatch, tmp_path):
+    """A form run with no configured research source uses issuer material with SEC filings behind it, as the desk always
+    did; an unagreed theme stops at its agreement request and never reaches research."""
+    import analyst.workflow_tools
+    from analyst.calculations import review_portfolio
     from analyst.financial_data import FakeFinancialProvider
     from analyst.issuer_research import IssuerResearchProvider
-    from analyst.schemas import AnalysisResult, FinancialEvidence, Recommendation
+    from analyst.portfolio import PortfolioStore
+    from analyst.schemas import AnalysisResult, FinancialEvidence, Recommendation, SavedPortfolio
     from analyst.sec_research import SecResearchProvider
     from tests.test_allocation import allocation_evidence, allocation_request
+    from tests.test_context_retrieval import CapturingTransport, submit
     from tests.test_theme import theme_request
 
     captured: list[object] = []
 
     async def fake_analyze(request, provider, source, *, secret, financial, research, discovery):
-        from analyst.calculations import review_portfolio
-        from analyst.schemas import ThemeResult
+        captured.append(research.transport)  # the run's deadline wrapper around the selected source
+        return AnalysisResult(question=request.question, portfolio=review_portfolio(request.portfolio, FinancialEvidence()),
+                              recommendation=Recommendation.model_validate(recommendation()), status="completed")
 
-        captured.append(research)
-        theme_res = (
-            ThemeResult(context=request.theme, status="awaiting_agreement")
-            if request.theme and not request.theme.confirmed
-            else None
-        )
-        return AnalysisResult(
-            question=request.question,
-            portfolio=review_portfolio(request.portfolio, FinancialEvidence()),
-            recommendation=Recommendation.model_validate(recommendation()),
-            status="completed",
-            theme=theme_res,
-        )
-
-    monkeypatch.setattr(analyst.api, "analyze", fake_analyze)
-    client = TestClient(
-        create_app(
-            model=ScriptedModel([]),
-            data=FakeDataProvider(),
-            financial=FakeFinancialProvider(allocation_evidence()),
-        )
-    )
-
-    # 1. New Cash request
-    resp_cash = client.post("/api/analyze", json=allocation_request())
-    assert resp_cash.status_code == 200, resp_cash.text
-    assert len(captured) == 1
-    cash_research = captured[0]
-    assert isinstance(cash_research, IssuerResearchProvider)
-    assert isinstance(cash_research.fallback, SecResearchProvider)
-
-    # 2. Confirmed Theme request
-    resp_theme = client.post("/api/analyze", json=theme_request(confirmed=True))
-    assert resp_theme.status_code == 200, resp_theme.text
+    monkeypatch.setattr(analyst.workflow_tools, "analyze", fake_analyze)
+    for name, request, field in [("run_new_cash_allocation", allocation_request(), "new_cash"),
+                                 ("run_theme_exploration", theme_request(confirmed=True), "theme"),
+                                 ("run_theme_exploration", theme_request(confirmed=False), "theme")]:
+        store = PortfolioStore(database_path=tmp_path / f"{len(captured)}-{field}-{request[field].get('confirmed')}.db")
+        store.save(SavedPortfolio.model_validate({"snapshot": request["portfolio"], "settings": request.get("settings")}))
+        with TestClient(create_app(model=CapturingTransport([]), data=FakeDataProvider(), portfolio_store=store,
+                                   financial=FakeFinancialProvider(allocation_evidence()))) as client:
+            thread = client.post("/api/threads").json()["id"]
+            inputs = {key: value for key, value in request.items() if key not in {"question", "portfolio", "settings"}}
+            assert submit(client, thread, request["question"], workflow_input={**inputs, "workflow": name})["status"] == "completed"
     assert len(captured) == 2
-    theme_research = captured[1]
-    assert isinstance(theme_research, IssuerResearchProvider)
-    assert isinstance(theme_research.fallback, SecResearchProvider)
+    for research in captured:
+        assert isinstance(research, IssuerResearchProvider)
+        assert isinstance(research.fallback, SecResearchProvider)
 
-    # 3. Unconfirmed Theme request (research is None, makes no model or research calls)
-    resp_unconfirmed = client.post("/api/analyze", json=theme_request(confirmed=False))
-    assert resp_unconfirmed.status_code == 200, resp_unconfirmed.text
-    assert len(captured) == 3
-    assert captured[2] is None
-    assert resp_unconfirmed.json()["theme"]["status"] == "awaiting_agreement"
+
+def test_form_run_records_the_model_that_answered(tmp_path):
+    from analyst.portfolio import PortfolioStore
+    from analyst.schemas import SavedPortfolio
+    from tests.test_context_retrieval import CapturingTransport, submit
+
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
+    model = CapturingTransport([ModelTurn(calls=[ToolCall("call_1", "review_portfolio", "{}")]), ModelTurn(answer=recommendation())])
+    settings = Settings(api_key="sk-test", model="vendor/answering-model", provider="openrouter")
+    with TestClient(create_app(model=model, data=FakeDataProvider(), settings=settings, portfolio_store=store)) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "How concentrated am I?", workflow_input={"workflow": "run_exposure_review"})
+    assert run["status"] == "completed", run
+    assert (run["ai_provider"], run["ai_model"]) == ("openrouter", "vendor/answering-model")
+
+
+@pytest.mark.parametrize("error,status,detail", [
+    (TimeoutError(), 504, "timed out"),
+    (ConnectionResetError("financial host reset"), 503, "Requested data is unavailable."),
+])
+def test_analyze_reports_the_real_failure_not_a_configuration_error(error, status, detail):
+    from analyst.financial_data import FakeFinancialProvider
+
+    class FailingFinancial(FakeFinancialProvider):
+        async def identity(self, position, as_of):
+            raise error
+
+    model = ScriptedModel([ModelTurn(calls=[ToolCall("review", "review_portfolio", "{}")])])
+    response = analyze_with(TestClient(create_app(model=model, data=FakeDataProvider(), financial=FailingFinancial())), {"question": "Review my exposure", "portfolio": snapshot()})
+    assert response.status_code == status, response.text
+    assert detail in response.json()["detail"]
+    assert "configuration" not in response.text and "financial host reset" not in response.text

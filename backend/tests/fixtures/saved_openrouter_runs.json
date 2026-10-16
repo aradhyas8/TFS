@@ -1,0 +1,2485 @@
+{
+ "deepseek_run2": {
+  "company_cases": [
+   {
+    "cases": [
+     {
+      "assumptions": [
+       "Downside assumes AI/cloud demand growth decelerates and competitive pressure compresses net margin, with no relief in capital intensity.",
+       "Cash conversion held near the reported level; reinvestment rises because capital spending stays elevated relative to operating cash generation.",
+       "Buybacks slow and share count drifts higher rather than shrinking.",
+       "Higher discount rate and lower exit multiple reflect a less durable earnings stream under this path."
+      ],
+      "cash_conversion": [
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      "dilution": [
+       0,
+       0.005,
+       0.01,
+       0.015,
+       0.02
+      ],
+      "discount_rate": 0.1,
+      "exit_multiple": 18,
+      "exit_sensitivity": [
+       15,
+       18,
+       22
+      ],
+      "fx_multipliers": [
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      "growth": [
+       0.12,
+       0.08,
+       0.06,
+       0.05,
+       0.04
+      ],
+      "margins": [
+       0.4,
+       0.37,
+       0.34,
+       0.32,
+       0.3
+      ],
+      "name": "downside",
+      "payout": [
+       0.2,
+       0.2,
+       0.2,
+       0.2,
+       0.2
+      ],
+      "reinvestment": [
+       0.499,
+       0.55,
+       0.6,
+       0.62,
+       0.65
+      ],
+      "return_on_equity": null,
+      "uncertainty": [
+       "If cloud demand or pricing weakens faster than assumed, margins and reinvestment could be worse than modeled.",
+       "The exit multiple range is a judgment, not an observable market belief."
+      ]
+     },
+     {
+      "assumptions": [
+       "Year one anchors to reported figures: net margin times cash conversion times (one minus reinvestment) reproduces the reported free-cash-flow margin, with the deliberate gap that operating cash generation is capped at the model ceiling while the residual capital intensity sits in reinvestment.",
+       "Margin path stays near the reported three-year range rather than a cyclical peak, and reinvestment declines gradually as the current capital build matures.",
+       "Share count continues to drift modestly lower on continued repurchases.",
+       "No directional view on the currency conversion is taken."
+      ],
+      "cash_conversion": [
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      "dilution": [
+       -0.002,
+       -0.004,
+       -0.005,
+       -0.006,
+       -0.006
+      ],
+      "discount_rate": 0.09,
+      "exit_multiple": 26,
+      "exit_sensitivity": [
+       22,
+       26,
+       30
+      ],
+      "fx_multipliers": [
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      "growth": [
+       0.16,
+       0.14,
+       0.12,
+       0.11,
+       0.1
+      ],
+      "margins": [
+       0.403,
+       0.405,
+       0.405,
+       0.4,
+       0.4
+      ],
+      "name": "base",
+      "payout": [
+       0.2,
+       0.2,
+       0.2,
+       0.2,
+       0.2
+      ],
+      "reinvestment": [
+       0.499,
+       0.48,
+       0.45,
+       0.42,
+       0.4
+      ],
+      "return_on_equity": null,
+      "uncertainty": [
+       "Capital intensity could stay higher for longer than modeled, holding free-cash-flow margin below the reported three-year average.",
+       "Cloud growth durability and the payoff from the capital build are not verifiable from the reported history alone.",
+       "Tax and cost consequences of any change are unavailable."
+      ]
+     },
+     {
+      "assumptions": [
+       "Upside assumes cloud and AI demand remains strong, margins expand modestly above the reported range, and capital intensity falls faster as utilization improves.",
+       "Free-cash-flow margin rises through the period as reinvestment declines.",
+       "Share count falls more quickly on larger repurchases.",
+       "Lower discount rate and higher exit multiple reflect a more durable, higher-return earnings stream under this path."
+      ],
+      "cash_conversion": [
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      "dilution": [
+       -0.005,
+       -0.008,
+       -0.01,
+       -0.012,
+       -0.015
+      ],
+      "discount_rate": 0.08,
+      "exit_multiple": 34,
+      "exit_sensitivity": [
+       28,
+       34,
+       40
+      ],
+      "fx_multipliers": [
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      "growth": [
+       0.2,
+       0.18,
+       0.16,
+       0.15,
+       0.14
+      ],
+      "margins": [
+       0.41,
+       0.43,
+       0.45,
+       0.46,
+       0.47
+      ],
+      "name": "upside",
+      "payout": [
+       0.2,
+       0.2,
+       0.2,
+       0.2,
+       0.2
+      ],
+      "reinvestment": [
+       0.499,
+       0.45,
+       0.4,
+       0.35,
+       0.32
+      ],
+      "return_on_equity": null,
+      "uncertainty": [
+       "Sustained above-trend growth and margin expansion is the least-supported of the paths from the reported history.",
+       "The exit multiple range is a judgment, not an observable market belief."
+      ]
+     }
+    ],
+    "method": "fcf_exit",
+    "metric_fact_id": null,
+    "mid_cycle_context": "Cyclicality is unknown and the sector is classified as other. The modeled margin path sits inside the reported three-year range rather than at a peak: net income over revenue was 36.0%, 36.2% and 40.3% across the last three fiscal years, and free cash flow over revenue was 30.2%, 25.4% and 20.2%. The free-cash-flow margin is currently below that three-year range because capital spending reached about 35% of revenue, so the starting point reflects heavy investment rather than a peak profitability level; the paths differ mainly in how much of that spending converts to future cash generation rather than in assuming an exceptional earnings peak.",
+    "revenue_fact_id": "revenue-fy-2026-06-30",
+    "shares_fact_id": "shares-fy-2026-06-30"
+   }
+  ],
+  "comparison": [
+   {
+    "alternatives": [
+     {
+      "alternative_id": "company",
+      "cases": [
+       {
+        "assumptions": [
+         "Cloud and AI demand growth decelerates while capital intensity stays high relative to operating cash generation.",
+         "Net margin compresses below the reported range as depreciation on the capital build and competition weigh on results.",
+         "Share count drifts higher rather than shrinking.",
+         "Higher discount rate and lower exit multiple reflect a less durable earnings stream."
+        ],
+        "downside": "Free cash flow per share falls well short of the reported level and the exit multiple compresses, so the conditional value sits below today's price.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "downside",
+        "uncertainty": [
+         "The exit multiple and discount rate are judgments, not observable market facts.",
+         "Demand durability and the payoff from the capital build are not verifiable from the reported history alone."
+        ]
+       },
+       {
+        "assumptions": [
+         "Year one anchors to reported figures, with net margin times cash conversion times the reinvestment residual reproducing the reported free-cash-flow margin.",
+         "Margin path stays inside the reported three-year range rather than at a peak, and reinvestment declines gradually as the capital build matures.",
+         "Share count drifts modestly lower on continued repurchases.",
+         "No directional view on the currency conversion is taken."
+        ],
+        "downside": "Capital intensity could persist longer, holding free cash flow below the reported three-year average and leaving the conditional value dependent on the exit multiple.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "base",
+        "uncertainty": [
+         "The starting quote is provisional, so the comparison against today's price is indicative only.",
+         "Cloud growth durability is not verifiable from the reported history alone."
+        ]
+       },
+       {
+        "assumptions": [
+         "Demand stays strong, margins expand modestly above the reported range, and capital intensity falls faster as utilization improves.",
+         "Free-cash-flow margin rises through the period as reinvestment declines.",
+         "Share count falls more quickly on larger repurchases.",
+         "Lower discount rate and higher exit multiple reflect a more durable earnings stream."
+        ],
+        "downside": "This path is the least supported by the reported history; if growth or margins revert toward the reported range, the outcome would look more like the base case.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "upside",
+        "uncertainty": [
+         "Sustained above-trend growth and margin expansion are not established by the reported history.",
+         "The exit multiple range is a judgment, not an observable market belief."
+        ]
+       }
+      ]
+     },
+     {
+      "alternative_id": "fund",
+      "cases": [
+       {
+        "assumptions": [
+         "Broad US equity exposure de-rates on weaker growth and earnings.",
+         "Income is added at the known fund yield and is not reinvested.",
+         "Known fund costs are deducted from the gross path."
+        ],
+        "downside": "A diversified basket still bears market drawdown risk and would fall alongside broad equity valuations.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": [
+           0.03,
+           0.03,
+           0.03,
+           0.03,
+           0.03
+          ],
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "position_id": "vti",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "downside",
+        "uncertainty": [
+         "Fund identity is supplied rather than verified by a primary source, and the fund facts are dated sponsor data.",
+         "Tax and cost consequences of holding the fund are unavailable."
+        ]
+       },
+       {
+        "assumptions": [
+         "Broad US equity exposure compounds roughly in line with a moderate long-run trend.",
+         "Income is added at the known fund yield and is not reinvested.",
+         "Known fund costs are deducted from the gross path."
+        ],
+        "downside": "Diversification removes single-company risk but not market risk, and a broad index can still deliver a flat or negative holding period.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": [
+           0.06,
+           0.06,
+           0.06,
+           0.06,
+           0.06
+          ],
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "position_id": "vti",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "base",
+        "uncertainty": [
+         "Return paths are judgments, not forecasts, and the fund facts are dated sponsor data.",
+         "Fund-level income, expenses and tax treatment beyond the supplied figures remain unknown."
+        ]
+       },
+       {
+        "assumptions": [
+         "Broad US equity exposure benefits from stronger growth and multiple expansion.",
+         "Income is added at the known fund yield and is not reinvested.",
+         "Known fund costs are deducted from the gross path."
+        ],
+        "downside": "If growth disappoints, this path reverts toward the base case and the diversification benefit does not prevent losses.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": [
+           0.09,
+           0.09,
+           0.09,
+           0.09,
+           0.09
+          ],
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "position_id": "vti",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "upside",
+        "uncertainty": [
+         "The fund facts are dated sponsor data and the fund identity is supplied rather than verified.",
+         "The income component is assumed to stay at the known yield."
+        ]
+       }
+      ]
+     },
+     {
+      "alternative_id": "cash",
+      "cases": [
+       {
+        "assumptions": [
+         "Short-term rates fall through the period.",
+         "The balance earns the supplied rate path with no price risk.",
+         "No currency conversion view is taken."
+        ],
+        "downside": "The cash yield declines and purchasing power against inflation is not guaranteed.",
+        "drivers": [
+         {
+          "annual_rates": [
+           0.02,
+           0.02,
+           0.02,
+           0.02,
+           0.02
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "total_return"
+         }
+        ],
+        "name": "downside",
+        "uncertainty": [
+         "The rate path is a judgment, not an observable forward curve.",
+         "Personal tax treatment of the interest is unknown."
+        ]
+       },
+       {
+        "assumptions": [
+         "Short-term rates ease gradually from current levels.",
+         "The balance earns the supplied rate path with no price risk.",
+         "No currency conversion view is taken."
+        ],
+        "downside": "Cash preserves nominal value but offers no growth and can lag inflation over the period.",
+        "drivers": [
+         {
+          "annual_rates": [
+           0.035,
+           0.033,
+           0.031,
+           0.03,
+           0.03
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "total_return"
+         }
+        ],
+        "name": "base",
+        "uncertainty": [
+         "The rate path is a judgment, not an observable forward curve.",
+         "Currency conversion for a reporting-currency view is indicative."
+        ]
+       },
+       {
+        "assumptions": [
+         "Short-term rates stay higher for longer.",
+         "The balance earns the supplied rate path with no price risk.",
+         "No currency conversion view is taken."
+        ],
+        "downside": "Even at higher rates, cash does not participate in equity growth and its real return is uncertain.",
+        "drivers": [
+         {
+          "annual_rates": [
+           0.05,
+           0.05,
+           0.045,
+           0.045,
+           0.045
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "total_return"
+         }
+        ],
+        "name": "upside",
+        "uncertainty": [
+         "The rate path is a judgment, not an observable forward curve.",
+         "Personal tax treatment of the interest is unknown."
+        ]
+       }
+      ]
+     },
+     {
+      "alternative_id": "keep",
+      "cases": [
+       {
+        "assumptions": [
+         "The snapshot is retained unchanged, keeping both the concentrated single-stock exposure and the uninvested cash balance.",
+         "The stock follows the downside operating path and cash follows the lower rate path."
+        ],
+        "downside": "Retaining the snapshot keeps concentrated single-company risk alongside a cash balance that does not grow.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         },
+         {
+          "annual_rates": [
+           0.02,
+           0.02,
+           0.02,
+           0.02,
+           0.02
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "total_return"
+         }
+        ],
+        "name": "downside",
+        "uncertainty": [
+         "Portfolio weights are unknown because the valuation is incomplete, so the blend cannot be stated precisely.",
+         "Personal limits and tax context are unknown."
+        ]
+       },
+       {
+        "assumptions": [
+         "The snapshot is retained unchanged.",
+         "The stock follows the base operating path and cash follows the gradual-easing rate path."
+        ],
+        "downside": "Retaining the snapshot leaves the outcome dominated by the single-stock path, with cash contributing little.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         },
+         {
+          "annual_rates": [
+           0.035,
+           0.033,
+           0.031,
+           0.03,
+           0.03
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "total_return"
+         }
+        ],
+        "name": "base",
+        "uncertainty": [
+         "Portfolio weights are unknown because the valuation is incomplete.",
+         "The rate and return paths are judgments, not forecasts."
+        ]
+       },
+       {
+        "assumptions": [
+         "The snapshot is retained unchanged.",
+         "The stock follows the upside operating path and cash follows the higher-for-longer rate path."
+        ],
+        "downside": "If the upside operating path does not materialize, the retained concentration provides no offset.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         },
+         {
+          "annual_rates": [
+           0.05,
+           0.05,
+           0.045,
+           0.045,
+           0.045
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "total_return"
+         }
+        ],
+        "name": "upside",
+        "uncertainty": [
+         "Portfolio weights are unknown because the valuation is incomplete.",
+         "The stock paths are judgments and the starting quote is provisional."
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "answers": []
+ },
+ "deepseek_run3": {
+  "company_cases": [
+   {
+    "cases": [
+     {
+      "assumptions": [
+       "Revenue growth decelerates from the reported fiscal-year pace as cloud and AI demand matures and the More Personal Computing segment stays soft.",
+       "Net margin holds near the reported fiscal-year level, with AI infrastructure costs offset by operating leverage and mix.",
+       "Free-cash-flow margin is anchored to the reported fiscal-year figure; the deliberate gap versus reported net margin reflects the elevated capital-expenditure intensity.",
+       "Capital expenditure remains a large share of revenue, keeping cash conversion below the reported operating-cash-flow ratio.",
+       "Share count drifts modestly lower through repurchases.",
+       "Distributions continue at a moderate share of earnings.",
+       "FX translation is treated as neutral relative to today's indicative rate."
+      ],
+      "cash_conversion": [
+       "0.62",
+       "0.62",
+       "0.62",
+       "0.62",
+       "0.62"
+      ],
+      "dilution": [
+       "-0.002",
+       "-0.002",
+       "-0.002",
+       "-0.002",
+       "-0.002"
+      ],
+      "discount_rate": "0.09",
+      "exit_multiple": "22",
+      "exit_sensitivity": [
+       "18",
+       "22",
+       "27"
+      ],
+      "fx_multipliers": [
+       "1",
+       "1",
+       "1",
+       "1",
+       "1"
+      ],
+      "growth": [
+       "0.13",
+       "0.12",
+       "0.11",
+       "0.10",
+       "0.09"
+      ],
+      "margins": [
+       "0.4",
+       "0.4",
+       "0.4",
+       "0.4",
+       "0.4"
+      ],
+      "name": "base",
+      "payout": [
+       "0.35",
+       "0.35",
+       "0.35",
+       "0.35",
+       "0.35"
+      ],
+      "reinvestment": [
+       "0.19",
+       "0.19",
+       "0.19",
+       "0.19",
+       "0.19"
+      ],
+      "return_on_equity": null,
+      "uncertainty": [
+       "Realized AI monetization and cloud growth could diverge from the modeled path.",
+       "Capital-expenditure intensity is the pivotal swing factor for free-cash-flow conversion.",
+       "Tax and personal-account treatment are unavailable."
+      ]
+     },
+     {
+      "assumptions": [
+       "Cloud and AI adoption outpaces the base path, with Azure and Copilot scaling faster.",
+       "Net margin improves modestly on mix and operating leverage.",
+       "Cash conversion improves as capital expenditure growth moderates relative to revenue.",
+       "Repurchases reduce the share count somewhat more than in the base case.",
+       "Distributions remain at a moderate share of earnings.",
+       "FX translation is treated as neutral."
+      ],
+      "cash_conversion": [
+       "0.66",
+       "0.66",
+       "0.66",
+       "0.66",
+       "0.66"
+      ],
+      "dilution": [
+       "-0.003",
+       "-0.003",
+       "-0.003",
+       "-0.003",
+       "-0.003"
+      ],
+      "discount_rate": "0.09",
+      "exit_multiple": "28",
+      "exit_sensitivity": [
+       "22",
+       "28",
+       "33"
+      ],
+      "fx_multipliers": [
+       "1",
+       "1",
+       "1",
+       "1",
+       "1"
+      ],
+      "growth": [
+       "0.18",
+       "0.16",
+       "0.15",
+       "0.13",
+       "0.12"
+      ],
+      "margins": [
+       "0.42",
+       "0.42",
+       "0.42",
+       "0.42",
+       "0.42"
+      ],
+      "name": "upside",
+      "payout": [
+       "0.3",
+       "0.3",
+       "0.3",
+       "0.3",
+       "0.3"
+      ],
+      "reinvestment": [
+       "0.17",
+       "0.17",
+       "0.17",
+       "0.17",
+       "0.17"
+      ],
+      "return_on_equity": null,
+      "uncertainty": [
+       "Requires sustained AI demand and successful monetization.",
+       "Margin expansion may be offset by competitive pricing and infrastructure costs.",
+       "Tax and personal-account treatment are unavailable."
+      ]
+     },
+     {
+      "assumptions": [
+       "Growth slows sharply as AI-related spending normalizes and device and gaming revenue stay weak.",
+       "Net margin compresses on pricing pressure and cost absorption.",
+       "Cash conversion falls and reinvestment rises, reflecting heavier infrastructure commitments relative to revenue.",
+       "Share count is broadly flat.",
+       "Distributions continue at a higher share of a smaller earnings base.",
+       "FX translation is treated as neutral."
+      ],
+      "cash_conversion": [
+       "0.55",
+       "0.55",
+       "0.55",
+       "0.55",
+       "0.55"
+      ],
+      "dilution": [
+       "0",
+       "0",
+       "0",
+       "0",
+       "0"
+      ],
+      "discount_rate": "0.1",
+      "exit_multiple": "15",
+      "exit_sensitivity": [
+       "12",
+       "15",
+       "18"
+      ],
+      "fx_multipliers": [
+       "1",
+       "1",
+       "1",
+       "1",
+       "1"
+      ],
+      "growth": [
+       "0.08",
+       "0.06",
+       "0.05",
+       "0.04",
+       "0.03"
+      ],
+      "margins": [
+       "0.34",
+       "0.34",
+       "0.34",
+       "0.34",
+       "0.34"
+      ],
+      "name": "downside",
+      "payout": [
+       "0.4",
+       "0.4",
+       "0.4",
+       "0.4",
+       "0.4"
+      ],
+      "reinvestment": [
+       "0.28",
+       "0.28",
+       "0.28",
+       "0.28",
+       "0.28"
+      ],
+      "return_on_equity": null,
+      "uncertainty": [
+       "Severity and duration of a cloud or AI spending pause are unknown.",
+       "Margin compression may be milder if cost discipline holds.",
+       "Tax and personal-account treatment are unavailable."
+      ]
+     }
+    ],
+    "method": "fcf_exit",
+    "metric_fact_id": null,
+    "mid_cycle_context": "Cyclicality is reported as unknown for this issuer, and the modeled margin path is set at a mid-cycle level rather than a peak. The reported history shows net margin rising from roughly the mid-thirties to roughly the low-forties percent of revenue over three fiscal years, with operating margin in the mid-forties, while capital expenditure rose to roughly a third of revenue and free-cash-flow margin fell from about thirty percent to about twenty percent. The base path keeps net margin near the latest reported level and free-cash-flow margin near the reported figure, neither extrapolating the recent margin high nor assuming a trough, because the mix shift toward cloud and AI infrastructure is still in progress and the reported history is too short to establish a durable peak.",
+    "revenue_fact_id": "revenue-fy-2026-06-30",
+    "shares_fact_id": "shares-fy-2026-06-30"
+   }
+  ],
+  "comparison": [
+   {
+    "alternatives": [
+     {
+      "alternative_id": "company",
+      "cases": [
+       {
+        "assumptions": [
+         "Growth slows sharply as AI-related spending normalizes and device and gaming revenue stay weak.",
+         "Net margin compresses on pricing pressure and cost absorption.",
+         "Cash conversion falls and reinvestment rises relative to revenue.",
+         "Share count is broadly flat.",
+         "FX translation is treated as neutral relative to today's indicative rate."
+        ],
+        "downside": "Cloud and AI demand pauses, margins compress and heavier infrastructure commitments reduce free cash flow, so the modeled value falls well below the current mark; the position is already the dominant holding, so this outcome concentrates portfolio risk.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "downside",
+        "uncertainty": [
+         "Severity and duration of a cloud or AI spending pause are unknown.",
+         "Margin compression may be milder if cost discipline holds.",
+         "Personal tax consequences and account treatment are unavailable."
+        ]
+       },
+       {
+        "assumptions": [
+         "Revenue growth decelerates from the reported pace as cloud and AI demand matures.",
+         "Net margin holds near the reported fiscal-year level.",
+         "Free-cash-flow margin is anchored to the reported fiscal-year figure.",
+         "Share count drifts modestly lower.",
+         "FX translation is treated as neutral."
+        ],
+        "downside": "The modeled base value sits below the current mark, so the price already embeds expectations beyond the base operating path; multiple compression or slower monetization would weigh on the holding.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "base",
+        "uncertainty": [
+         "Realized AI monetization and cloud growth could diverge from the modeled path.",
+         "Capital-expenditure intensity is the pivotal swing factor for free-cash-flow conversion.",
+         "Personal tax consequences and account treatment are unavailable."
+        ]
+       },
+       {
+        "assumptions": [
+         "Cloud and AI adoption outpaces the base path.",
+         "Net margin improves modestly on mix and operating leverage.",
+         "Cash conversion improves as capital expenditure growth moderates.",
+         "Repurchases reduce the share count more than in the base case.",
+         "FX translation is treated as neutral."
+        ],
+        "downside": "Even in the favorable path the modeled value remains below the current mark, implying the price reflects an even more optimistic operating trajectory or a richer multiple than these assumptions support.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "upside",
+        "uncertainty": [
+         "Requires sustained AI demand and successful monetization.",
+         "Margin expansion may be offset by competitive pricing and infrastructure costs.",
+         "Personal tax consequences and account treatment are unavailable."
+        ]
+       }
+      ]
+     },
+     {
+      "alternative_id": "fund",
+      "cases": [
+       {
+        "assumptions": [
+         "Broad US equity exposure with sponsor-reported annual cost and income yield.",
+         "Distributions are not reinvested in this price-only view; income is scaled by the known yield.",
+         "FX translation is treated as neutral."
+        ],
+        "downside": "A broad equity fund can still draw down materially in a risk-off or rate shock, and it carries no company-specific AI upside.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": [
+           "-0.08",
+           "0",
+           "0.04",
+           "0.05",
+           "0.06"
+          ],
+          "cost_basis": "net_of_fund_cost",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "position_id": "vti",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "downside",
+        "uncertainty": [
+         "Fund identity is supplied rather than verified by a primary source.",
+         "Fund expenses, tracking and tax consequences remain unknown.",
+         "Income yield is a sponsor-reported figure and may change."
+        ]
+       },
+       {
+        "assumptions": [
+         "Broad US equity exposure with sponsor-reported annual cost and income yield.",
+         "Distributions are not reinvested in this price-only view; income is scaled by the known yield.",
+         "FX translation is treated as neutral."
+        ],
+        "downside": "Returns track the broad market, which may lag a concentrated leader during an AI-driven advance, and the position currently holds no shares so the exposure is not yet in place.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": [
+           "0.06",
+           "0.07",
+           "0.07",
+           "0.07",
+           "0.07"
+          ],
+          "cost_basis": "net_of_fund_cost",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "position_id": "vti",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "base",
+        "uncertainty": [
+         "Fund identity is supplied rather than verified by a primary source.",
+         "Fund expenses, tracking and tax consequences remain unknown.",
+         "Income yield is a sponsor-reported figure and may change."
+        ]
+       },
+       {
+        "assumptions": [
+         "Broad US equity exposure with sponsor-reported annual cost and income yield.",
+         "Distributions are not reinvested in this price-only view; income is scaled by the known yield.",
+         "FX translation is treated as neutral."
+        ],
+        "downside": "Broad participation in a strong market still dilutes single-name upside and retains full equity drawdown risk.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": [
+           "0.15",
+           "0.13",
+           "0.12",
+           "0.1",
+           "0.09"
+          ],
+          "cost_basis": "net_of_fund_cost",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "position_id": "vti",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "upside",
+        "uncertainty": [
+         "Fund identity is supplied rather than verified by a primary source.",
+         "Fund expenses, tracking and tax consequences remain unknown.",
+         "Income yield is a sponsor-reported figure and may change."
+        ]
+       }
+      ]
+     },
+     {
+      "alternative_id": "cash",
+      "cases": [
+       {
+        "assumptions": [
+         "Short-term cash earns an explicit annual rate path in its own currency.",
+         "No price return and no income multiplier apply.",
+         "FX translation is treated as neutral."
+        ],
+        "downside": "Real purchasing power can erode if rates fall below inflation, and cash offers no participation in equity growth.",
+        "drivers": [
+         {
+          "annual_rates": [
+           "0.01",
+           "0.01",
+           "0.01",
+           "0.01",
+           "0.01"
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "downside",
+        "uncertainty": [
+         "Rate paths depend on central-bank policy and are not knowable in advance.",
+         "Inflation and tax treatment are unknown."
+        ]
+       },
+       {
+        "assumptions": [
+         "Short-term cash earns an explicit annual rate path in its own currency.",
+         "No price return and no income multiplier apply.",
+         "FX translation is treated as neutral."
+        ],
+        "downside": "Cash preserves nominal value but forgoes equity growth; the rate path may decline if policy eases.",
+        "drivers": [
+         {
+          "annual_rates": [
+           "0.03",
+           "0.03",
+           "0.03",
+           "0.03",
+           "0.03"
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "base",
+        "uncertainty": [
+         "Rate paths depend on central-bank policy and are not knowable in advance.",
+         "Inflation and tax treatment are unknown."
+        ]
+       },
+       {
+        "assumptions": [
+         "Short-term cash earns an explicit annual rate path in its own currency.",
+         "No price return and no income multiplier apply.",
+         "FX translation is treated as neutral."
+        ],
+        "downside": "Even a favorable cash path offers limited growth compared with equities over a long horizon.",
+        "drivers": [
+         {
+          "annual_rates": [
+           "0.04",
+           "0.04",
+           "0.04",
+           "0.04",
+           "0.04"
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "upside",
+        "uncertainty": [
+         "Rate paths depend on central-bank policy and are not knowable in advance.",
+         "Inflation and tax treatment are unknown."
+        ]
+       }
+      ]
+     },
+     {
+      "alternative_id": "keep",
+      "cases": [
+       {
+        "assumptions": [
+         "The snapshot is retained unchanged, with the stock holding and cash balance as submitted.",
+         "Stock value follows the company downside case; cash follows its explicit rate path.",
+         "FX translation is treated as neutral."
+        ],
+        "downside": "Retaining the snapshot keeps the concentration in a single company and leaves the modeled value below the current mark under adverse assumptions.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         },
+         {
+          "annual_rates": [
+           "0.01",
+           "0.01",
+           "0.01",
+           "0.01",
+           "0.01"
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "downside",
+        "uncertainty": [
+         "No personal baseline or guardrails were supplied.",
+         "Personal tax consequences and account treatment are unavailable."
+        ]
+       },
+       {
+        "assumptions": [
+         "The snapshot is retained unchanged, with the stock holding and cash balance as submitted.",
+         "Stock value follows the company base case; cash follows its explicit rate path.",
+         "FX translation is treated as neutral."
+        ],
+        "downside": "Retaining the snapshot keeps the concentration in a single company and the modeled base value sits below the current mark.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         },
+         {
+          "annual_rates": [
+           "0.03",
+           "0.03",
+           "0.03",
+           "0.03",
+           "0.03"
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "base",
+        "uncertainty": [
+         "No personal baseline or guardrails were supplied.",
+         "Personal tax consequences and account treatment are unavailable."
+        ]
+       },
+       {
+        "assumptions": [
+         "The snapshot is retained unchanged, with the stock holding and cash balance as submitted.",
+         "Stock value follows the company upside case; cash follows its explicit rate path.",
+         "FX translation is treated as neutral."
+        ],
+        "downside": "Retaining the snapshot concentrates outcomes in one company; the favorable path still depends on assumptions that the market may not reward.",
+        "drivers": [
+         {
+          "annual_rates": null,
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "msft",
+          "reinvest": false,
+          "return_basis": "price_only"
+         },
+         {
+          "annual_rates": [
+           "0.04",
+           "0.04",
+           "0.04",
+           "0.04",
+           "0.04"
+          ],
+          "annual_returns": null,
+          "cost_basis": "gross",
+          "fx_multipliers": [
+           "1",
+           "1",
+           "1",
+           "1",
+           "1"
+          ],
+          "income_multipliers": null,
+          "position_id": "cash",
+          "reinvest": false,
+          "return_basis": "price_only"
+         }
+        ],
+        "name": "upside",
+        "uncertainty": [
+         "No personal baseline or guardrails were supplied.",
+         "Personal tax consequences and account treatment are unavailable."
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "answers": [
+   {
+    "preferred_action": "review_only",
+    "amount": null,
+    "reason": "The company cases place the current mark above every modeled outcome, so the submitted price already embeds expectations more optimistic than the base operating path; the fund and cash paths, however, could not be valued at all because the fund identity is unverified and the starting valuation basis for those alternatives is unusable. That means the direct comparison you asked for between the stock, a broad fund and cash cannot be completed on evidence. Microsoft's operating story remains strong in the filings and issuer release: cloud revenue growth, a very large commercial remaining performance obligation, expanding Azure and Copilot adoption, and margins that held up despite a steep rise in capital expenditure. But the cash conversion of those earnings is deteriorating as infrastructure spending outpaces revenue, and that is the pivotal swing factor in the case values. The concentration is the other decisive issue: the stock dominates the taxable account, and no personal baseline, c",
+    "alternatives": [
+     {
+      "action": "clarify_inputs",
+      "reason": "Supply a verifiable fund listing and a usable dated valuation basis plus any personal baseline or guardrails, so the fund and cash alternatives can be modeled on the same footing as the stock. Until then no comparative conclusion is supportable."
+     },
+     {
+      "action": "hold",
+      "reason": "If the objective is to retain the existing exposure while the missing comparison inputs are gathered, no change is needed; the snapshot stays as submitted and the modeling shows the current mark above the base case, which is a reason for caution rather than a basis for action."
+     }
+    ],
+    "downside": "The failure mechanism is twofold. Operationally, if AI and cloud spending normalizes, pricing pressure builds, or capital expenditure stays elevated relative to revenue, free-cash-flow conversion stays weak and the modeled values fall well short of the current mark. Structurally, the position is the overwhelming majority of the taxable account, so a single-company disappointment drives the whole portfolio; the fund and cash paths could not be modeled, so any claim that they would do better is unsupported here.",
+    "assumptions": [
+     "Reported fiscal-year revenue, earnings, cash flow, capital expenditure and diluted share facts are taken as filed from the annual report and the issuer earnings release.",
+     "The base path keeps net margin near the latest reported level and anchors the modeled free-cash-flow margin to the reported figure, deliberately below reported net margin because of capital-expenditure intensity.",
+     "Fund facts, the annual cost and the income yield are dated sponsor-supplied inputs, not verified primary-source data.",
+     "FX translation is treated as neutral relative to the dated indicative rate.",
+     "Personal baseline, guardrails, account limits and tax consequences are unknown and were not assumed."
+    ],
+    "uncertainty": [
+     "The fund alternative could not be valued: its listing identity is unverified and the starting valuation basis is unusable, so its outcomes are unknown.",
+     "The cash alternative could not be valued on the same comparison basis, and current short rates are not assumed to persist.",
+     "Realized AI monetization, cloud growth and capital-expenditure intensity could diverge materially from the modeled paths.",
+     "Additional issuer evidence such as a call transcript is unavailable, so management commentary beyond the release was not reviewed.",
+     "Personal account limits, contribution room and tax treatment are unknown and cannot be inferred from the account name."
+    ],
+    "what_could_change": [
+     "A verifiable fund listing with usable dated pricing, which would let the broad-market alternative be compared directly.",
+     "Clarified personal baseline, guardrails or objectives that establish a concentration limit for the taxable account.",
+     "Evidence that capital expenditure growth is moderating relative to revenue, which would support stronger free-cash-flow conversion.",
+     "Evidence that cloud and AI demand is stalling or pricing is compressing, which would reinforce the caution in the base and downside cases.",
+     "A materially different price than the provisional manual mark, since the cases are compared against that unadjusted level."
+    ],
+    "evidence_ids": [
+     "sec-10-k-0001193125-26-323660",
+     "issuer-8k-0001193125-26-323632"
+    ]
+   }
+  ]
+ },
+ "deepseek_run4": {
+  "company_cases": [
+   {
+    "cases": [
+     {
+      "assumptions": [
+       "Fiscal-year reported history is the anchor: FY2026 revenue growth and net margin come from the filed statements, and the earnings release notes discrete gains in the year.",
+       "Revenue compounds on the cloud and AI franchise but decelerates as the base grows; no segment split is modeled.",
+       "Cash conversion and reinvestment are set so the first modeled year's free-cash-flow margin is close to the reported free cash flow over revenue for FY2026.",
+       "Reinvestment reflects continued heavy AI and datacenter capital spending that moderates as revenue scales.",
+       "Payout reflects the observed mix of dividends and buybacks relative to earnings; distributions stay idle cash.",
+       "Exit multiple is a normalized multiple on final-year free cash flow for a scaled, high-quality software franchise.",
+       "FX multipliers hold today's dated rate flat; the reporting currency differs from the position currency."
+      ],
+      "cash_conversion": [
+       "0.72",
+       "0.75",
+       "0.78",
+       "0.80",
+       "0.82"
+      ],
+      "dilution": [
+       "-0.004",
+       "-0.004",
+       "-0.004",
+       "-0.004",
+       "-0.004"
+      ],
+      "discount_rate": "0.08",
+      "exit_multiple": "25",
+      "exit_sensitivity": [
+       "20",
+       "25",
+       "30"
+      ],
+      "fx_multipliers": [
+       "1",
+       "1",
+       "1",
+       "1",
+       "1"
+      ],
+      "growth": [
+       "0.13",
+       "0.12",
+       "0.11",
+       "0.1",
+       "0.09"
+      ],
+      "margins": [
+       "0.403",
+       "0.408",
+       "0.413",
+       "0.418",
+       "0.422"
+      ],
+      "name": "base",
+      "payout": [
+       "0.33",
+       "0.34",
+       "0.35",
+       "0.35",
+       "0.36"
+      ],
+      "reinvestment": [
+       "0.3",
+       "0.28",
+       "0.26",
+       "0.24",
+       "0.22"
+      ],
+      "return_on_equity": null,
+      "uncertainty": [
+       "Capital spending intensity may stay higher for longer than modeled if AI demand requires sustained build-out.",
+       "Cloud growth durability and the pace of AI monetization are not disclosed at the granularity needed to model segments.",
+       "Exit multiple on free cash flow is a judgment and moves value materially.",
+       "Tax and cost consequences of any change are unknown."
+      ]
+     },
+     {
+      "assumptions": [
+       "Revenue growth stalls toward mid-single digits as cloud demand normalizes and competition pressures pricing.",
+       "Net margin compresses below the reported year, which itself included discrete gains.",
+       "Cash conversion weakens and reinvestment stays elevated, so the first modeled year's free-cash-flow margin sits below the reported level.",
+       "Payout rises relative to weaker earnings.",
+       "Exit multiple de-rates toward a lower multiple of free cash flow.",
+       "FX multipliers hold today's dated rate flat."
+      ],
+      "cash_conversion": [
+       "0.68",
+       "0.68",
+       "0.7",
+       "0.72",
+       "0.72"
+      ],
+      "dilution": [
+       "0",
+       "0",
+       "0",
+       "0",
+       "0"
+      ],
+      "discount_rate": "0.1",
+      "exit_multiple": "16",
+      "exit_sensitivity": [
+       "13",
+       "16",
+       "19"
+      ],
+      "fx_multipliers": [
+       "1",
+       "1",
+       "1",
+       "1",
+       "1"
+      ],
+      "growth": [
+       "0.09",
+       "0.07",
+       "0.06",
+       "0.05",
+       "0.04"
+      ],
+      "margins": [
+       "0.39",
+       "0.38",
+       "0.37",
+       "0.36",
+       "0.36"
+      ],
+      "name": "downside",
+      "payout": [
+       "0.35",
+       "0.36",
+       "0.37",
+       "0.38",
+       "0.38"
+      ],
+      "reinvestment": [
+       "0.33",
+       "0.34",
+       "0.33",
+       "0.32",
+       "0.3"
+      ],
+      "return_on_equity": null,
+      "uncertainty": [
+       "A sharper-than-modeled slowdown in cloud or AI demand would compress both margin and conversion.",
+       "Regulatory or competitive pressure on pricing is not quantified in the filed material.",
+       "The lower exit multiple is a judgment, not a disclosed fact."
+      ]
+     },
+     {
+      "assumptions": [
+       "Revenue growth holds at a high rate as Azure and Copilot monetization scale.",
+       "Net margin expands modestly above the reported year on operating leverage.",
+       "Cash conversion improves as capital spending grows more slowly than revenue, and reinvestment falls faster.",
+       "The first modeled year's free-cash-flow margin sits above the reported level on deliberate capex efficiency.",
+       "Payout stays moderate while reinvestment is prioritized.",
+       "Exit multiple expands on a more capital-efficient growth profile.",
+       "FX multipliers hold today's dated rate flat."
+      ],
+      "cash_conversion": [
+       "0.78",
+       "0.82",
+       "0.86",
+       "0.88",
+       "0.9"
+      ],
+      "dilution": [
+       "-0.006",
+       "-0.006",
+       "-0.006",
+       "-0.006",
+       "-0.006"
+      ],
+      "discount_rate": "0.07",
+      "exit_multiple": "32",
+      "exit_sensitivity": [
+       "27",
+       "32",
+       "37"
+      ],
+      "fx_multipliers": [
+       "1",
+       "1",
+       "1",
+       "1",
+       "1"
+      ],
+      "growth": [
+       "0.17",
+       "0.16",
+       "0.15",
+       "0.14",
+       "0.13"
+      ],
+      "margins": [
+       "0.42",
+       "0.43",
+       "0.44",
+       "0.45",
+       "0.46"
+      ],
+      "name": "upside",
+      "payout": [
+       "0.3",
+       "0.31",
+       "0.32",
+       "0.32",
+       "0.33"
+      ],
+      "reinvestment": [
+       "0.28",
+       "0.25",
+       "0.22",
+       "0.2",
+       "0.18"
+      ],
+      "return_on_equity": null,
+      "uncertainty": [
+       "Sustained high growth plus margin expansion is the most demanding path and depends on unverified AI monetization.",
+       "The higher exit multiple is a judgment and amplifies the result.",
+       "Discrete gains in the reported year are not a recurring base."
+      ]
+     }
+    ],
+    "method": "fcf_exit",
+    "metric_fact_id": null,
+    "mid_cycle_context": "Cyclicality is unknown, so a mid-cycle rather than peak level is used. Reported FY2026 net margin of about forty percent was flattered by discrete items in the earnings release (an investment gain and lower voluntary-retirement costs), and non-GAAP net income was lower than GAAP, so the reported year is treated as a strong but not peak operating level. Free-cash-flow margin fell across the three reported years as capital spending rose, so the first modeled year's free-cash-flow margin is set near, not above, the latest reported ratio. Margin paths therefore sit around the reported level rather than extrapolating the best reported year.",
+    "revenue_fact_id": "revenue-fy-2026-06-30",
+    "shares_fact_id": "shares-fy-2026-06-30"
+   }
+  ],
+  "comparison": [],
+  "answers": []
+ },
+ "nemotron_run1": {
+  "company_cases": [
+   {
+    "method": "fcf_exit",
+    "revenue_fact_id": "None",
+    "shares_fact_id": "unknown",
+    "metric_fact_id": "None",
+    "mid_cycle_context": "Microsoft's cloud growth is in a mid-cycle phase, neither peak nor trough, based on historical adoption patterns of enterprise software.",
+    "cases": [
+     {
+      "name": "downside",
+      "growth": [
+       0.05,
+       0.04,
+       0.03,
+       0.02,
+       0.01
+      ],
+      "margins": [
+       0.3,
+       0.29,
+       0.28,
+       0.27,
+       0.26
+      ],
+      "cash_conversion": [
+       0.8,
+       0.78,
+       0.76,
+       0.74,
+       0.72
+      ],
+      "reinvestment": [
+       0.25,
+       0.25,
+       0.25,
+       0.25,
+       0.25
+      ],
+      "dilution": [
+       0.01,
+       0.01,
+       0.01,
+       0.01,
+       0.01
+      ],
+      "payout": [
+       0.01,
+       0.01,
+       0.01,
+       0.01,
+       0.01
+      ],
+      "return_on_equity": null,
+      "fx_multipliers": [
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      "discount_rate": 0.07,
+      "exit_multiple": 20,
+      "exit_sensitivity": [
+       15,
+       20,
+       25
+      ],
+      "assumptions": [
+       "Lower cloud adoption",
+       "Margin pressure from competition"
+      ],
+      "uncertainty": [
+       "Macro economic downturn",
+       "Regulatory changes"
+      ]
+     },
+     {
+      "name": "base",
+      "growth": [
+       0.1,
+       0.08,
+       0.06,
+       0.05,
+       0.04
+      ],
+      "margins": [
+       0.38,
+       0.38,
+       0.38,
+       0.38,
+       0.38
+      ],
+      "cash_conversion": [
+       0.9,
+       0.9,
+       0.9,
+       0.9,
+       0.9
+      ],
+      "reinvestment": [
+       0.2,
+       0.2,
+       0.2,
+       0.2,
+       0.2
+      ],
+      "dilution": [
+       0.005,
+       0.005,
+       0.005,
+       0.005,
+       0.005
+      ],
+      "payout": [
+       0.01,
+       0.01,
+       0.01,
+       0.01,
+       0.01
+      ],
+      "return_on_equity": null,
+      "fx_multipliers": [
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      "discount_rate": 0.07,
+      "exit_multiple": 20,
+      "exit_sensitivity": [
+       15,
+       20,
+       25
+      ],
+      "assumptions": [
+       "Steady cloud growth",
+       "Stable margins"
+      ],
+      "uncertainty": [
+       "Execution of AI services",
+       "Pricing environment"
+      ]
+     },
+     {
+      "name": "upside",
+      "growth": [
+       0.15,
+       0.12,
+       0.1,
+       0.08,
+       0.06
+      ],
+      "margins": [
+       0.42,
+       0.43,
+       0.44,
+       0.45,
+       0.46
+      ],
+      "cash_conversion": [
+       0.95,
+       0.95,
+       0.95,
+       0.95,
+       0.95
+      ],
+      "reinvestment": [
+       0.15,
+       0.15,
+       0.15,
+       0.15,
+       0.15
+      ],
+      "dilution": [
+       0.002,
+       0.002,
+       0.002,
+       0.002,
+       0.002
+      ],
+      "payout": [
+       0.01,
+       0.01,
+       0.01,
+       0.01,
+       0.01
+      ],
+      "return_on_equity": null,
+      "fx_multipliers": [
+       1,
+       1,
+       1,
+       1,
+       1
+      ],
+      "discount_rate": 0.07,
+      "exit_multiple": 20,
+      "exit_sensitivity": [
+       15,
+       20,
+       25
+      ],
+      "assumptions": [
+       "Accelerated AI monetization",
+       "Market share gains"
+      ],
+      "uncertainty": [
+       "Competitive response",
+       "Supply chain constraints"
+      ]
+     }
+    ]
+   }
+  ],
+  "comparison": [
+   {
+    "alternatives": [
+     {
+      "alternative_id": "company",
+      "cases": [
+       {
+        "name": "downside",
+        "drivers": [
+         {
+          "position_id": "msft",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": null,
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "Lower cloud adoption",
+         "Margin pressure"
+        ],
+        "downside": "Downside scenario assumes weaker growth.",
+        "uncertainty": [
+         "Macro downturn",
+         "Competitive response"
+        ]
+       },
+       {
+        "name": "base",
+        "drivers": [
+         {
+          "position_id": "msft",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": null,
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "Steady cloud growth",
+         "Stable margins"
+        ],
+        "downside": "Base scenario assumes moderate growth.",
+        "uncertainty": [
+         "Execution of AI",
+         "Pricing"
+        ]
+       },
+       {
+        "name": "upside",
+        "drivers": [
+         {
+          "position_id": "msft",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": null,
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "Accelerated AI monetization",
+         "Market share gains"
+        ],
+        "downside": "Upside scenario assumes strong growth.",
+        "uncertainty": [
+         "Competitive response",
+         "Supply chain"
+        ]
+       }
+      ]
+     },
+     {
+      "alternative_id": "fund",
+      "cases": [
+       {
+        "name": "downside",
+        "drivers": [
+         {
+          "position_id": "vti",
+          "annual_returns": [
+           0.02,
+           0.02,
+           0.02,
+           0.02,
+           0.02
+          ],
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": null,
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "Low market return"
+        ],
+        "downside": "Downside assumes weak market.",
+        "uncertainty": [
+         "Recession",
+         "Low yields"
+        ]
+       },
+       {
+        "name": "base",
+        "drivers": [
+         {
+          "position_id": "vti",
+          "annual_returns": [
+           0.05,
+           0.05,
+           0.05,
+           0.05,
+           0.05
+          ],
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": null,
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "Average market return"
+        ],
+        "downside": "Base assumes moderate market growth.",
+        "uncertainty": [
+         "Market volatility",
+         "Interest rates"
+        ]
+       },
+       {
+        "name": "upside",
+        "drivers": [
+         {
+          "position_id": "vti",
+          "annual_returns": [
+           0.08,
+           0.08,
+           0.08,
+           0.08,
+           0.08
+          ],
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": null,
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "Strong market return"
+        ],
+        "downside": "Upside assumes strong bull market.",
+        "uncertainty": [
+         "Overheating",
+         "Asset bubbles"
+        ]
+       }
+      ]
+     },
+     {
+      "alternative_id": "cash",
+      "cases": [
+       {
+        "name": "downside",
+        "drivers": [
+         {
+          "position_id": "cash",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": [
+           0.005,
+           0.005,
+           0.005,
+           0.005,
+           0.005
+          ],
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "Low interest rates"
+        ],
+        "downside": "Downside assumes cash yields near zero.",
+        "uncertainty": [
+         "Deflation",
+         "Liquidity trap"
+        ]
+       },
+       {
+        "name": "base",
+        "drivers": [
+         {
+          "position_id": "cash",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": [
+           0.02,
+           0.02,
+           0.02,
+           0.02,
+           0.02
+          ],
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "Moderate interest rates"
+        ],
+        "downside": "Base assumes normal cash yields.",
+        "uncertainty": [
+         "Inflation",
+         "Rate changes"
+        ]
+       },
+       {
+        "name": "upside",
+        "drivers": [
+         {
+          "position_id": "cash",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": [
+           0.04,
+           0.04,
+           0.04,
+           0.04,
+           0.04
+          ],
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "Higher interest rates"
+        ],
+        "downside": "Upside assumes higher cash yields.",
+        "uncertainty": [
+         "Tight monetary policy",
+         "Opportunity cost"
+        ]
+       }
+      ]
+     },
+     {
+      "alternative_id": "keep",
+      "cases": [
+       {
+        "name": "downside",
+        "drivers": [
+         {
+          "position_id": "msft",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": null,
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         },
+         {
+          "position_id": "cash",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": [
+           0.02,
+           0.02,
+           0.02,
+           0.02,
+           0.02
+          ],
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "No change in holdings"
+        ],
+        "downside": "Downside for holding current mix.",
+        "uncertainty": [
+         "Market downturn",
+         "Company underperformance"
+        ]
+       },
+       {
+        "name": "base",
+        "drivers": [
+         {
+          "position_id": "msft",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": null,
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         },
+         {
+          "position_id": "cash",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": [
+           0.02,
+           0.02,
+           0.02,
+           0.02,
+           0.02
+          ],
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "Status quo"
+        ],
+        "downside": "Base case for holding current mix.",
+        "uncertainty": [
+         "Normal market",
+         "Steady company performance"
+        ]
+       },
+       {
+        "name": "upside",
+        "drivers": [
+         {
+          "position_id": "msft",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": null,
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         },
+         {
+          "position_id": "cash",
+          "annual_returns": null,
+          "return_basis": "price_only",
+          "cost_basis": "gross",
+          "annual_rates": [
+           0.02,
+           0.02,
+           0.02,
+           0.02,
+           0.02
+          ],
+          "income_multipliers": null,
+          "reinvest": false,
+          "fx_multipliers": [
+           1,
+           1,
+           1,
+           1,
+           1
+          ]
+         }
+        ],
+        "assumptions": [
+         "Positive market"
+        ],
+        "downside": "Upside for holding current mix.",
+        "uncertainty": [
+         "Strong market",
+         "Company outperformance"
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "answers": []
+ }
+}

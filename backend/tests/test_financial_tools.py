@@ -359,3 +359,50 @@ def test_unresolved_saved_holdings_prevent_complete_portfolio_claims(tmp_path, n
     run, artifacts, _ = tool_run(tmp_path, name, args, saved=SavedPortfolio.model_validate(saved))
     assert run["status"] == "completed"
     assert artifacts[0]["payload"]["clarification_required"]["code"] == "unresolved_identity"
+
+
+def test_nyse_arca_etf_is_a_priced_us_listing():
+    """Most US ETFs (VTI, VOO, SPY) list on NYSE Arca; a holding identified there is priced like any US listing."""
+    from analyst.financial_data import eodhd_symbol, yahoo_symbol
+    from analyst.schemas import Position, is_canadian_security
+    vti = Position(id="vti", account_id="taxable", kind="etf", currency="USD", ticker="VTI", listing="ARCX", shares="5")
+    assert eodhd_symbol(vti) == "VTI.US" and yahoo_symbol(vti) == "VTI"
+    assert not is_canadian_security("USD", "ARCX")
+
+
+def test_followup_reads_prior_result_without_tool_records_or_duplicate_links(tmp_path: Path) -> None:
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(portfolio())
+
+    class FollowUp(CapturingTransport):
+        async def respond(self, messages, **kwargs):
+            if len(self.requests) == 2:
+                context = json.loads(messages[1]["content"])
+                prior = next(r["id"] for r in context["artifact_references"] if r["kind"] == "calculation_result")
+                self.turns = iter([ModelTurn(calls=[ToolCall("again", "get_artifact", json.dumps({"artifact_id": prior}))]),
+                                   ModelTurn(text="Cash is still CAD 800.")])
+            return await super().respond(messages, **kwargs)
+
+    model = FollowUp([ModelTurn(calls=[ToolCall("exposure", "review_portfolio", "{}")]),
+                      ModelTurn(text="Cash is CAD 800.")])
+    with api(store, model, FakeFinancialProvider(evidence())) as client:
+        thread = client.post("/api/threads").json()["id"]
+        first = submit(client, thread, "How much cash do I have?")
+        second = submit(client, thread, "Remind me of the cash figure.", "req-2")
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+    assert first["status"] == second["status"] == "completed"
+    assert len(first["artifact_ids"]) == 1
+    # Reading the earlier result links nothing new: no second card, no run artifact.
+    assert second["artifact_ids"] == []
+    read_step = next(m for m in messages if m["tool_outcomes"] and m["tool_outcomes"][0]["name"] == "get_artifact")
+    assert read_step["artifact_ids"] == [] and read_step["tool_outcomes"][0]["artifact_ids"] == []
+    assert read_step["tool_outcomes"][0]["status"] == "success"
+    # History holds the real dialogue only; the answer carries its run's tool outcomes and artifact.
+    history = model.requests[2]["messages"][2:]
+    assert [m["role"] for m in history] == ["user", "assistant", "user"]
+    assert "retrieval" not in json.dumps(history)
+    answer = json.loads(history[1]["content"])
+    assert answer["text"] == "Cash is CAD 800."
+    assert answer["completed_tools"][0]["artifact_ids"] == first["artifact_ids"]
+    output = json.loads(model.requests[3]["messages"][-1]["output"])
+    assert output["reference"]["id"] == first["artifact_ids"][0] and output["payload"]["result"]["cash_value"] == "800"

@@ -17,14 +17,19 @@ import logging
 import re
 from typing import Any, cast
 
+from openai import OpenAIError
+
 from .allocation import DiscoveryProvider
 from .config import Settings
 from .context import CHARACTER_LIMIT, READ_CAPABILITIES, RunContext, read_tools
+from .failures import describe_failure
 from .financial_data import FinancialProvider
 from .financial_tools import FinancialTools
+from .model_view import fit
 from .persistence import Database, DecimalEncoder
+from .pipeline import InvalidReview, bounded_effort
 from .proposal_tools import ProposalTools
-from .providers import DataProvider, ModelTurn, SuppliedDataProvider
+from .providers import DataProvider, ModelIncomplete, ModelTurn, SuppliedDataProvider, ToolCall
 from .research import ResearchProvider
 from .research_tools import ResearchTools
 from .schemas import RunRecord, ToolOutcome
@@ -34,7 +39,28 @@ from .workflow_tools import WorkflowTools
 logger = logging.getLogger(__name__)
 
 MAX_TURNS = 8
+ANSWER_RETRY = ("Your last reply was empty or was a tool call written as text. Reply to the user in plain language "
+                "using the results above. To use a tool, call it through the tool interface instead.")
+TOOL_CALL_KEYS = {"name", "arguments", "type", "id", "call_id", "tool", "tool_calls", "function", "parameters",
+                  "args", "input", "retrieval"}
 MAX_DEADLINE_SECONDS = 600.0
+
+
+def valid_answer(text: str | None) -> bool:
+    """False for an empty reply or one that is only tool-call-shaped JSON; prose, code and other JSON pass."""
+    body = (text or "").strip()
+    if body.startswith("```") and body.endswith("```"):
+        body = body.strip("`").removeprefix("json").strip()
+    if not body:
+        return False
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return True
+    items = parsed if isinstance(parsed, list) else [parsed]
+    return not (items and all(
+        isinstance(item, dict) and item.keys() <= TOOL_CALL_KEYS
+        and bool(item.keys() & {"name", "tool", "tool_calls", "function", "retrieval"}) for item in items))
 
 
 class Orchestrator:
@@ -126,10 +152,17 @@ class Orchestrator:
             capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
                             **research_tools.capabilities, **workflow_tools.capabilities,
                             **web.capabilities, **ProposalTools(financial_tools).capabilities}
-            messages = context.messages(comparison=research_tools.comparison, workflow=workflow_tools.inputs.workflow)
+            messages = context.messages(comparison=research_tools.comparison)
             initial_messages = messages
             exchanges: list[list[dict[str, Any]]] = []
             seen_calls: set[str] = set()
+            # Calls whose result was an error or had to be cut to fit: repeating one returns the same.
+            limited_calls: set[tuple[str, str]] = set()
+            # Workflows that failed and were not later completed; the answer always says so.
+            failed_workflows: dict[str, str] = {}
+            answer_retried = False
+            form = workflow_tools.inputs.workflow
+            form_answer: str | None = None
 
             turns_count = 0
             while turns_count < MAX_TURNS:
@@ -144,11 +177,19 @@ class Orchestrator:
 
                 # Call model transport
                 try:
-                    turn = await self._call_transport(
-                        messages=messages,
-                        timeout=request_timeout,
-                        tools=read_tools(capabilities),
-                    )
+                    if form is not None:
+                        # A form submission: its validated inputs run the selected workflow, and that workflow's
+                        # recommendation is the answer. No model turn reinterprets the form or restates the result.
+                        turn = ModelTurn(text=form_answer) if form_answer is not None else ModelTurn(
+                            calls=[ToolCall("form", form, "{}")])
+                    else:
+                        turn = await self._call_transport(
+                            messages=messages,
+                            timeout=request_timeout,
+                            # Every capability stays callable; only schemas this run cannot use yet are left out.
+                            tools=read_tools({name: capability for name, capability in capabilities.items()
+                                              if name not in research_tools.unadvertised(user_text)}),
+                        )
                 except asyncio.CancelledError:
                     # Cancelled while waiting on transport
                     logger.info("Run %s was cancelled during model transport.", run_id)
@@ -157,8 +198,9 @@ class Orchestrator:
                     self._record_terminal_failure(run_id, f"Model request timed out after {request_timeout:.1f}s.")
                     return
                 except Exception as exc:
+                    # Token counts and provider detail stay in the log; the run gets the safe message.
                     logger.error("Model transport error during run %s: %s", run_id, exc, exc_info=True)
-                    self._record_terminal_failure(run_id, f"Model service error: {exc}")
+                    self._record_terminal_failure(run_id, describe_failure(exc).message)
                     return
                 if self._stopped(thread_id, run_id):
                     return
@@ -193,6 +235,24 @@ class Orchestrator:
                         self._record_terminal_failure(run_id, "Invalid application tool arguments.")
                         return
                     seen_calls.add(call.call_id)
+                    signature = (call.name, json.dumps(parsed.model_dump(mode="json"), sort_keys=True))
+                    if signature in limited_calls:
+                        self._record_terminal_failure(
+                            run_id, "The model repeated a retrieval that already failed or was cut to fit the "
+                                    "context budget. Ask a narrower question.")
+                        return
+
+                if not turn.calls and not valid_answer(turn.text):
+                    # An empty reply, or a tool call written as text, is never stored as the answer. One retry
+                    # resends the same context, so no completed tool or proposal step runs again.
+                    if answer_retried:
+                        self._record_terminal_failure(run_id, describe_failure(
+                            InvalidReview("Empty or tool-call-shaped final answer.")).message)
+                        return
+                    answer_retried = True
+                    logger.warning("Invalid final answer in run %s; retrying once.", run_id)
+                    messages = [*messages, {"role": "system", "content": ANSWER_RETRY}]
+                    continue
 
                 # Continuation state is server-only. A tool-call turn is stored after its handler,
                 # so a rejected search query never reaches storage.
@@ -202,6 +262,9 @@ class Orchestrator:
                 # Conceptual / tool-free answer path: model produced text response
                 if turn.text or not turn.calls:
                     assistant_text = turn.text or ""
+                    for name, error in failed_workflows.items():
+                        label = name.removeprefix("run_").replace("_", " ").capitalize()
+                        assistant_text = f"{assistant_text}\n\n{label} did not complete: {error}".strip()
                     if web.unavailable and not web.completed:
                         # Never let prose imply a current lookup that did not occur.
                         assistant_text = (
@@ -226,6 +289,7 @@ class Orchestrator:
 
                 call = turn.calls[0]
                 tool_remaining = max(0, deadline - asyncio.get_event_loop().time())
+                known_artifacts = set(context.artifact_ids)
                 try:
                     pending_result = capability.handler(context, parsed)
                     if inspect.isawaitable(pending_result):
@@ -242,8 +306,18 @@ class Orchestrator:
                         return
                     result = (web.unavailable_result(context, "deadline", None) if call.name in web.capabilities
                               else {"error": "Financial request timed out; no result is available."})
-                except ValueError:
-                    result = {"error": "Requested data is unavailable to this run."}
+                except (InvalidReview, OpenAIError, ValueError) as exc:
+                    # Nested model failures (ModelIncomplete is also a ValueError) keep their real category, so the
+                    # model can explain them instead of reporting missing data.
+                    failure = describe_failure(exc)
+                    logger.warning("Tool %s failed in run %s (%s): %s", call.name, run_id, failure.kind, exc)
+                    result = {"error": failure.message, "retryable": failure.retryable}
+                    limited_calls.add(signature)
+                if capability.effect == "workflow":
+                    if "error" in result:
+                        failed_workflows[call.name] = str(result["error"])
+                    else:
+                        failed_workflows.pop(call.name, None)
                 if self._stopped(thread_id, run_id):
                     return
                 artifact_ids = list(result.get("artifact_ids", []))
@@ -251,6 +325,8 @@ class Orchestrator:
                 for key in ("reference", "before_artifact", "after_artifact"):
                     if isinstance(result.get(key), dict):
                         artifact_ids.append(result[key]["id"])
+                # A step links only the artifacts it created; reading a known artifact adds no second result card.
+                artifact_ids = [ref for ref in dict.fromkeys(artifact_ids) if ref not in known_artifacts]
                 rejected_query = (isinstance(result.get("payload"), dict)
                                   and result["payload"].get("reason") == "rejected_query")
                 if turn.continuation and not rejected_query:
@@ -265,11 +341,17 @@ class Orchestrator:
                 output_item = {"type": "function_call_output", "call_id": call.call_id, "output": output}
                 required_size = len(initial_messages[-1]["content"]) + sum(len(json.dumps(item)) for item in exchange)
                 if required_size + len(json.dumps(output_item)) > CHARACTER_LIMIT:
-                    result = {"error": "Result exceeds retrieval budget. Request a smaller slice.",
-                              "artifact_ids": artifact_ids, "proposal_ids": proposal_ids}
-                    if call.name == "get_artifact":
-                        result["artifact_id"] = parsed.model_dump()["artifact_id"]
-                    output_item["output"] = json.dumps(result)
+                    # The limit covers the whole serialized output item, so measure the doubly encoded result.
+                    available = CHARACTER_LIMIT - required_size - len(json.dumps({**output_item, "output": ""}))
+                    fitted = fit(result, available, lambda value: len(json.dumps(json.dumps(value, cls=DecimalEncoder))))
+                    limited_calls.add(signature)
+                    if fitted is None:
+                        result = {"error": "Result exceeds the context budget even when summarized.",
+                                  "artifact_ids": artifact_ids, "proposal_ids": proposal_ids}
+                        if call.name == "get_artifact":
+                            result["artifact_id"] = parsed.model_dump()["artifact_id"]
+                        fitted = result
+                    output_item["output"] = json.dumps(fitted, cls=DecimalEncoder)
                 exchange.append(output_item)
                 exchanges.append(exchange)
                 messages = context.with_exchanges(initial_messages, exchanges)
@@ -287,6 +369,13 @@ class Orchestrator:
                 )
                 self.db.update_run(run_id, "running", additional_message_ids=[outcome_message.id],
                                    additional_artifact_ids=artifact_ids)
+                if form is not None:
+                    if "error" in result:
+                        # The workflow's safe failure message ends the run; the form can be submitted again.
+                        self._record_terminal_failure(run_id, str(result["error"]))
+                        return
+                    clarification = result.get("clarification_required")
+                    form_answer = str(clarification["message"]) if clarification else workflow_tools.answer or ""
 
             # Exceeded MAX_TURNS
             self._record_terminal_failure(
@@ -298,8 +387,10 @@ class Orchestrator:
             logger.info("Supervised task for run %s was cancelled.", run_id)
             # cancel_run recorded the cancellation in the database before cancelling this task
         except Exception as exc:
-            logger.error("Orchestration error in run %s (%s).", run_id, type(exc).__name__)
-            self._record_terminal_failure(run_id, "Internal orchestration error.")
+            logger.error("Orchestration error in run %s (%s).", run_id, type(exc).__name__, exc_info=True)
+            failure = describe_failure(exc)
+            self._record_terminal_failure(run_id, "Internal orchestration error." if failure.kind == "internal"
+                                          else failure.message)
 
     async def _call_transport(
         self,
@@ -308,16 +399,35 @@ class Orchestrator:
         tools: list[dict[str, Any]],
         tool_choice: str = "auto",
     ) -> ModelTurn:
-        """Call underlying transport, respecting timeout."""
+        """Call underlying transport, respecting timeout.
+
+        Every chat turn may select a tool, so its effort is capped at medium as in the pipeline. A response that ran
+        out of output (the token cap, or no reason given) is retried once at lower effort; a successful tool call is
+        never repeated because the retry happens before any call is executed.
+        """
         sig = inspect.signature(self.transport.respond)
         kwargs: dict[str, Any] = {}
         accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-        for name, value in {"timeout": timeout, "tools": tools, "tool_choice": tool_choice}.items():
+        effort = bounded_effort(self.settings.reasoning_effort, "medium")
+        for name, value in {"timeout": timeout, "tools": tools, "tool_choice": tool_choice,
+                            "reasoning_effort": effort}.items():
             if name in sig.parameters or accepts_kwargs:
                 kwargs[name] = value
 
-        coro = self.transport.respond(messages, **kwargs)
-        return cast(ModelTurn, await asyncio.wait_for(coro, timeout=timeout))
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        try:
+            return cast(ModelTurn, await asyncio.wait_for(self.transport.respond(messages, **kwargs), timeout=timeout))
+        except ModelIncomplete as stopped:
+            lower = bounded_effort(effort, "low")
+            if "reasoning_effort" not in kwargs or lower == effort or stopped.reason not in {None, "max_output_tokens"}:
+                raise
+            logger.warning("Incomplete chat response at reasoning effort %s; retrying once at %s.", effort, lower)
+        kwargs["reasoning_effort"] = lower
+        remaining = max(0.0, deadline - loop.time())
+        if "timeout" in kwargs:
+            kwargs["timeout"] = remaining
+        return cast(ModelTurn, await asyncio.wait_for(self.transport.respond(messages, **kwargs), timeout=remaining))
 
     def _stopped(self, thread_id: str, run_id: str) -> bool:
         """Whether the run ended while provider work was still returning; its late output is then dropped.

@@ -43,7 +43,7 @@ OPERATING_FORMS = {"10-K", "10-Q", "20-F", "40-F", "6-K", "8-K"}
 SEC_UNCLEAR_SIC = {"6221"}
 # EODHD exchange codes. All US listings share "US"; SEC supplies the exact US exchange.
 EODHD_LISTINGS = {"TO": "XTSE", "V": "XTSX", "NEO": "NEOE", "CN": "XCNQ"}
-EODHD_CODE = {**{listing: code for code, listing in EODHD_LISTINGS.items()}, "XNAS": "US", "XNYS": "US", "XASE": "US"}
+EODHD_CODE = {**{listing: code for code, listing in EODHD_LISTINGS.items()}, "XNAS": "US", "XNYS": "US", "XASE": "US", "ARCX": "US"}
 SUFFIX = {"XTSE": ".TO", "XTSX": ".V", "NEOE": ".NE", "XCNQ": ".CN"}
 # Chosen by the user on 2026-10-07: EODHD free plan, personal use, 20 requests a day.
 EODHD_QUALIFICATION = SourceQualification(
@@ -133,7 +133,7 @@ def yahoo_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
 
 
 class QuoteCache:
-    """The last fetched quote per symbol (EODHD-style key: AVGO.US, CM.TO), in one local JSON file. Analysis reads only this.
+    """The last fetched quote per symbol (EODHD-style key: AVGO.US, CM.TO), in one local JSON file. Valuation reads only this.
 
     Daily closes from the same refresh sit beside it in history.json; nothing reads them yet. OpenFIGI identity
     rows sit in identities.json.
@@ -172,8 +172,8 @@ class PersonalFinancialProvider:
     """Reviewed reference file first, then SEC and EODHD identity, cached quotes and Valet FX.
 
     EODHD is never primary-source verification: only an SEC registrant match verifies an issuer.
-    Quotes come only from the local cache, which refresh_quotes fills at most once per symbol per day
-    unless the user forces a refresh: yfinance first, EODHD for whatever yfinance misses. yfinance is
+    Quotes come only from the local cache, which refresh_quotes fills at most once per symbol per day (before each
+    analysis, or on Refresh prices) unless the user forces a refresh: yfinance first, EODHD for whatever yfinance misses. yfinance is
     used for quotes and daily closes only, never identity, FX, filings or holdings.
     """
 
@@ -441,7 +441,7 @@ class PersonalFinancialProvider:
         return identity
 
     async def quote(self, position: Position, as_of: date) -> Quote | None:
-        """The cached quote only. Analysis never calls the market-data source."""
+        """The cached quote only; refresh_financial_data refreshes the cache first."""
         supplied = (
             self.reference.quotes.get(position.id)
             or (self.reference.quotes.get(position.ticker) if position.ticker else None)
@@ -624,6 +624,11 @@ async def refresh_financial_data(snapshot: Snapshot, provider: FinancialProvider
     if hasattr(provider, "reference") and getattr(provider.reference, "sponsor_holdings", None):
         for key, holdings_item in provider.reference.sponsor_holdings.items():
             evidence.sponsor_holdings[key] = holdings_item
+    refresh = getattr(provider, "refresh_quotes", None)
+    if refresh is not None:
+        # Missing or earlier-day cached prices are fetched first, through the same once-a-day, source-limited refresh
+        # as Refresh prices; prices fetched today are reused without a provider call.
+        await refresh([position for position in snapshot.positions if position.kind != "cash"])
     for position in snapshot.positions:
         if position.kind == "cash":
             continue

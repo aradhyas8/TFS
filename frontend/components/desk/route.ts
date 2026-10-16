@@ -25,7 +25,10 @@ const MONEY_QUESTION_NO_AMOUNT = /\b(?:new (?:cash|money)|(?:cash|money) to (?:i
 
 // A plain instruction to correct what is held ("set my ACME shares to 12", "remove ACME from my holdings").
 // A question about a holding ("should I sell ACME?") is not one.
-const HOLDINGS_EDIT = /^\s*(?:please\s+)?(?:set|change|update|correct|record|remove|delete)\b.*\b(?:shares?|holdings?|positions?|portfolio|quantity|balance)\b/i;
+const HOLDINGS_EDIT = /^\s*(?:please\s+)?(?:set|change|update|correct|record|remove|delete|increase|decrease|reduce|add|subtract)\b.*\b(?:shares?|holdings?|positions?|portfolio|quantity|balance)\b/i;
+// A statement that the holdings already changed ("I bought 5 more ACME", "I now hold 15 shares", "I withdrew $500").
+// Anchored at the start, so a hypothetical ("What if I bought…", "If I sold…") or a question keeps its route.
+const HOLDINGS_UPDATE = /^\s*(?:(?:i|we)(?:'ve|\s+have)?\s+)?(?:just\s+|also\s+|recently\s+)?(?:bought|purchased|sold|trimmed|deposited|withdrew|withdrawn|transferred)\b|^\s*(?:i|we)\s+(?:(?:now|currently)\s+(?:hold|have|own)\b|(?:hold|have|own)\s+[0-9][0-9,.]*\s+(?:shares?|units?)\b)/i;
 
 const THEME_STOP_WORDS = new Set(["which", "what", "my", "our", "all", "these", "those", "some", "any", "no", "more", "other", "few", "the", "a", "an"]);
 
@@ -296,6 +299,6 @@ export function route(raw: string, snapshot: Snapshot | null): Route {
 export function isConversation(raw: string, snapshot: Snapshot | null): boolean {
   if (raw.trim().startsWith("/")) return false;
   // An instruction to change the record is prepared as a proposal in the conversation, even when it names a holding.
-  if (HOLDINGS_EDIT.test(raw)) return true;
+  if (HOLDINGS_EDIT.test(raw) || HOLDINGS_UPDATE.test(raw)) return true;
   return !snapshot || route(raw, snapshot).kind === "review";
 }

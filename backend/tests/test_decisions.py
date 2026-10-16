@@ -16,6 +16,7 @@ from analyst.schemas import (
     EvidenceReference,
     SavedDecision,
 )
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation, snapshot
 
 
@@ -31,10 +32,7 @@ def make_sample_result() -> AnalysisResult:
             settings=Settings("sk-test-super-secret-key", "test-model"),
         )
     )
-    response = client.post(
-        "/api/analyze",
-        json={"question": "What is my direct concentration?", "portfolio": sn},
-    )
+    response = analyze_with(client, {"question": "What is my direct concentration?", "portfolio": sn})
     assert response.status_code == 200
     return AnalysisResult.model_validate(response.json())
 
@@ -151,10 +149,7 @@ def test_api_save_and_reopen_decision_roundtrip(tmp_path: Path) -> None:
     client = TestClient(app)
 
     # 1. Exercise analysis pipeline
-    analysis_resp = client.post(
-        "/api/analyze",
-        json={"question": "Review my holdings dated September 2026", "portfolio": snapshot()},
-    )
+    analysis_resp = analyze_with(client, {"question": "Review my holdings dated September 2026", "portfolio": snapshot()})
     assert analysis_resp.status_code == 200
     result_data = analysis_resp.json()
 
@@ -224,10 +219,7 @@ def test_api_keys_and_secrets_never_persisted(tmp_path: Path) -> None:
     )
     client = TestClient(app)
 
-    analysis_resp = client.post(
-        "/api/analyze",
-        json={"question": "Analyze concentration", "portfolio": snapshot()},
-    )
+    analysis_resp = analyze_with(client, {"question": "Analyze concentration", "portfolio": snapshot()})
     assert secret not in analysis_resp.text
 
     save_resp = client.post(
@@ -253,10 +245,7 @@ def test_analysis_journey_works_without_saving() -> None:
             settings=Settings("sk-test-key", "test-model"),
         )
     )
-    response = client.post(
-        "/api/analyze",
-        json={"question": "Review portfolio standalone", "portfolio": snapshot()},
-    )
+    response = analyze_with(client, {"question": "Review portfolio standalone", "portfolio": snapshot()})
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
 

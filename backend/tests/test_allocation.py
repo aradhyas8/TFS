@@ -9,6 +9,7 @@ from analyst.api import create_app
 from analyst.financial_data import FakeFinancialProvider
 from analyst.providers import FakeDataProvider, ModelTurn, ScriptedModel, ToolCall
 from analyst.schemas import FinancialEvidence
+from tests.analysis_harness import analyze_with
 from tests.test_analysis import recommendation
 
 
@@ -173,13 +174,13 @@ def run_allocation(request=None, *, sizing=None, answer=None, financial=None):
     ]
     turns.append(ModelTurn(answer=answer or allocation_answer()))
     model = ScriptedModel(turns)
-    response = TestClient(
+    response = analyze_with(TestClient(
         create_app(
             model=model,
             data=FakeDataProvider(),
             financial=financial or FakeFinancialProvider(allocation_evidence()),
         )
-    ).post("/api/analyze", json=request or allocation_request())
+    ), request or allocation_request())
     return response, model
 
 
@@ -438,7 +439,7 @@ def candidate_journey(
         )
     turns.append(ModelTurn(answer=final))
     model = ScriptedModel(turns)
-    response = TestClient(
+    response = analyze_with(TestClient(
         create_app(
             model=model,
             data=FakeDataProvider(),
@@ -446,7 +447,7 @@ def candidate_journey(
             research=ReviewedResearchProvider(records),
             discovery=discovery,
         )
-    ).post("/api/analyze", json=request)
+    ), request)
     return response, discovery, model
 
 
@@ -561,14 +562,14 @@ def test_fresh_scan_repeats_for_identical_new_cash_questions():
                 ModelTurn(answer={**allocation_answer(), "preferred_action": "no_action"}),
             ]
         )
-        response = TestClient(
+        response = analyze_with(TestClient(
             create_app(
                 model=model,
                 data=FakeDataProvider(),
                 financial=FakeFinancialProvider(allocation_evidence()),
                 discovery=provider,
             )
-        ).post("/api/analyze", json=allocation_request())
+        ), allocation_request())
         assert response.status_code == 200, response.text
         responses.append(response.json())
     assert provider.calls == 2
@@ -646,14 +647,14 @@ def test_unused_unpriced_scan_candidate_does_not_prohibit_fund_sizing():
             ModelTurn(answer=allocation_answer()),
         ]
     )
-    response = TestClient(
+    response = analyze_with(TestClient(
         create_app(
             model=model,
             data=FakeDataProvider(),
             financial=FakeFinancialProvider(allocation_evidence()),
             discovery=discovery,
         )
-    ).post("/api/analyze", json=allocation_request())
+    ), allocation_request())
     assert response.status_code == 200, response.text
     assert response.json()["recommendation"]["amount"]["maximum"] == "2400"
 
@@ -734,13 +735,13 @@ def test_allocation_comparison_aligns_cash_and_keep_drivers_to_new_cash():
         ModelTurn(answer=allocation_answer()),
     ]
     model = ScriptedModel(turns)
-    response = TestClient(
+    response = analyze_with(TestClient(
         create_app(
             model=model,
             data=FakeDataProvider(),
             financial=FakeFinancialProvider(allocation_evidence()),
         )
-    ).post("/api/analyze", json=allocation_request())
+    ), allocation_request())
     assert response.status_code == 200, response.text
     result = response.json()
     assert result["comparison"]["starting_value"] == "6000"
@@ -788,13 +789,13 @@ def test_allocation_recovers_when_model_calls_check_proposed_changes():
         ModelTurn(answer=allocation_answer()),
     ]
     model = ScriptedModel(turns)
-    response = TestClient(
+    response = analyze_with(TestClient(
         create_app(
             model=model,
             data=FakeDataProvider(),
             financial=FakeFinancialProvider(allocation_evidence()),
         )
-    ).post("/api/analyze", json=allocation_request())
+    ), allocation_request())
     assert response.status_code == 200, response.text
     assert response.json()["comparison"]["starting_value"] == "6000"
 
@@ -900,7 +901,7 @@ def test_allocation_recovers_when_model_compares_before_candidate_cases():
         ModelTurn(answer=final),
     ]
     model = ScriptedModel(turns)
-    response = TestClient(
+    response = analyze_with(TestClient(
         create_app(
             model=model,
             data=FakeDataProvider(),
@@ -908,7 +909,7 @@ def test_allocation_recovers_when_model_compares_before_candidate_cases():
             research=ReviewedResearchProvider(records),
             discovery=discovery,
         )
-    ).post("/api/analyze", json=request)
+    ), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert len(result["allocation"]["researched"]) == 1
@@ -1064,14 +1065,14 @@ def test_new_cash_research_uses_live_sec_issuer_provider(tmp_path):
     ]
     model = ScriptedModel(turns)
     # Notice: research is NOT passed, so create_app selects the default research provider from environment
-    response = TestClient(
+    response = analyze_with(TestClient(
         create_app(
             model=model,
             data=FakeDataProvider(),
             financial=FakeFinancialProvider(evidence),
             discovery=discovery,
         )
-    ).post("/api/analyze", json=request)
+    ), request)
     assert response.status_code == 200, response.text
     result = response.json()
     assert len(result["allocation"]["researched"]) == 1

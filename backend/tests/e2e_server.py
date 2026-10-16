@@ -15,7 +15,7 @@ from analyst.config import Settings
 from analyst.decisions import DecisionStore
 from analyst.financial_data import FakeFinancialProvider
 from analyst.portfolio import PortfolioStore
-from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
+from analyst.providers import FakeDataProvider, ModelTurn, ToolCall, latest_price_position
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import (
     NEW_CASH_DESTINATION,
@@ -70,6 +70,25 @@ CONVERSATION_TOOLS: list[tuple[str, str, dict[str, Any]]] = [
 ]
 
 
+MARKDOWN_ANSWER = """## Summary
+
+Your **largest** holding is *ACME*. Read the [filing](https://example.com/acme) and run `review`.
+
+| Holding | Weight |
+|---|---|
+| ACME | 26% |
+| BROAD | 34% |
+
+- First point
+- Second point
+
+```
+print("code")
+```
+
+<script>window.injected = true</script><img src=x onerror="window.injected = true">"""
+
+
 class ConversationTestTransport:
     """Scripted conversation turns for the desk thread journeys, keyed by the latest question."""
 
@@ -97,13 +116,17 @@ class ConversationTestTransport:
         if "Slow" in question:
             await asyncio.sleep(3)
         if not any(m.get("type") == "function_call_output" for m in messages):
-            # An explicit form submission names its workflow; the stock choice arrives as explicit input.
-            explicit = json.loads(messages[1]["content"]).get("explicit_workflow")
-            if explicit:
-                return ModelTurn(calls=[ToolCall("thread_workflow", explicit, "{}")])
+            # Form submissions never reach this model: the orchestrator runs their workflow directly.
+            if "Recall the exposure result" in question:
+                # A follow-up that reads an earlier stored calculation back instead of computing a new one.
+                earlier = next(ref["id"] for ref in json.loads(messages[1]["content"])["artifact_references"]
+                               if ref["kind"] == "calculation_result")
+                return ModelTurn(calls=[ToolCall("thread_read", "get_artifact", json.dumps({"artifact_id": earlier}))])
             for phrase, tool, arguments in CONVERSATION_TOOLS:
                 if phrase in question:
                     return ModelTurn(calls=[ToolCall("thread_tool", tool, json.dumps(arguments))])
+        if "Format a markdown answer" in question:
+            return ModelTurn(text=MARKDOWN_ANSWER)
         return ModelTurn(text=f"Plain answer to: {question}\n\nNo portfolio research was needed.")
 
 
@@ -183,6 +206,8 @@ class BrowserTestModel:
                 answer["evidence_ids"] = ["sedar_filing", "issuer_release"]
             if "Review unavailable primary" in request["question"]:
                 answer["evidence_ids"] = []
+            # Where today's price sits, read from the valuation the tools returned, as a correct model does.
+            answer["price_position"] = latest_price_position(messages)
             return ModelTurn(answer=answer)
         if request.get("comparison") and "total_value" in tool:
             template = judgments()["alternatives"][0]["cases"]

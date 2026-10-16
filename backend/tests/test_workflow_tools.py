@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,8 +11,15 @@ from fastapi.testclient import TestClient
 from analyst.api import create_app
 from analyst.config import Settings
 from analyst.financial_data import FakeFinancialProvider
+from analyst.pipeline import InvalidReview
 from analyst.portfolio import PortfolioStore
-from analyst.providers import FakeDataProvider, ModelTurn, ToolCall
+from analyst.providers import (
+    FakeDataProvider,
+    ModelIncomplete,
+    ModelServiceError,
+    ModelTurn,
+    ToolCall,
+)
 from analyst.research import ReviewedResearchProvider
 from analyst.schemas import AnalysisRequest, CompanyResearch, Identity, SavedPortfolio
 from tests.test_allocation import (
@@ -43,26 +51,23 @@ WORKFLOW_NAMES = (
 )
 
 
-@pytest.mark.parametrize("selected,called", [
-    (selected, called) for selected in WORKFLOW_NAMES for called in WORKFLOW_NAMES if selected != called
-])
-def test_explicit_workflow_rejects_conflicting_adapter_before_pipeline_execution(tmp_path, selected, called):
-    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
-    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
-    arguments = {"position_id": "p1"} if called == "run_stock_analysis" else {}
-    model = CapturingTransport([call(called, arguments), ModelTurn(text="Use the selected workflow.")])
-    with TestClient(create_app(model=model, data=NoWorkflowData(), portfolio_store=store,
-                              settings=Settings(api_key="sk-test", model="test"))) as client:
+@pytest.mark.parametrize("selected", WORKFLOW_NAMES)
+def test_form_submission_runs_its_workflow_without_an_outer_model_turn(tmp_path, selected):
+    # No saved portfolio: each workflow answers with its own form requirement, and no model is asked anything.
+    model = CapturingTransport([])
+    with TestClient(create_app(model=model, data=NoWorkflowData(), portfolio_store=PortfolioStore(
+            database_path=tmp_path / "portfolio.db"), settings=Settings(api_key="sk-test", model="test"))) as client:
         thread = client.post("/api/threads").json()["id"]
         run = submit(client, thread, "Run the selected workflow.", workflow_input={"workflow": selected})
         assert run["status"] == "completed", run
         assert run["artifact_ids"] == []
         messages = client.get(f"/api/threads/{thread}").json()["messages"]
-        outcome = messages[1]["tool_outcomes"][0]
-        assert outcome["name"] == called
-        assert outcome["status"] == "error"
-        assert outcome["error"] == "Requested workflow conflicts with the explicit workflow selection."
-        assert len(model.requests) == 2
+        assert [m["role"] for m in messages] == ["user", "assistant", "assistant"]
+        assert [(o["name"], o["status"]) for o in messages[1]["tool_outcomes"]] == [(selected, "success")]
+        clarification = messages[1]["clarification_required"]
+        assert clarification["code"] == "portfolio_required"
+        assert messages[2]["text"] == clarification["message"]
+    assert model.requests == []
 
 
 def workflow_case(name):
@@ -100,7 +105,7 @@ def test_complete_workflows_preserve_typed_results_and_explicit_inputs(tmp_path,
     store.save(saved)
     inputs = {key: value for key, value in request.items() if key not in {"question", "portfolio", "settings"}}
     inputs.update(workflow=name, analysis_date="2026-09-30")
-    model = CapturingTransport([call(name), *turns, ModelTurn(text="Done.")])
+    model = CapturingTransport(turns)
     with TestClient(create_app(model=model, data=FakeDataProvider(),
                               financial=FakeFinancialProvider(allocation_evidence()) if result_field == "allocation" else FakeFinancialProvider(),
                               research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}),
@@ -108,17 +113,21 @@ def test_complete_workflows_preserve_typed_results_and_explicit_inputs(tmp_path,
         thread = client.post("/api/threads").json()["id"]
         run = submit(client, thread, request["question"], workflow_input=inputs)
         assert run["status"] == "completed", run
-        assert json.loads(model.requests[0]["messages"][1]["content"])["explicit_workflow"] == name
         assert len(run["artifact_ids"]) == 1, client.get(f"/api/threads/{thread}").json()
         artifact = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()
         assert artifact["payload"][result_field] is not None
         assert artifact["payload"]["question"] == request["question"]
         assert artifact["payload"]["portfolio"]["holdings_as_of"] == "2026-09-30"
-        nested_request = json.loads(model.requests[1]["messages"][1]["content"])
+        nested_request = json.loads(model.requests[0]["messages"][1]["content"])
         assert nested_request["settings"] == (saved.settings.model_dump(mode="json") if saved.settings else None)
         for key, value in request[input_field].items():
             assert nested_request[input_field][key] == value
         assert client.get("/api/portfolio").json()["revision"] == 1
+        # The workflow's own recommendation is the answer; no chat model restates it.
+        answer = client.get(f"/api/threads/{thread}").json()["messages"][-1]
+        assert answer["text"] == artifact["payload"]["recommendation"]["reason"]
+    # Exactly the nested pipeline turns ran: no outer chat turn before or after the workflow.
+    assert len(model.requests) == len(turns)
 
 
 @pytest.mark.parametrize("name,field", [("run_new_cash_allocation", "new_cash"), ("run_theme_exploration", "theme")])
@@ -128,7 +137,7 @@ def test_agreement_requires_matching_form_and_resumes_only_in_new_run(tmp_path, 
     store.save(SavedPortfolio.model_validate({"snapshot": request["portfolio"], "settings": request.get("settings")}))
     inputs = {key: value for key, value in request.items() if key not in {"question", "portfolio", "settings"}}
     inputs["analysis_date"] = "2026-09-30"
-    model = CapturingTransport([call(name), ModelTurn(text="Use the agreement form."), call(name), *turns, ModelTurn(text="Done.")])
+    model = CapturingTransport([call(name), ModelTurn(text="Use the agreement form."), *turns])
     with TestClient(create_app(model=model, data=FakeDataProvider(), financial=FakeFinancialProvider(allocation_evidence()),
                               research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}),
                               portfolio_store=store, settings=Settings(api_key="sk-test", model="test", request_timeout=5))) as client:
@@ -314,18 +323,19 @@ def test_new_cash_binds_zero_balance_destination_and_saved_benchmark(tmp_path):
     store.save(SavedPortfolio.model_validate({"snapshot": request["portfolio"], "settings": request["settings"],
         "benchmark": {"ticker": "BROAD", "listing": "XNYS", "currency": "USD"}}))
     # A premature recommendation exercises the real pipeline rejection after request construction.
-    model = CapturingTransport([call("run_new_cash_allocation"), ModelTurn(answer=recommendation())])
+    model = CapturingTransport([ModelTurn(answer=recommendation())])
     with TestClient(create_app(model=model, financial=FakeFinancialProvider(allocation_evidence()),
                               portfolio_store=store, settings=Settings(api_key="sk-test", model="test"))) as client:
         thread = client.post("/api/threads").json()["id"]
         run = submit(client, thread, request["question"], workflow_input={"workflow": "run_new_cash_allocation",
                      "new_cash": request["new_cash"], "analysis_date": "2026-09-30"})
         assert run["status"] == "failed"
-        nested = json.loads(model.requests[1]["messages"][1]["content"])
+        nested = json.loads(model.requests[0]["messages"][1]["content"])
         rows = {row["id"]: row for row in nested["portfolio"]["positions"]}
         assert rows["new-cash-destination"]["cash"] == "0"
         assert rows["new-cash-destination"]["account_id"] == "broker"
         assert rows["benchmark-fund"]["shares"] == "0"
+        assert rows["benchmark-fund"]["account_id"] == "broker"
         assert rows["benchmark-fund"]["etf_role"] == "diversified"
         assert nested["new_cash"]["cash_position_id"] == "new-cash-destination"
         committed_rows = client.get("/api/portfolio").json()["portfolio"]["snapshot"]["positions"]
@@ -411,10 +421,9 @@ def test_missing_workflow_inputs_are_persisted_as_typed_form_requirements(tmp_pa
 def test_exposure_workflow_stores_original_result_and_bound_revision(tmp_path, workflow):
     store = PortfolioStore(database_path=tmp_path / "portfolio.db")
     store.save(SavedPortfolio.model_validate({"snapshot": snapshot(), "average_costs": {"p1": "12.34"}}))
-    model = CapturingTransport([
-        ModelTurn(calls=[ToolCall("workflow", "run_exposure_review", "{}")]),
-        ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]),
-        ModelTurn(answer=recommendation()),
+    nested = [ModelTurn(calls=[ToolCall("portfolio", "review_portfolio", "{}")]), ModelTurn(answer=recommendation())]
+    model = CapturingTransport(nested if workflow else [
+        ModelTurn(calls=[ToolCall("workflow", "run_exposure_review", "{}")]), *nested,
         ModelTurn(text="Your review is available."),
     ])
     with TestClient(create_app(model=model, data=FakeDataProvider(), financial=FakeFinancialProvider(),
@@ -433,26 +442,196 @@ def test_exposure_workflow_stores_original_result_and_bound_revision(tmp_path, w
         assert "12.34" not in json.dumps(model.requests)
 
 
-def test_conflicting_workflow_call_can_recover_with_the_explicitly_selected_workflow(tmp_path):
+@pytest.mark.parametrize("error,category", [
+    (ModelIncomplete("The model response is incomplete (reason: max_output_tokens).", reason="max_output_tokens"),
+     "ran out of output space"),
+    (InvalidReview("Invalid mixed or parallel model response."), "did not produce a valid result"),
+    (ModelServiceError("OpenRouter vendor/model:free: rate limit reached. Nothing was retried; try again later.",
+                       kind="rate_limit"), "rate limit reached"),
+])
+def test_nested_model_failures_keep_their_category(tmp_path, error, category):
+    class Failing(CapturingTransport):
+        async def respond(self, messages, **kwargs):
+            if kwargs.get("output_schema") is not None or "require_tool" in kwargs:
+                self.requests.append(kwargs)
+                raise error
+            return await super().respond(messages, **kwargs)
+
     store = PortfolioStore(database_path=tmp_path / "portfolio.db")
     store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
-    model = CapturingTransport([call("run_portfolio_reunderwriting"), call("run_exposure_review"),
-                                call("review_portfolio"), ModelTurn(answer=recommendation()),
-                                ModelTurn(text="The selected exposure review is ready.")])
-    with TestClient(create_app(model=model, financial=FakeFinancialProvider(),
+    model = Failing([call("run_exposure_review"), ModelTurn(text="The review could not finish.")])
+    with TestClient(create_app(model=model, data=FakeDataProvider(), financial=FakeFinancialProvider(),
                               portfolio_store=store, settings=Settings(api_key="sk-test", model="test", request_timeout=5))) as client:
         thread = client.post("/api/threads").json()["id"]
-        run = submit(client, thread, "Review my exposure.", workflow_input={
-            "workflow": "run_exposure_review", "analysis_date": "2026-09-30",
-        })
+        run = submit(client, thread, "Review exposure.")
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+    assert run["status"] == "completed", run
+    assert run["artifact_ids"] == []
+    outcome = messages[1]["tool_outcomes"][0]
+    assert outcome["status"] == "error" and category in outcome["error"]
+    assert "unavailable" not in outcome["error"]
+    # The failed workflow is never presented as a successful result.
+    assert messages[-1]["text"].endswith(f"Exposure review did not complete: {outcome['error']}")
+
+
+def test_failed_form_workflow_fails_the_run_with_the_shared_safe_message(tmp_path):
+    class Failing(CapturingTransport):
+        async def respond(self, messages, **kwargs):
+            self.requests.append(kwargs)
+            raise ModelIncomplete("The model response is incomplete (reason: max_output_tokens).",
+                                  reason="max_output_tokens")
+
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
+    with TestClient(create_app(model=Failing([]), data=FakeDataProvider(), financial=FakeFinancialProvider(),
+                              portfolio_store=store, settings=Settings(api_key="sk-test", model="test", request_timeout=5))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Review exposure.", workflow_input={"workflow": "run_exposure_review"})
+        messages = client.get(f"/api/threads/{thread}").json()["messages"]
+    assert run["status"] == "failed"
+    assert "ran out of output space" in run["error"]
+    assert run["artifact_ids"] == []
+    # The failed step stays visible; no answer claims a result.
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+    assert messages[1]["tool_outcomes"][0]["error"] == run["error"]
+
+
+def test_new_cash_form_leaves_out_a_benchmark_in_another_currency(tmp_path):
+    request, _ = workflow_case("run_new_cash_allocation")
+    request["new_cash"].pop("cash_position_id")
+    request["new_cash"].update(account_id="broker", currency="CAD")
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": request["portfolio"], "settings": request["settings"],
+        "benchmark": {"ticker": "BROAD", "listing": "XNYS", "currency": "USD"}}))
+    model = CapturingTransport([ModelTurn(answer=recommendation())])
+    with TestClient(create_app(model=model, financial=FakeFinancialProvider(allocation_evidence()),
+                              portfolio_store=store, settings=Settings(api_key="sk-test", model="test"))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        submit(client, thread, request["question"], workflow_input={"workflow": "run_new_cash_allocation",
+               "new_cash": request["new_cash"], "analysis_date": "2026-09-30"})
+    nested = json.loads(model.requests[0]["messages"][1]["content"])
+    assert "benchmark-fund" not in {row["id"] for row in nested["portfolio"]["positions"]}
+
+
+class CandidateFinancial(FakeFinancialProvider):
+    async def lookup(self, *args):
+        return [Identity(status="supplied", ticker="ACME", listing="XNAS", currency="USD", kind="stock",
+                         company_id="acme", company_name="Acme", source="Reviewed fixture")]
+
+
+def test_stock_form_resolves_an_unowned_candidate_again_without_holding_it(tmp_path):
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
+    candidate = {"id": "candidate-ACME-XNAS", "ticker": "ACME", "listing": "XNAS"}
+    request = {"question": "Research Acme.", "portfolio": snapshot(), "stock": {"position_id": candidate["id"]}}
+    request["portfolio"]["positions"].append({"id": candidate["id"], "account_id": "tfsa", "kind": "stock",
+        "currency": "USD", "ticker": "ACME", "listing": "XNAS", "company_id": "acme", "company_name": "Acme",
+        "shares": "0"})
+    bound = AnalysisRequest.model_validate(request).model_dump(mode="json")
+    model = CapturingTransport([call("review_portfolio"), call("get_sec_filings"), call("get_issuer_material"),
+        call("calculate_company_cases", company_judgments()), call("calculate_comparison", stock_comparison_judgments(bound)),
+        ModelTurn(answer=stock_answer())])
+    with TestClient(create_app(model=model, financial=CandidateFinancial(),
+                              research=ReviewedResearchProvider({"acme": CompanyResearch.model_validate(research_fixture())}),
+                              portfolio_store=store, settings=Settings(api_key="sk-test", model="test", request_timeout=5))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Analyze ACME", workflow_input={
+            "workflow": "run_stock_analysis", "stock": {"position_id": candidate["id"]},
+            "candidates": [candidate], "analysis_date": "2026-09-30"})
         assert run["status"] == "completed", run
-        assert len(run["artifact_ids"]) == 1
-        artifact = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()
-        assert artifact["payload"]["portfolio"]["total_value"] == "3600"
-        assert artifact["payload"]["stock"] is None
-        assert artifact["payload"]["reunderwriting"] is None
-        outcomes = [outcome for message in client.get(f"/api/threads/{thread}").json()["messages"]
-                    for outcome in message["tool_outcomes"]]
-        assert [(outcome["name"], outcome["status"]) for outcome in outcomes] == [
-            ("run_portfolio_reunderwriting", "error"), ("run_exposure_review", "success"),
-        ]
+        artifact = client.get(f"/api/artifacts/{run['artifact_ids'][-1]}").json()
+        assert artifact["payload"]["stock"]["position_id"] == candidate["id"]
+        row = next(r for r in artifact["payload"]["portfolio"]["positions"] if r["supplied"]["id"] == candidate["id"])
+        assert (row["supplied"]["shares"], row["supplied"]["company_id"]) == ("0", "acme")
+        held = client.get("/api/portfolio").json()["portfolio"]["snapshot"]["positions"]
+        assert all(r["id"] != candidate["id"] for r in held)
+
+
+@pytest.mark.parametrize("candidate,accepted", [
+    # A mark or identity cannot ride along with a candidate: only the ticker and listing are accepted.
+    ({"id": "candidate-ACME-XNAS", "ticker": "ACME", "listing": "XNAS", "mark": {"value": "1"}}, False),
+    ({"id": "p1", "ticker": "ACME", "listing": "XNAS"}, False),
+    ({"id": "candidate-NONE", "ticker": "NONE", "listing": "XNAS"}, True),
+])
+def test_form_candidates_are_validated_and_re_resolved(tmp_path, candidate, accepted):
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
+    model = CapturingTransport([])
+    form = {"workflow": "run_stock_analysis", "stock": {"position_id": candidate["id"]}, "candidates": [candidate]}
+    with TestClient(create_app(model=model, financial=FakeFinancialProvider(), portfolio_store=store,
+                              settings=Settings(api_key="sk-test", model="test"))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        response = client.post(f"/api/threads/{thread}/messages", json={
+            "text": "Analyze it", "client_request_id": "candidate", "workflow_input": form})
+        assert response.status_code == (202 if accepted else 422)
+        if accepted:
+            run = submit(client, thread, "Analyze it", "candidate", workflow_input=form)
+            clarification = client.get(f"/api/threads/{thread}").json()["messages"][1]["clarification_required"]
+            assert (run["status"], clarification["fields"]) == ("completed", ["candidates"])
+            assert run["artifact_ids"] == []
+    assert model.requests == []
+
+
+def test_cancelled_form_run_publishes_nothing_and_is_not_started_again(tmp_path):
+    entered, stopped = threading.Event(), threading.Event()
+
+    class Blocking(CapturingTransport):
+        async def respond(self, messages, **kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
+    form = {"text": "Review.", "client_request_id": "form", "workflow_input": {"workflow": "run_exposure_review"}}
+    with TestClient(create_app(model=Blocking([]), financial=FakeFinancialProvider(), portfolio_store=store,
+                              settings=Settings(api_key="sk-test", model="test"))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        response = client.post(f"/api/threads/{thread}/messages", json=form)
+        assert entered.wait(2)
+        run_id = response.json()["id"]
+        assert client.post(f"/api/threads/{thread}/runs/{run_id}/cancel").json()["status"] == "cancelled"
+        assert stopped.wait(2)
+        # A resubmitted request ID returns the same cancelled run instead of starting the workflow again.
+        assert client.post(f"/api/threads/{thread}/messages", json=form).json()["id"] == run_id
+        run = client.get(f"/api/threads/{thread}/runs/{run_id}").json()
+        assert (run["status"], run["artifact_ids"]) == ("cancelled", [])
+        assert len(client.get(f"/api/threads/{thread}").json()["messages"]) == 1
+
+
+def test_form_run_on_a_stored_draft_names_the_draft_in_its_result(tmp_path):
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot()}))
+    model = CapturingTransport([call("review_portfolio"), ModelTurn(answer=recommendation())])
+    with TestClient(create_app(model=model, financial=FakeFinancialProvider(), portfolio_store=store,
+                              settings=Settings(api_key="sk-test", model="test", request_timeout=5))) as client:
+        draft = client.post("/api/portfolio/artifacts", json={"portfolio": {"snapshot": snapshot()}, "label": "Draft"}).json()
+        thread = client.post("/api/threads").json()["id"]
+        response = client.post(f"/api/threads/{thread}/messages", json={
+            "text": "Review the draft", "client_request_id": "draft", "hypothetical_artifact_id": draft["id"],
+            "workflow_input": {"workflow": "run_exposure_review"}})
+        for _ in range(200):
+            run = client.get(f"/api/threads/{thread}/runs/{response.json()['id']}").json()
+            if run["status"] != "running":
+                break
+            time.sleep(0.01)
+        assert run["status"] == "completed", run
+        envelope = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()
+    assert envelope["reference"]["basis"] == "hypothetical"
+    assert (envelope["payload"]["artifact_reference"]["id"], envelope["payload"]["artifact_reference"]["basis"]) == (
+        draft["id"], "hypothetical")
+
+
+@pytest.mark.parametrize("settings,checked", [({}, False), ({"baseline": {}}, False), ({"single_company_cap": "0.15"}, True)])
+def test_a_rule_set_with_nothing_in_it_checks_nothing(tmp_path, settings, checked):
+    store = PortfolioStore(database_path=tmp_path / "portfolio.db")
+    store.save(SavedPortfolio.model_validate({"snapshot": snapshot(), "settings": settings}))
+    model = CapturingTransport([call("review_portfolio"), ModelTurn(answer=recommendation())])
+    with TestClient(create_app(model=model, financial=FakeFinancialProvider(), portfolio_store=store,
+                              settings=Settings(api_key="sk-test", model="test", request_timeout=5))) as client:
+        thread = client.post("/api/threads").json()["id"]
+        run = submit(client, thread, "Review.", workflow_input={"workflow": "run_exposure_review"})
+        payload = client.get(f"/api/artifacts/{run['artifact_ids'][0]}").json()["payload"]
+    assert (payload["portfolio"]["guardrails"] is not None) is checked
