@@ -15,13 +15,15 @@ import inspect
 import json
 import logging
 import re
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from openai import OpenAIError
 
 from .allocation import DiscoveryProvider
 from .config import Settings
 from .context import CHARACTER_LIMIT, READ_CAPABILITIES, RunContext, read_tools
+from .conversation_engine import ConversationDeps, execute_pydantic_ai_run
+from .evaluation_budget import TaskBudgetLedger
 from .failures import describe_failure
 from .financial_data import FinancialProvider
 from .financial_tools import FinancialTools
@@ -75,6 +77,7 @@ class Orchestrator:
         research: ResearchProvider | None = None,
         discovery: DiscoveryProvider | None = None,
         data: DataProvider | None = None,
+        engine: Literal["pydantic_ai", "legacy"] | None = None,
     ) -> None:
         self.db = db
         self.transport = transport
@@ -83,6 +86,7 @@ class Orchestrator:
         self.research = research
         self.discovery = discovery
         self.data = data or SuppliedDataProvider()
+        self.engine = engine
         self._active_tasks: dict[str, asyncio.Task[None]] = {}
 
     @property
@@ -126,7 +130,101 @@ class Orchestrator:
             task.cancel()
         return record
 
+    def _resolve_engine(self) -> str:
+        """Resolve conversation engine selected before run execution starts."""
+        if self.engine is not None:
+            return self.engine
+        import os
+        return os.environ.get("TFS_ORCHESTRATOR_ENGINE", "pydantic_ai").lower()
+
     async def _execute_run(
+        self,
+        thread_id: str,
+        run_record: RunRecord,
+        user_text: str,
+        workflow_input: dict[str, Any] | None,
+        hypothetical_artifact_id: str | None,
+    ) -> None:
+        """Execute run through selected engine. Selected before start; never switched mid-run."""
+        engine = self._resolve_engine()
+        if engine == "legacy":
+            await self._execute_legacy_run(
+                thread_id=thread_id,
+                run_record=run_record,
+                user_text=user_text,
+                workflow_input=workflow_input,
+                hypothetical_artifact_id=hypothetical_artifact_id,
+            )
+            return
+
+        await self._execute_pydantic_ai_run(
+            thread_id=thread_id,
+            run_record=run_record,
+            user_text=user_text,
+            workflow_input=workflow_input,
+            hypothetical_artifact_id=hypothetical_artifact_id,
+        )
+
+    async def _execute_pydantic_ai_run(
+        self,
+        thread_id: str,
+        run_record: RunRecord,
+        user_text: str,
+        workflow_input: dict[str, Any] | None,
+        hypothetical_artifact_id: str | None,
+    ) -> None:
+        run_id = run_record.id
+        start_time = asyncio.get_event_loop().time()
+        deadline = start_time + MAX_DEADLINE_SECONDS
+        ledger = TaskBudgetLedger(max_attempts=10, deadline_seconds=MAX_DEADLINE_SECONDS)
+
+        try:
+            context = RunContext(self.db, run_record)
+            financial_tools = FinancialTools(self.financial)
+            research_tools = ResearchTools(financial_tools, self.research, workflow_input, self.discovery)
+            web = WebSearchTools(
+                lambda search_messages, timeout: self._call_transport(
+                    search_messages, timeout, [HOSTED_TOOL], tool_choice="required"),
+                self.settings,
+            )
+            workflow_tools = WorkflowTools(financial_tools, research_tools, self.data, self.transport,
+                                           self.settings, deadline, user_text, workflow_input)
+            proposal_tools = ProposalTools(financial_tools)
+            capabilities = {**READ_CAPABILITIES, **financial_tools.capabilities,
+                            **research_tools.capabilities, **workflow_tools.capabilities,
+                            **web.capabilities, **proposal_tools.capabilities}
+            initial_messages = context.messages(comparison=research_tools.comparison)
+
+            deps = ConversationDeps(
+                db=self.db,
+                thread_id=thread_id,
+                run_record=run_record,
+                context=context,
+                ledger=ledger,
+                settings=self.settings,
+                transport=self.transport,
+                financial_tools=financial_tools,
+                research_tools=research_tools,
+                workflow_tools=workflow_tools,
+                proposal_tools=proposal_tools,
+                web=web,
+                capabilities=capabilities,
+                user_text=user_text,
+                is_stopped=lambda: self._stopped(thread_id, run_id),
+                record_terminal_failure=lambda msg: self._record_terminal_failure(run_id, msg),
+                initial_messages=initial_messages,
+            )
+
+            await execute_pydantic_ai_run(deps)
+        except asyncio.CancelledError:
+            logger.info("Supervised task for run %s was cancelled.", run_id)
+        except Exception as exc:
+            logger.error("Orchestration error in run %s (%s).", run_id, type(exc).__name__, exc_info=True)
+            failure = describe_failure(exc)
+            self._record_terminal_failure(run_id, "Internal orchestration error." if failure.kind == "internal"
+                                          else failure.message)
+
+    async def _execute_legacy_run(
         self,
         thread_id: str,
         run_record: RunRecord,
