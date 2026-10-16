@@ -1,0 +1,597 @@
+{
+  "dated_stock_analysis": {
+    "workflow_input": {
+      "workflow": "run_stock_analysis",
+      "stock": {
+        "position_id": "p1"
+      },
+      "analysis_date": "2026-09-30"
+    },
+    "portfolio": {
+      "total_value": "3600",
+      "holdings_value": "2300",
+      "cash_value": "1300",
+      "direct_companies": [
+        {
+          "company_id": "acme",
+          "company_name": "Acme",
+          "value": "2300",
+          "known_value": "2300",
+          "weight": "0.63888889",
+          "position_ids": [
+            "p1",
+            "p2"
+          ]
+        }
+      ]
+    },
+    "stock": {
+      "reporting_currency": "CAD",
+      "as_of": "2026-09-30",
+      "cases": [
+        {
+          "name": "downside",
+          "judgment": {
+            "name": "downside",
+            "growth": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "margins": [
+              "0.05",
+              "0.05",
+              "0.05",
+              "0.05",
+              "0.05"
+            ],
+            "cash_conversion": [
+              "1",
+              "1",
+              "1",
+              "1",
+              "1"
+            ],
+            "reinvestment": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "dilution": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "payout": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "return_on_equity": null,
+            "fx_multipliers": [
+              "1",
+              "1",
+              "1",
+              "1",
+              "1"
+            ],
+            "discount_rate": "0.1",
+            "exit_multiple": "10",
+            "exit_sensitivity": [
+              "8",
+              "10",
+              "12"
+            ],
+            "assumptions": [
+              "Stable revenue and conditional margins drive the exit value."
+            ],
+            "uncertainty": [
+              "Operating demand and exit valuation may differ."
+            ]
+          },
+          "starting_metric": "1000",
+          "starting_shares": "10",
+          "starting_per_share": "100",
+          "path": [
+            {
+              "year": 1,
+              "revenue": "1000",
+              "metric": "50",
+              "metric_margin": "0.05",
+              "diluted_shares": "10",
+              "metric_per_share": "5",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 2,
+              "revenue": "1000",
+              "metric": "50",
+              "metric_margin": "0.05",
+              "diluted_shares": "10",
+              "metric_per_share": "5",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 3,
+              "revenue": "1000",
+              "metric": "50",
+              "metric_margin": "0.05",
+              "diluted_shares": "10",
+              "metric_per_share": "5",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 4,
+              "revenue": "1000",
+              "metric": "50",
+              "metric_margin": "0.05",
+              "diluted_shares": "10",
+              "metric_per_share": "5",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 5,
+              "revenue": "1000",
+              "metric": "50",
+              "metric_margin": "0.05",
+              "diluted_shares": "10",
+              "metric_per_share": "5",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            }
+          ],
+          "equity_value": "500",
+          "discount_factor": "1.61051",
+          "present_value_of_exit": "31.0461",
+          "present_value_of_distributions": "0",
+          "terminal_metric": "50",
+          "terminal_shares": "10",
+          "terminal_price": "50",
+          "terminal_reporting_per_share": "65",
+          "known_terminal_value": "650",
+          "present_value_per_share": "31.0461",
+          "sensitivity_prices": [
+            "40",
+            "50",
+            "60"
+          ],
+          "required_exit_multiple": "32.21",
+          "qualifications": [
+            "Starting price/identity/FX is provisional; no confident allocation is justified."
+          ]
+        },
+        {
+          "name": "base",
+          "judgment": {
+            "name": "base",
+            "growth": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "margins": [
+              "0.1",
+              "0.1",
+              "0.1",
+              "0.1",
+              "0.1"
+            ],
+            "cash_conversion": [
+              "1",
+              "1",
+              "1",
+              "1",
+              "1"
+            ],
+            "reinvestment": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "dilution": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "payout": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "return_on_equity": null,
+            "fx_multipliers": [
+              "1",
+              "1",
+              "1",
+              "1",
+              "1"
+            ],
+            "discount_rate": "0.1",
+            "exit_multiple": "10",
+            "exit_sensitivity": [
+              "8",
+              "10",
+              "12"
+            ],
+            "assumptions": [
+              "Stable revenue and conditional margins drive the exit value."
+            ],
+            "uncertainty": [
+              "Operating demand and exit valuation may differ."
+            ]
+          },
+          "starting_metric": "1000",
+          "starting_shares": "10",
+          "starting_per_share": "100",
+          "path": [
+            {
+              "year": 1,
+              "revenue": "1000",
+              "metric": "100",
+              "metric_margin": "0.1",
+              "diluted_shares": "10",
+              "metric_per_share": "10",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 2,
+              "revenue": "1000",
+              "metric": "100",
+              "metric_margin": "0.1",
+              "diluted_shares": "10",
+              "metric_per_share": "10",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 3,
+              "revenue": "1000",
+              "metric": "100",
+              "metric_margin": "0.1",
+              "diluted_shares": "10",
+              "metric_per_share": "10",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 4,
+              "revenue": "1000",
+              "metric": "100",
+              "metric_margin": "0.1",
+              "diluted_shares": "10",
+              "metric_per_share": "10",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 5,
+              "revenue": "1000",
+              "metric": "100",
+              "metric_margin": "0.1",
+              "diluted_shares": "10",
+              "metric_per_share": "10",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            }
+          ],
+          "equity_value": "1000",
+          "discount_factor": "1.61051",
+          "present_value_of_exit": "62.0921",
+          "present_value_of_distributions": "0",
+          "terminal_metric": "100",
+          "terminal_shares": "10",
+          "terminal_price": "100",
+          "terminal_reporting_per_share": "130",
+          "known_terminal_value": "1300",
+          "present_value_per_share": "62.0921",
+          "sensitivity_prices": [
+            "80",
+            "100",
+            "120"
+          ],
+          "required_exit_multiple": "16.11",
+          "qualifications": [
+            "Starting price/identity/FX is provisional; no confident allocation is justified."
+          ]
+        },
+        {
+          "name": "upside",
+          "judgment": {
+            "name": "upside",
+            "growth": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "margins": [
+              "0.15",
+              "0.15",
+              "0.15",
+              "0.15",
+              "0.15"
+            ],
+            "cash_conversion": [
+              "1",
+              "1",
+              "1",
+              "1",
+              "1"
+            ],
+            "reinvestment": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "dilution": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "payout": [
+              "0",
+              "0",
+              "0",
+              "0",
+              "0"
+            ],
+            "return_on_equity": null,
+            "fx_multipliers": [
+              "1",
+              "1",
+              "1",
+              "1",
+              "1"
+            ],
+            "discount_rate": "0.1",
+            "exit_multiple": "10",
+            "exit_sensitivity": [
+              "8",
+              "10",
+              "12"
+            ],
+            "assumptions": [
+              "Stable revenue and conditional margins drive the exit value."
+            ],
+            "uncertainty": [
+              "Operating demand and exit valuation may differ."
+            ]
+          },
+          "starting_metric": "1000",
+          "starting_shares": "10",
+          "starting_per_share": "100",
+          "path": [
+            {
+              "year": 1,
+              "revenue": "1000",
+              "metric": "150",
+              "metric_margin": "0.15",
+              "diluted_shares": "10",
+              "metric_per_share": "15",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 2,
+              "revenue": "1000",
+              "metric": "150",
+              "metric_margin": "0.15",
+              "diluted_shares": "10",
+              "metric_per_share": "15",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 3,
+              "revenue": "1000",
+              "metric": "150",
+              "metric_margin": "0.15",
+              "diluted_shares": "10",
+              "metric_per_share": "15",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 4,
+              "revenue": "1000",
+              "metric": "150",
+              "metric_margin": "0.15",
+              "diluted_shares": "10",
+              "metric_per_share": "15",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            },
+            {
+              "year": 5,
+              "revenue": "1000",
+              "metric": "150",
+              "metric_margin": "0.15",
+              "diluted_shares": "10",
+              "metric_per_share": "15",
+              "distribution_per_share": "0",
+              "return_on_equity": null,
+              "payout": null,
+              "retention": null,
+              "book_growth": null
+            }
+          ],
+          "equity_value": "1500",
+          "discount_factor": "1.61051",
+          "present_value_of_exit": "93.1382",
+          "present_value_of_distributions": "0",
+          "terminal_metric": "150",
+          "terminal_shares": "10",
+          "terminal_price": "150",
+          "terminal_reporting_per_share": "195",
+          "known_terminal_value": "1950",
+          "present_value_per_share": "93.1382",
+          "sensitivity_prices": [
+            "120",
+            "150",
+            "180"
+          ],
+          "required_exit_multiple": "10.74",
+          "qualifications": [
+            "Starting price/identity/FX is provisional; no confident allocation is justified."
+          ]
+        }
+      ],
+      "research_facts": [
+        {
+          "id": "revenue",
+          "metric": "revenue",
+          "value": "1000",
+          "unit": "currency",
+          "currency": "USD",
+          "period_start": "2025-01-01",
+          "period_end": "2025-12-31",
+          "definition": "Consolidated annual revenue in USD, without scaling",
+          "document_ids": [
+            "filing",
+            "issuer"
+          ],
+          "filing_checked": true,
+          "notes_checked": true,
+          "custom_tags_checked": true,
+          "segments_checked": true,
+          "review": "manual",
+          "sources": []
+        },
+        {
+          "id": "shares",
+          "metric": "shares",
+          "value": "10",
+          "unit": "shares",
+          "currency": null,
+          "period_start": "2025-01-01",
+          "period_end": "2025-12-31",
+          "definition": "Diluted weighted average shares, without scaling",
+          "document_ids": [
+            "filing",
+            "issuer"
+          ],
+          "filing_checked": true,
+          "notes_checked": true,
+          "custom_tags_checked": true,
+          "segments_checked": true,
+          "review": "manual",
+          "sources": []
+        }
+      ]
+    },
+    "recommendation": {
+      "preferred_action": "hold",
+      "amount": null,
+      "evidence_ids": [
+        "filing",
+        "issuer"
+      ]
+    },
+    "reference": {
+      "basis": "committed",
+      "revision": 2,
+      "source_artifact_id": "art-rev-2"
+    },
+    "visible_answer_field": "recommendation.reason",
+    "run_outcome": {
+      "status": "completed",
+      "bound_revision": 2,
+      "hypothetical_artifact_id": null
+    }
+  },
+  "comparison_exclusions": {
+    "ids": [
+      "artifact_id",
+      "call_id",
+      "client_request_id",
+      "id",
+      "message_ids",
+      "run_id",
+      "thread_id"
+    ],
+    "timestamps": [
+      "as_of",
+      "captured_at",
+      "created_at",
+      "reviewed_at",
+      "saved_at",
+      "updated_at"
+    ],
+    "prose": [
+      "assumptions",
+      "downside",
+      "reason",
+      "text",
+      "uncertainty",
+      "what_could_change"
+    ]
+  }
+}
